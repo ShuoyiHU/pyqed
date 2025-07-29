@@ -131,3 +131,233 @@ def track_valence_band_GL2013(k_values, E0_over_omega, previous_val=None, previo
         save_data_to_hdf5(filename, occ, occ_e, con, con_e)
 
     return occ, occ_e, con, con_e, True
+
+
+def pfaffian(A):
+    """
+    Computes the Pfaffian of a complex skew-symmetric matrix A.
+
+    The algorithm is based on a block LU decomposition with pivoting, which is
+    numerically stable. The matrix A must be a 2n x 2n skew-symmetric matrix.
+
+    Args:
+        A (np.ndarray): A 2n x 2n skew-symmetric matrix.
+
+    Returns:
+        complex: The Pfaffian of the matrix A.
+    """
+    n_rows, n_cols = A.shape
+    if n_rows != n_cols or n_rows % 2 != 0:
+        raise ValueError("Matrix must be square and have even dimensions.")
+    
+    # Use a tolerance for the skew-symmetric check due to potential floating point errors
+    if not np.allclose(A, -A.T, atol=1e-9):
+        raise ValueError("Matrix must be skew-symmetric.")
+
+    A_copy = A.copy().astype(np.complex128)
+    pfaff_val = 1.0
+    
+    n = n_rows // 2
+
+    for k in range(n):
+        # --- Pivoting Step ---
+        # Find the element with the largest absolute value in the submatrix
+        # starting from (2*k, 2*k) to use as the pivot.
+        sub_matrix = A_copy[2*k:, 2*k:]
+        pivot_pos = np.unravel_index(np.argmax(np.abs(sub_matrix)), sub_matrix.shape)
+        pivot_row, pivot_col = pivot_pos[0] + 2*k, pivot_pos[1] + 2*k
+
+        # Bring the pivot to the (2*k, 2*k+1) position
+        if pivot_row != 2*k:
+            A_copy[[2*k, pivot_row], :] = A_copy[[pivot_row, 2*k], :]
+            A_copy[:, [2*k, pivot_row]] = A_copy[:, [pivot_row, 2*k]]
+            pfaff_val *= -1.0
+        
+        if pivot_col != 2*k + 1:
+            A_copy[[2*k+1, pivot_col], :] = A_copy[[pivot_col, 2*k+1], :]
+            A_copy[:, [2*k+1, pivot_col]] = A_copy[:, [pivot_col, 2*k+1]]
+            pfaff_val *= -1.0
+
+        # --- Elimination Step ---
+        pivot_val = A_copy[2*k, 2*k+1]
+        
+        if abs(pivot_val) < 1e-12:
+            return 0.0  # The matrix is singular, Pfaffian is 0.
+
+        pfaff_val *= pivot_val
+        inv_pivot = 1.0 / pivot_val
+        
+        # Update the remaining submatrix
+        i_range = np.arange(2*k + 2, n_rows)
+        if len(i_range) > 0:
+            # Vectorized update for efficiency
+            v = A_copy[2*k, i_range]
+            w = A_copy[2*k+1, i_range]
+            update_matrix = np.outer(v, w) - np.outer(w, v)
+            A_copy[np.ix_(i_range, i_range)] += inv_pivot * update_matrix
+
+    return pfaff_val
+
+
+class Z2InvariantCalculator:
+    """
+    Calculates the Z2 topological invariant for a 1D adiabatic pump.
+
+    This class implements the method described in Fu and Kane, Phys. Rev. B 74, 195312 (2006).
+    The core of the calculation is based on Eq. 3.25, which defines the Z2 invariant `Δ` as
+    the change in the "time-reversal polarization" `P_θ` between the two time-reversal
+    invariant points of the pumping cycle.
+
+    The time-reversal polarization `P_θ` is calculated using the formulation from
+    Appendix A (Eq. A16), which expresses it as the winding number of the Pfaffian of
+    the matrix m(k) = <u_i(k)|Θ|u_j(k)>, where |u(k)> are the occupied Bloch states
+    and Θ is the time-reversal operator.
+    """
+    def __init__(self, basis_dim, num_occupied_bands):
+        """
+        Initializes the calculator.
+
+        Args:
+            basis_dim (int): The dimension of the system's basis (e.g., number of orbitals * 2 for spin).
+                             This must be an even number.
+            num_occupied_bands (int): The number of occupied bands. For a time-reversal
+                                      invariant insulator, this must be an even number.
+        """
+        if basis_dim % 2 != 0:
+            raise ValueError("Basis dimension must be even for a spinful system.")
+        if num_occupied_bands % 2 != 0:
+            raise ValueError("Number of occupied bands must be even for a TRI insulator.")
+
+        self.basis_dim = basis_dim
+        self.num_occupied_bands = num_occupied_bands
+        self._theta_op = self._construct_time_reversal_operator()
+
+    def _construct_time_reversal_operator(self):
+        """
+        Constructs the matrix representation of the time-reversal operator Θ = iσ_y K.
+        We only need the unitary part, iσ_y, as the complex conjugation K is applied separately.
+        
+        This assumes a standard basis where spin-up and spin-down for each orbital are adjacent,
+        e.g., (orb1_up, orb1_down, orb2_up, orb2_down, ...).
+        """
+        i_sigma_y = np.array([[0, 1], [-1, 0]], dtype=complex)
+        num_orbital_blocks = self.basis_dim // 2
+        # Create a block-diagonal matrix with i*sigma_y for each orbital block
+        theta_matrix = np.kron(np.eye(num_orbital_blocks, dtype=int), i_sigma_y)
+        return theta_matrix
+
+    def _calculate_P_theta(self, occupied_states, k_path):
+        """
+        Calculates the integer-valued P_theta invariant for a single time-reversal
+        invariant Hamiltonian. This corresponds to the winding number of the Pfaffian.
+
+        Args:
+            occupied_states (np.ndarray): Array of shape (Nk, num_occupied_bands, basis_dim) 
+                                          containing the eigenvectors of the occupied bands.
+            k_path (np.ndarray): Array of shape (Nk,) of k-points forming a closed loop
+                                 in the Brillouin zone (e.g., from -pi to pi).
+
+        Returns:
+            float: The winding number of the Pfaffian phase, which should be an integer.
+        """
+        pfaffian_path = []
+        for i in range(len(k_path)):
+            # Get the matrix of occupied eigenvectors at k: shape (basis_dim, num_occupied_bands)
+            U_k = occupied_states[i, :, :].T
+            
+            # Construct the matrix m(k) = U_k^† * (iσ_y) * U_k^*
+            # This is equivalent to m_ij(k) = <u_i(k)|Θ|u_j(k)>
+            m_k = U_k.conj().T @ self._theta_op @ U_k.conj()
+            
+            pfaffian_path.append(pfaffian(m_k))
+
+        pfaffian_path = np.array(pfaffian_path)
+
+        # Calculate the winding number of the complex path pfaffian_path
+        phases = np.angle(pfaffian_path)
+        unwrapped_phases = np.unwrap(phases)
+        winding_number = (unwrapped_phases[-1] - unwrapped_phases[0]) / (2 * np.pi)
+
+        return np.round(winding_number)
+
+    def calculate_z2_pump_invariant(self, states_t0, states_t_half, k_path):
+        """
+        Calculates the Z2 invariant for an adiabatic pumping cycle using Eq. 3.25.
+
+        This requires the eigenstates at the two time-reversal invariant points
+        of the cycle, typically denoted t=0 and t=T/2.
+
+        Args:
+            states_t0 (np.ndarray): Occupied eigenvectors at the t=0 TRI point.
+                                    Shape: (Nk, num_occupied_bands, basis_dim).
+            states_t_half (np.ndarray): Occupied eigenvectors at the t=T/2 TRI point.
+                                        Shape: (Nk, num_occupied_bands, basis_dim).
+            k_path (np.ndarray): The path in the Brillouin zone, e.g., np.linspace(-pi, pi, num_k_points).
+
+        Returns:
+            int: The Z2 invariant, which will be 0 (trivial) or 1 (topological).
+        """
+        print("Calculating P_theta for the t=0 Hamiltonian...")
+        P_theta_0 = self._calculate_P_theta(states_t0, k_path)
+        print(f"-> P_theta(0) winding number = {P_theta_0}")
+
+        print("\nCalculating P_theta for the t=T/2 Hamiltonian...")
+        P_theta_half = self._calculate_P_theta(states_t_half, k_path)
+        print(f"-> P_theta(T/2) winding number = {P_theta_half}")
+
+        # The Z2 invariant is the difference in the P_theta invariants modulo 2
+        z2_invariant = int(abs(P_theta_half - P_theta_0)) % 2
+        
+        print("\n" + "="*40)
+        print(f"Z2 Pump Invariant Δ = (P_theta(T/2) - P_theta(0)) mod 2")
+        print(f"Δ = ({P_theta_half} - {P_theta_0}) mod 2 = {z2_invariant}")
+        print("="*40)
+
+        return z2_invariant
+
+# --- Example Usage ---
+if __name__ == '__main__':
+    # This is a placeholder for your data.
+    # You will need to load your actual quantum state data here.
+    
+    # System parameters
+    NK = 101  # Number of k-points
+    BASIS_DIM = 4  # e.g., 2 orbitals, 2 spins
+    NUM_OCCUPIED = 2 # Number of occupied bands (must be even)
+
+    # 1. Define the k-path for the Brillouin Zone
+    # It should be a closed path, e.g., from -pi to pi.
+    k_path = np.linspace(-np.pi, np.pi, NK)
+
+    # 2. Load or generate your state vectors.
+    # The states should be numpy arrays of shape (NK, NUM_OCCUPIED, BASIS_DIM)
+    # Here we generate random orthonormal states as a placeholder.
+    # In your case, you would load these from your HDF5 files.
+    print("Generating placeholder random states for demonstration...")
+    
+    def generate_random_occupied_states(nk, num_occ, basis_dim):
+        states = np.zeros((nk, num_occ, basis_dim), dtype=complex)
+        for i in range(nk):
+            # Generate a random matrix and use QR decomposition to get orthonormal vectors
+            random_matrix = np.random.rand(basis_dim, basis_dim) + 1j * np.random.rand(basis_dim, basis_dim)
+            q, _ = np.linalg.qr(random_matrix)
+            states[i, :, :] = q[:, :num_occ].T
+        return states
+
+    # Placeholder states for the two TRI points of the cycle
+    mock_states_t0 = generate_random_occupied_states(NK, NUM_OCCUPIED, BASIS_DIM)
+    mock_states_t_half = generate_random_occupied_states(NK, NUM_OCCUPIED, BASIS_DIM)
+    
+    print("Placeholder data generated.\n")
+
+    # 3. Instantiate the calculator and run the calculation
+    calculator = Z2InvariantCalculator(basis_dim=BASIS_DIM, num_occupied_bands=NUM_OCCUPIED)
+    
+    # Calculate the Z2 invariant for the pump
+    z2_inv = calculator.calculate_z2_pump_invariant(mock_states_t0, mock_states_t_half, k_path)
+
+    if z2_inv == 1:
+        print("\nResult: The system is a non-trivial Z2 pump (topological).")
+    else:
+        print("\nResult: The system is a trivial Z2 pump.")
+

@@ -13,7 +13,7 @@ from pyqed import dagger, dag
 import scipy
 from scipy.sparse import csr_matrix
 
-from pyqed.floquet.Floquet import Floquet
+from  pyqed.floquet.floquet import Floquet
 from pyqed import Mol
 
 class TightBinding(Mol):

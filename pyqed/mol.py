@@ -537,7 +537,7 @@ class Mol:
         return
     
     def Floquet(self,  omegad, E0, nt):
-        from pyqed.floquet.Floquet import Floquet
+        from  pyqed.floquet.floquet import Floquet
         
         return Floquet(self.H,  self.dip, omegad, E0, nt)
     

@@ -11,7 +11,6 @@ import sys
 from scipy import linalg
 from scipy.special import jv
 from pyqed.mol import Mol, dag
-from sklearn.cluster import KMeans
 import matplotlib.pyplot as plt
 # from tqdm import tqdm
 import time
@@ -22,6 +21,9 @@ from scipy.linalg import eigh
 import os
 import h5py
 import math
+import matplotlib.colors as colors
+import gc 
+
 
 class TightBinding(Mol):
     """
@@ -58,8 +60,7 @@ class TightBinding(Mol):
             self.lattice_constant = np.array(lattice_constant, dtype=float)
             if self.lattice_constant.size != self.dim:
                 raise ValueError("dimension of lattice_constant and dimension of the system does not match, if you want to set up higher dimension system only extend in one direction, please provide a list of lattice_constant and set the non-extension direction to 0, put non-extension direction to end of the list")
-
-
+            
         # count the non-zero elements in the lattice_constant as the extension direction
         self.extension_direction_number = np.count_nonzero(self.lattice_constant)
         # check if the zeros in lattice_constant is located at the end of the list
@@ -151,7 +152,9 @@ class TightBinding(Mol):
                             modified_position_vector[2] = self.lattice_constant[2]
                             self.direction_of_position_vector.append(modified_position_vector + self.coords[i] - self.coords[j])
                             self.modified_position_vector.append(modified_position_vector)
-        else:
+            elif self.extension_direction_number == 4:
+                raise ValueError("Currently Extension direction number cannot be larger than 3 as restricted by the capability of the code, please set the extension direction number to 1, 2 or 3")
+        else: # else we calculate the relative hopping by using distance between the atoms as exp(-|r_i - r_j| / lambda_decay)
             self.relative_Hopping = []
             self.direction_of_position_vector = []
             self.modified_position_vector = []
@@ -545,19 +548,39 @@ class FloquetBloch:
                 if x == 1:
                     for m in range (math.comb(self.extension_dim, x)):
                         offset_1 = sum(math.comb(self.extension_dim, y) for y in range(x))+m
-                        t = self.relative_Hopping[block_start + offset_1 + m ]
+                        t = self.relative_Hopping[block_start + offset_1 + m]
                         if base[m]>=0:
-                            shifted_base = base[m] - self.a_vec[m]
-                            phase = np.exp(1j * np.dot(kpt,-self.a_vec[m])) # this is in closed lift basis
+                            shifted_base = base
+                            shifted_base[m] = base[m] - self.a_vec[m]
+                            phase = np.exp(1j * np.dot(kpt,self.a_vec)) # this is in closed lift basis
                         else:
+                            shifted_base = base
                             shifted_base = base[m] + self.a_vec[m]
-                            phase = np.exp(1j * np.dot(kpt,self.a_vec[m])) # this is in closed lift basis
+                            phase = np.exp(1j * np.dot(kpt,self.a_vec)) # this is in closed lift basis
                         arg = Ecur/omega * np.dot(Avec, shifted_base)
                         for p in self.all_p:
-                            Hn[p][i, j] += t * jv(p, arg) * phase
-                            Hn[p][j, i] += t * jv(-p, arg) * np.conj(phase)
+                            # print(type(phase), type(arg), type(t), type(kpt), type(Avec), type(self.a_vec[m]))
+                            Hn[p][i, j] += t * jv(-p, arg) * phase
+                            Hn[p][j, i] += t * jv(p, arg) * np.conj(phase)
                     x +=1 
                     continue
+                # if x == 1:
+                #     for m in range (math.comb(self.extension_dim, x)):
+                #         offset_1 = sum(math.comb(self.extension_dim, y) for y in range(x))+m
+                #         t = self.relative_Hopping[block_start + offset_1 + m ]
+                #         if base[m]>=0:
+                #             shifted_base = base[m] - self.a_vec[m]
+                #             phase = np.exp(1j * np.dot(kpt[m],-self.a_vec[m])) # this is in closed lift basis
+                #         else:
+                #             shifted_base = base[m] + self.a_vec[m]
+                #             phase = np.exp(1j * np.dot(kpt[m],self.a_vec[m])) # this is in closed lift basis
+                #         arg = Ecur/omega * np.dot(Avec[m], shifted_base)
+                #         for p in self.all_p:
+                #             # print(type(phase), type(arg), type(t), type(kpt), type(Avec), type(self.a_vec[m]))
+                #             Hn[p][i, j] += t * jv(p, arg) * phase
+                #             Hn[p][j, i] += t * jv(-p, arg) * np.conj(phase)
+                #     x +=1 
+                #     continue
                 if x == 2:
                     # 跳过所有大小 < 2 的组合
                     offset2 = sum(math.comb(self.extension_dim, y) for y in range(2))
@@ -621,8 +644,6 @@ class FloquetBloch:
                 j0, j1 = m*Norbs, (m+1)*Norbs
                 F[i0:i1, j0:j1] = block
 
-        # results.append(F)
-
         # return single array if only one E₀ requested
         return F
 
@@ -635,15 +656,12 @@ class FloquetBloch:
         ----------
         k : array_like, shape (M, dim)
             k-point(s) to compute.
-        quasienergy: np.array, shape (len(k),)
         previous_state: list of np.array, each np.array element in the list have shape (len(k), Norbs * nt)
 
         Improve:
         band_index has not been considered yet
         '''
         nt = self.nt
-        # if previous_state is None and quasienergy is None:
-        #     raise ValueError("One of the information (quasienergy, previous_state) is required to track the band.")
         if E0 != 0 and previous_state is None:
             raise ValueError("previous_state is required to track the band at when external field is applied.")
             
@@ -660,11 +678,11 @@ class FloquetBloch:
             extended_Floquet_hamiltonian = self.build_extendedH(k0, E0)
             if E0 == 0:
                 filename = os.path.join(self.data_path, f"band_E{E0:.6f}.h5")
+                # Solve the static Hamiltonian to get real band energies at E0 = 0 for tracking, later we will compare this with Floquet quasienergy for Floquet states selection
                 Real_band_energy, _ = linalg.eigh(self.Hk_func(k0))
-                        # Diagonalize
+                # Diagonalize the extended Floquet Hamiltonian
                 eigvals, eigvecs = linalg.eigh(extended_Floquet_hamiltonian)  # shape(eigvals)=(NF,), shape(eigvecs)=(NF,NF)
-                # specify a range to choose the quasienergies, choose the first BZ
-                # [-hbar omega/2, hbar * omega/2]
+                # Test if number of Floquet States the first BZ [-hbar omega/2, hbar * omega/2] equals to the norbs, if not, increase nt
                 eigvals_subset = np.zeros(Norbs, dtype=complex)
                 eigvecs_subset = np.zeros((NF , Norbs), dtype=complex)
                 # check if the Floquet states is complete
@@ -675,6 +693,134 @@ class FloquetBloch:
                         eigvecs_subset[:,j] = eigvecs[:,m]
                         j += 1
                 if j != Norbs:
+                    print("Error: Number of Floquet states {} is not equal to \
+                        the number of orbitals {} in the first BZ. \n".format(j, Norbs))
+                    sys.exit()
+                # now track one Floquet level per real band
+                for band_idx in range(self.norbs):
+                    # 1) pick out the ONE real-band energy
+                    target_energy = Real_band_energy[band_idx]           # a scalar
+                    # 2) form a 1-D distance array
+                    distances = np.abs(eigvals - target_energy)          # shape = (NF,)
+                    # 3) get the single best Floquet index
+                    floq_idx  = np.argmin(distances)                     # integer
+                    # 4) assign that ONE scalar into storage
+                    band_energy[i, band_idx]            = eigvals[floq_idx]
+                    band_eigenstates[band_idx][i, :]    = eigvecs[:, floq_idx]
+            else:
+                filename = os.path.join(self.data_path, f"band_E{E0:.6f}.h5")
+                # Diagonalize the extended Floquet Hamiltonian
+                eigvals, eigvecs = linalg.eigh(extended_Floquet_hamiltonian)  # shape(eigvals)=(NF,), shape(eigvecs)=(NF,NF)s
+                # Test if number of Floquet States the first BZ [-hbar omega/2, hbar * omega/2] equals to the norbs, if not, increase nt
+                eigvals_subset = np.zeros(Norbs, dtype=complex)
+                eigvecs_subset = np.zeros((NF , Norbs), dtype=complex)
+                j = 0
+                for m in range(NF):
+                    if -omega/2 <= eigvals[m].real <= omega/2:
+                        eigvals_subset[j]   = eigvals[m]
+                        eigvecs_subset[:,j] = eigvecs[:,m]
+                        j += 1
+                if j != Norbs:
+                    print("Error: Number of Floquet states {} is not equal to \
+                        the number of orbitals {} in the first BZ. \n".format(j, Norbs))
+                    sys.exit()
+
+                # — build overlap matrix: shape (Norbs, NF) —
+                overlap = np.zeros((Norbs, NF), dtype=float)
+                for band_idx in range(Norbs):
+                    prev_vec = previous_state[band_idx][i, :]            # shape (NF,)
+                    # dot prev_vec* with every eigvecs[:,m] -> scalar, then abs²
+                    # np.vdot does conj(prev_vec)·eigvecs[:,m]
+                    for m in range(NF):
+                        overlap[band_idx, m] = np.abs(np.vdot(prev_vec, eigvecs[:, m]))**2
+                # — assignment so each band picks its best *unused* Floquet level —
+                assigned = set()
+                assignment = {}  # band_idx -> chosen index m
+                for band_idx in range(Norbs):
+                    # look through this band’s overlaps in descending order
+                    for m in np.argsort(overlap[band_idx])[::-1]:
+                        if m not in assigned:
+                            assigned.add(m)
+                            assignment[band_idx] = m
+                            break 
+
+                # — store each band’s matched eigenvalue & eigenvector —
+                for band_idx, m in assignment.items():
+                    band_energy[i, band_idx]         = eigvals[m]
+                    band_eigenstates[band_idx][i, :] = eigvecs[:, m]
+                # — ensure our N_orbs quasi‐energies are ascending; if not, reorder — 
+                # get the real parts for comparison
+                vals = band_energy[i].real    # shape (Norbs,)
+                # check monotonic non‐decreasing
+                if not np.all(np.diff(vals) >= 0):
+                    # compute the ascending sort‐order
+                    order = np.argsort(vals)
+                    # reorder the energies row
+                    band_energy[i, :] = band_energy[i, order]
+                    # reorder the eigenstates for this k‐point
+                    # stash the old row of each band
+                    old_states = [ band_eigenstates[b][i, :].copy()
+                                for b in range(Norbs) ]
+                    for new_b, old_b in enumerate(order):
+                        band_eigenstates[new_b][i, :] = old_states[old_b]
+
+        if self.data_path is not None:        
+            save_data_to_hdf5(filename, band_energy, band_eigenstates)
+
+        return band_energy, band_eigenstates
+    
+    def track_Floquet_Modes(self, k_values, E0=None, quasienergy = None, previous_state = None, filename=None, band_index=None):
+        '''
+        Compute the energy and corresponding eigenstate of the assigned band for the given k list, stored and saved in local file.
+        this is a helper function for .run, usually should not be directly called.
+        parameters
+        ----------
+        k : array_like, shape (M, dim)
+            k-point(s) to compute.
+        quasienergy: np.array, shape (len(k),)
+        previous_state: list of np.array, each np.array element in the list have shape (len(k), Norbs * nt)
+
+        Improve:
+        band_index has not been considered yet
+        '''
+        nt = self.nt
+        # # if previous_state is None and quasienergy is None:
+        # #     raise ValueError("One of the information (quasienergy, previous_state) is required to track the band.")
+        # if E0 != 0 and previous_state is None:
+        #     raise ValueError("previous_state is required to track the band at when external field is applied.")
+            
+        if filename and os.path.exists(filename):
+            print(f"Loading data from {filename}...")   
+            return load_data_from_hdf5(filename)    
+
+        NF = self.norbs * nt
+        band_energy = np.zeros((len(k_values), self.norbs), dtype=complex)
+        band_eigenstates = [np.zeros((len(k_values), NF), dtype=complex) for a in range(self.norbs)]
+        Norbs = self.norbs
+        omega = self.omegad
+        eigvals_subset = np.zeros((len(k_values),6), dtype=complex)
+        eigvecs_subset = np.zeros((len(k_values), NF, 6), dtype=complex)
+        for i, k0 in enumerate(k_values):
+            extended_Floquet_hamiltonian = self.build_extendedH(k0, E0)
+            if E0 == 0:
+                filename = os.path.join(self.data_path, f"band_E{E0:.6f}.h5")
+                Real_band_energy, _ = linalg.eigh(self.Hk_func(k0))
+                        # Diagonalize
+                eigvals, eigvecs = linalg.eigh(extended_Floquet_hamiltonian)  # shape(eigvals)=(NF,), shape(eigvecs)=(NF,NF)
+                # specify a range to choose the quasienergies, choose the first BZ
+                # [-hbar omega/2, hbar * omega/2]
+                # eigvals_subset = np.zeros(Norbs, dtype=complex)
+                # eigvecs_subset = np.zeros((NF , Norbs), dtype=complex)
+                # check if the Floquet states is complete
+                j = 0
+                for m in range(NF):
+                    if -omega/2 <= eigvals[m].real <= omega/2:
+                    # if -3*omega/2 <= eigvals[m].real <= 3*omega/2:
+                        eigvals_subset[i,j]   = eigvals[m]
+                        eigvecs_subset[i,:,j] = eigvecs[:,m]
+                        j += 1
+                if j != Norbs:
+                # if j != 3* Norbs:
                     print("Error: Number of Floquet states {} is not equal to \
                         the number of orbitals {} in the first BZ. \n".format(j, Norbs))
                     sys.exit()
@@ -699,73 +845,23 @@ class FloquetBloch:
                 eigvals, eigvecs = linalg.eigh(extended_Floquet_hamiltonian)  # shape(eigvals)=(NF,), shape(eigvecs)=(NF,NF)s
                 # specify a range to choose the quasienergies, choose the first BZ
                 # [-hbar omega/2, hbar * omega/2]
-                eigvals_subset = np.zeros(Norbs, dtype=complex)
-                eigvecs_subset = np.zeros((NF , Norbs), dtype=complex)
+                # eigvals_subset = np.zeros(Norbs, dtype=complex)
+                # eigvecs_subset = np.zeros((NF , Norbs), dtype=complex)
                 # check if the Floquet states is complete
                 j = 0
                 for m in range(NF):
                     if -omega/2 <= eigvals[m].real <= omega/2:
-                        eigvals_subset[j]   = eigvals[m]
-                        eigvecs_subset[:,j] = eigvecs[:,m]
+                        eigvals_subset[i,j]   = eigvals[m]
+                        eigvecs_subset[i, :,j] = eigvecs[:,m]
                         j += 1
                 if j != Norbs:
                     print("Error: Number of Floquet states {} is not equal to \
                         the number of orbitals {} in the first BZ. \n".format(j, Norbs))
                     sys.exit()
-                # overlap = np.zeros(NF)
-                # for i in range(NF):
-                #     overlap[i] = np.abs(np.dot(previous_state.conj(), eigvecs[:, i]))**2
-
-                # idx = np.argsort(overlap)[::-1]  # Sort indices by descending overlap
-
-                # for band_idx in range(self.norb):
-                #     band_eigenstates[band_idx][:, i] = eigvecs[:, idx[band_idx]]
-                #     band_energy[i][band_idx] = eigvals[idx[band_idx]]
-
-                # return band_energy, band_eigenstates
-                    # — build overlap matrix: shape (Norbs, NF) —
-                overlap = np.zeros((Norbs, NF), dtype=float)
-                for band_idx in range(Norbs):
-                    prev_vec = previous_state[band_idx][i, :]            # shape (NF,)
-                    # dot prev_vec* with every eigvecs[:,m] -> scalar, then abs²
-                    # np.vdot does conj(prev_vec)·eigvecs[:,m]
-                    for m in range(NF):
-                        overlap[band_idx, m] = np.abs(np.vdot(prev_vec, eigvecs[:, m]))**2
-
-                # — assignment so each band picks its best *unused* Floquet level —
-                assigned = set()
-                assignment = {}  # band_idx -> chosen index m
-                for band_idx in range(Norbs):
-                    # look through this band’s overlaps in descending order
-                    for m in np.argsort(overlap[band_idx])[::-1]:
-                        if m not in assigned:
-                            assigned.add(m)
-                            assignment[band_idx] = m
-                            break
-
-                # — store each band’s matched eigenvalue & eigenvector —
-                for band_idx, m in assignment.items():
-                    band_energy[i, band_idx]         = eigvals[m]
-                    band_eigenstates[band_idx][i, :] = eigvecs[:, m]
-                # — ensure our N_orbs quasi‐energies are ascending; if not, reorder — 
-                # get the real parts for comparison
-                vals = band_energy[i].real    # shape (Norbs,)
-                # check monotonic non‐decreasing
-                if not np.all(np.diff(vals) >= 0):
-                    # compute the ascending sort‐order
-                    order = np.argsort(vals)
-                    # reorder the energies row
-                    band_energy[i, :] = band_energy[i, order]
-                    # reorder the eigenstates for this k‐point
-                    # stash the old row of each band
-                    old_states = [ band_eigenstates[b][i, :].copy()
-                                for b in range(Norbs) ]
-                    for new_b, old_b in enumerate(order):
-                        band_eigenstates[new_b][i, :] = old_states[old_b]
 
         if self.data_path is not None:        
-            save_data_to_hdf5(filename, band_energy, band_eigenstates)
-        return band_energy, band_eigenstates
+            save_data_to_hdf5(filename, eigvals_subset, eigvecs_subset)
+        return eigvals_subset, eigvecs_subset
 
 
 
@@ -816,12 +912,12 @@ class FloquetBloch:
         if self.k is None:
             # first time: run to generate data for this k-grid
             self.run(k)
-        else:
-            # if user passes k manually, it must match
-            if k is not None and list(k) != list(self.k):
-                raise ValueError(
-                    "Cannot plot on a different k-grid than was used in .run()."
-                )
+        # else:
+        #     # if user passes k manually, it must match
+        #     if k is not None and list(k) != list(self.k) and list(k):
+        #         raise ValueError(
+        #             "Cannot plot on a different k-grid than was used in .run()."
+        #         )
 
         # 2) Build list of E values to plot
         if E is None:
@@ -837,15 +933,29 @@ class FloquetBloch:
 
         # 3) Loop over each E, load & plot
         for E_val in E_list:
+            # if self.k is multidimensional, take the first dimension
+            if self.k.ndim > 1:
+                k = self.k[:,0]
+            else:
+                k = self.k
             fname = os.path.join(self.data_path, f"band_E{E_val:.6f}.h5")
             print(f"Loading band data from {fname}…")
             band_energy, _ = load_data_from_hdf5(fname)
-            # band_energy shape: (len(k), Norbs)
+            # band_energy shape: (len(k), Norbs), k taken for first changing dimension
 
             fig, ax = plt.subplots()
+            colors = ['red', 'blue']
             for band_idx in range(band_energy.shape[1]):
-                ax.plot(self.k, band_energy[:, band_idx].real,
-                        label=f"band {band_idx}")
+                ax.plot(k, band_energy[:, band_idx].real,
+                        label=f"band {band_idx}", linestyle='dashed', color=colors[band_idx])
+                # ax.plot(k, band_energy[:, band_idx].real+self.omegad, color=colors[band_idx]) # for plot Floquet bands in different BZ
+                # ax.plot(k, band_energy[:, band_idx].real-self.omegad, color=colors[band_idx]) # for plot Floquet bands in different BZ 
+                # ax.plot(k, band_energy[:, band_idx].real+2*self.omegad, color=colors[band_idx]) # for plot Floquet bands in different BZ
+                # ax.plot(k, band_energy[:, band_idx].real-2*self.omegad, color=colors[band_idx]) # for plot Floquet bands in different BZ
+                # ax.plot(k, band_energy[:, band_idx].real+3*self.omegad, color=colors[band_idx]) # for plot Floquet bands in different BZ
+                # ax.plot(k, band_energy[:, band_idx].real-3*self.omegad, color=colors[band_idx]) # for plot Floquet bands in different BZ
+                # ax.plot(k, band_energy[:, band_idx].real+4*self.omegad, color=colors[band_idx]) # for plot Floquet bands in different BZ
+                # ax.plot(k, band_energy[:, band_idx].real-4*self.omegad, color=colors[band_idx]) # for plot Floquet bands in different BZ
             ax.set_xlabel("k")
             ax.set_ylabel("Energy")
             ax.set_title(f"Floquet bands at E = {E_val:.6f}")
@@ -874,7 +984,7 @@ class FloquetBloch:
 
         Parameters
         ----------
-        band : int
+        band_id : int
             Index of the Floquet band to compute (0 ≤ band < self.norbs).
         E : float or list of float, optional
             Field amplitude(s) to evaluate.  If None, uses all E's from the last run.
@@ -920,125 +1030,188 @@ class FloquetBloch:
             P = np.outer(vecs[:, 0], np.conjugate(vecs[:, 0]))
             for j in range(1, Nk):
                 v = vecs[:, j]
-                v = v / np.linalg.norm(v)
+                # v = v / np.linalg.norm(v) # apply if v is not normalized, shouldn't be necessary
                 P = P @ np.outer(v, np.conjugate(v))
 
             angle = np.round(np.angle(np.trace(P)),5)
             # original normalization was (angle mod 2π) / π
             winding = (angle % (2 * np.pi)) / np.pi
             results.append(winding)
-        print(results)
+        # print(results) # real-time monitor of the winding number calculation
         # 6) return scalar if one E, else list
         return results[0] if len(results) == 1 else results
 
-    def subspace_winding(self, bands, E=None):
+
+
+    def build_derivative_H(self, kpt, Ecur, Omegacur, param_name_to_diff):
         """
-        1D Wilson-loop for an occupied subspace of multiple bands (e.g. [0,1]).
+        Calculates the derivative of H_F using analytical derivatives.
+        Parameters
+        ----------
+        kpt : array_like
+            Crystal momentum vector.
+        Ecur : float
+            The current value of the epsilon parameter (E-field).
+        Omegacur : float
+            The current value of the Omega parameter (frequency).
+        param_name_to_diff : str
+            Parameter to differentiate with respect to ('epsilon' or 'omega').
 
-        Returns the single integer winding of that subspace.
+        Returns
+        -------
+        dF : (norbs*nt, norbs*nt) complex ndarray
+            The numerically calculated derivative of the Floquet Hamiltonian.
         """
-        import os
-        import numpy as np
-        from pyqed.floquet.utils import load_data_from_hdf5
+        from scipy.special import jv, jvp
+        if param_name_to_diff == 'epsilon':
+            kpt = np.atleast_1d(kpt).astype(float)
+            Norbs, nt, omega = self.norbs, self.nt, self.omegad
+            if Omegacur is not None:
+                omega = float(Omegacur)
+            # decide which E₀'s to loop over
+            if Ecur is None:
+                raise ValueError("Please Provide E")
+            # 1) build each Fourier block H^(p)
+            Hn = {p: np.zeros((Norbs, Norbs), complex)
+                    for p in self.all_p}
+            Avec = np.array(self.polarization)
+                    # loop all hops: first intracell, then intercell
+            for idx, (i, j) in enumerate(self.pairs):
+            # for idx, ((i, j), t, dvec, R) in enumerate(zip(
+            #         self.pairs + self.pairs,
+            #         self.relative_Hopping,
+            #         self.direction_of_position_vector,
+            #         self.translation_vectors)):
+                base = self.coords[j] - self.coords[i]
+                block_size  = 2**self.extension_dim
+                block_start = idx * block_size  
+                x = 0
+                while x <= self.extension_dim:
+                    if x == 0:
+                        t = self.relative_Hopping[idx]
+                        phase = 1
+                        shifted_base = base
+                        arg = Ecur/omega * np.dot(Avec, shifted_base)
+                        for p in self.all_p:
+                            Hn[p][i, j] += t * jvp(p, arg) * phase/omega * np.dot(Avec, shifted_base)
+                            Hn[p][j, i] += t * jvp(-p, arg) * np.conj(phase)/omega * np.dot(Avec, shifted_base)
+                        x += 1
+                        continue
+                    if x == 1:
+                        for m in range (math.comb(self.extension_dim, x)):
+                            offset_1 = sum(math.comb(self.extension_dim, y) for y in range(x))+m
+                            t = self.relative_Hopping[block_start + offset_1 + m]
+                            if base[m]>=0:
+                                shifted_base = base.copy() 
+                                shifted_base[m] = base[m] - self.a_vec[m]
+                                phase = np.exp(1j * np.dot(kpt,self.a_vec)) # this is in closed lift basis
+                            else:
+                                shifted_base = base
+                                shifted_base = base[m] + self.a_vec[m]
+                                phase = np.exp(1j * np.dot(kpt,self.a_vec)) # this is in closed lift basis
+                            arg = Ecur/omega * np.dot(Avec, shifted_base)
+                            for p in self.all_p:
+                                # print(type(phase), type(arg), type(t), type(kpt), type(Avec), type(self.a_vec[m]))
+                                Hn[p][i, j] += t * jvp(-p, arg) * phase/omega * np.dot(Avec, shifted_base)
+                                Hn[p][j, i] += t * jvp(p, arg) * np.conj(phase)/omega * np.dot(Avec, shifted_base)
+                        x +=1 
+                    if x == 2:
+                        pass
+                        # raise ValueError("Current capability of the code Reached")
+            # 2) assemble the full Floquet matrix F
+            NF = Norbs * nt
+            F  = np.zeros((NF, NF), complex)
+            for n in range(nt):
+                for m in range(nt):
+                    p = n - m
+                    block = Hn.get(p, np.zeros((Norbs, Norbs), complex))
+                    if n == m:
+                        # add (n-N0)*ω identity on the diagonal block
+                        block = block 
+                    i0, i1 = n*Norbs, (n+1)*Norbs
+                    j0, j1 = m*Norbs, (m+1)*Norbs
+                    F[i0:i1, j0:j1] = block
 
-        # Preconditions
-        if self.k is None:
-            raise RuntimeError("Call run() before computing subspace winding.")
-        for b in bands:
-            if not (0 <= b < self.norbs):
-                raise ValueError(f"Band index {b} out of range [0, {self.norbs-1}].")
+            # results.append(F)
 
-        # Build E list
-        if E is None:
-            E_list = self._E_list or [self.E0_scalar]
-        elif isinstance(E, (float, int)):
-            E_list = [float(E)]
+            # return single array if only one E₀ requested
+            return F
+        elif param_name_to_diff == 'omega':
+            kpt = np.atleast_1d(kpt).astype(float)
+            Norbs, nt, omega = self.norbs, self.nt, self.omegad
+            if Omegacur is not None:
+                omega = float(Omegacur)
+            # decide which E₀'s to loop over
+            if Ecur is None:
+                raise ValueError("Please Provide E")
+            # 1) build each Fourier block H^(p)
+            Hn = {p: np.zeros((Norbs, Norbs), complex)
+                    for p in self.all_p}
+            Avec = np.array(self.polarization)
+                    # loop all hops: first intracell, then intercell
+            for idx, (i, j) in enumerate(self.pairs):
+            # for idx, ((i, j), t, dvec, R) in enumerate(zip(
+            #         self.pairs + self.pairs,
+            #         self.relative_Hopping,
+            #         self.direction_of_position_vector,
+            #         self.translation_vectors)):
+                base = self.coords[j] - self.coords[i]
+                block_size  = 2**self.extension_dim
+                block_start = idx * block_size  
+                x = 0
+                while x <= self.extension_dim:
+                    if x == 0:
+                        t = self.relative_Hopping[idx]
+                        phase = 1
+                        shifted_base = base
+                        arg = Ecur/omega * np.dot(Avec, shifted_base)
+                        for p in self.all_p:
+                            Hn[p][i, j] += -t * jvp(p, arg) * phase * Ecur/omega/omega * np.dot(Avec, shifted_base)
+                            Hn[p][j, i] += -t * jvp(-p, arg) * np.conj(phase) * Ecur/omega/omega * np.dot(Avec, shifted_base)
+                        x += 1
+                        continue
+                    if x == 1:
+                        for m in range (math.comb(self.extension_dim, x)):
+                            offset_1 = sum(math.comb(self.extension_dim, y) for y in range(x))+m
+                            t = self.relative_Hopping[block_start + offset_1 + m]
+                            if base[m]>=0:
+                                shifted_base = base
+                                shifted_base[m] = base[m] - self.a_vec[m]
+                                phase = np.exp(1j * np.dot(kpt,self.a_vec)) # this is in closed lift basis
+                            else:
+                                shifted_base = base
+                                shifted_base = base[m] + self.a_vec[m]
+                                phase = np.exp(1j * np.dot(kpt,self.a_vec)) # this is in closed lift basis
+                            arg = Ecur/omega * np.dot(Avec, shifted_base)
+                            for p in self.all_p:
+                                # print(type(phase), type(arg), type(t), type(kpt), type(Avec), type(self.a_vec[m]))
+                                Hn[p][i, j] += -t * jvp(-p, arg) * phase * Ecur/omega/omega * np.dot(Avec, shifted_base)
+                                Hn[p][j, i] += -t * jvp(p, arg) * np.conj(phase) * Ecur/omega/omega * np.dot(Avec, shifted_base)
+                        x +=1 
+                    if x == 2:
+                        pass
+                        # raise ValueError("Current capability of the code Reached")
+            # 2) assemble the full Floquet matrix F
+            NF = Norbs * nt
+            F  = np.zeros((NF, NF), complex)
+            for n in range(nt):
+                for m in range(nt):
+                    p = n - m
+                    block = Hn.get(p, np.zeros((Norbs, Norbs), complex))
+                    if n == m:
+                        # add (n-N0)*ω identity on the diagonal block
+                        block = block + np.eye(Norbs) * ((n - self.N0))
+                    i0, i1 = n*Norbs, (n+1)*Norbs
+                    j0, j1 = m*Norbs, (m+1)*Norbs
+                    F[i0:i1, j0:j1] = block
+
+            # results.append(F)
+
+            # return single array if only one E₀ requested
+            return F
+            
         else:
-            E_list = list(E)
-
-        results = []
-        Nk = len(self.k)
-        n_sub = len(bands)
-
-        for E_val in E_list:
-            # 1) load all_states[b] of shape (Nk, NF)
-            fname = os.path.join(self.data_path, f"band_E{E_val:.6f}.h5")
-            _, all_states = load_data_from_hdf5(fname)
-
-            # 2) determine NF
-            Nk_check, NF = all_states[bands[0]].shape
-            assert Nk_check == Nk, "k-grid length mismatch"
-
-            # 3) build psi_sub[k] of shape (NF, n_sub)
-            psi_sub = np.zeros((Nk, NF, n_sub), dtype=complex)
-            for j, b in enumerate(bands):
-                psi_sub[:, :, j] = all_states[b]   # fill k×NF slice
-
-            # 4) gauge-fix each subspace basis via a thin QR
-            Q = np.zeros_like(psi_sub, dtype=complex)  # (Nk, NF, n_sub)
-            for k in range(Nk):
-                # psi_sub[k] is NF×n_sub
-                q, _ = np.linalg.qr(psi_sub[k], mode='reduced')
-                Q[k] = q
-
-            # 5) build overlap matrices U_k = Q_k^† · Q_{k+1}
-            U = np.zeros((Nk, n_sub, n_sub), dtype=complex)
-            for k in range(Nk):
-                kp = (k+1) % Nk
-                U[k] = Q[k].conj().T @ Q[kp]
-
-            # 6) multiply them to get the Wilson loop W (n_sub×n_sub)
-            W = np.eye(n_sub, dtype=complex)
-            for k in range(Nk):
-                W = W @ U[k]
-
-            # 7) total subspace winding = arg det(W) / (2π)
-            detW = np.linalg.det(W)
-            phase = np.mod(np.angle(detW), 2*np.pi)
-            w = int(np.round(phase/(2*np.pi)))
-
-            results.append(w)
-
-        return results[0] if len(results)==1 else results
-
-
-def test_Gomez_Leon_2013(E0 = 200, number_of_step_in_b = 11, nt = 21):
-    """
-    Test the Gomez-Leon 2013 model but using TightBinding and FloquetBloch classes, calculate the winding number and finally plot the heatmap
-    """
-    # Parameters
-    # time_start = time.time()
-    omega = 10
-    E_over_omega = np.linspace(0, E0/omega, 101)
-    E = [e * omega for e in E_over_omega]
-    k_vals = np.linspace(-np.pi, np.pi, 100)
-    b_grid = np.linspace(0,1,number_of_step_in_b)
-    winding_number_grid = np.zeros((len(b_grid), len(E)), dtype=complex)
-    winding_number_band = 0
-    for b_idx, b in enumerate(b_grid):
-        # Create tight-binding model
-        coords = [[0], [b]]   
-        tb_model = TightBinding(coords, lambda_decay=1.0, lattice_constant=[1.0], nk=100, mu=0.0, relative_Hopping=[1.5,1])      
-        # Run Floquet analysis
-        floquet_model = tb_model.Floquet(omegad=omega, E0=E, nt=nt, polarization=[1], data_path=f'MacBook_local_data/floquet_data_Gomez_Leon_test_b={b:.2f}/')
-        energies, states = floquet_model.run(k_vals)
-        winding_number_grid[b_idx]=floquet_model.winding_number(band=0)
-        print(f"Winding number for b={b:.2f}: {winding_number_grid[b_idx]}")
-        # floquet_model.plot_band_structure(k_vals,save_band_structure=True)
-
-        print('')
-    # Convert b_grid and E to 2D meshgrid for plotting
-    B, E_mesh = np.meshgrid(b_grid, E_over_omega)
-
-    # Plot the winding number map (real part only if complex)
-    plt.figure(figsize=(6, 5))
-    plt.pcolormesh(B, E_mesh, winding_number_grid.T.real, shading='auto', cmap='viridis')
-    plt.colorbar(label='Winding Number')
-    plt.xlabel('Bond Length b')
-    plt.ylabel(r'$E_0 / \omega$')
-    plt.title(f'Floquet Winding Number Map (Band {winding_number_band}/)')
-    plt.tight_layout()
-    plt.show()
+            raise ValueError("param_name_to_diff must be 'epsilon' or 'omega'")
 
 
 # class Floquet:
@@ -1681,59 +1854,3 @@ def test_Gomez_Leon_2013(E0 = 200, number_of_step_in_b = 11, nt = 21):
 #     # qe, fmodes = dmol.spectrum(E0=0.4, Nt=10, gauge='velocity')
 #     # print(qe)
 
-
-
-def test_1D_2norbs(E0 = 1, number_of_step_in_omega = 11, nt = 21):
-    """
-    Test the Gomez-Leon 2013 model but using TightBinding and FloquetBloch classes, calculate the winding number and finally plot the heatmap
-    """
-    # Parameters
-    # time_start = time.time()
-    # omega = np.linspace(0.3, 0.4, number_of_step_in_omega)
-    omega = [0.8,0.7,0.6,0.5,0.4,0.3]
-    omega = [4.95]
-    # omega = [5]
-    # E = np.linspace(0, 0.001, 11)
-    # E_2 = np.linspace(0.001, 0.01, 10)
-    # E_3 = np.linspace(0.01, 0.1, 10)
-    # E_4 = np.linspace(0.1, 1, 10)
-    # E = np.concatenate((E,E_2,E_3,E_4))
-    E = np.linspace(0, E0, 101)
-    k_vals = np.linspace(-np.pi, np.pi, 300)
-    winding_number_grid = np.zeros((len(omega), len(E)), dtype=complex)
-    winding_number_band = 0
-    for omg_idx, omg in enumerate(omega):
-        # Create tight-binding model
-
-        # tb_model = TightBinding(coords, lambda_decay=1.0, lattice_constant=[1.0], nk=100, mu=0.0, relative_Hopping=[1.5,1,1,1,1,1])
-        # coords = [[0], [b],[0.6],[0.8]]
-        # tb_model = TightBinding(coords, lambda_decay=1.0, lattice_constant=[1.0], nk=100, mu=0.0, relative_Hopping=[1.5,1,1,1,1,1,1,1,1,1,1,1])   
-        coords = [[0], [0.6]]   
-        tb_model = TightBinding(coords, lambda_decay=1.0, lattice_constant=[1.0], nk=100, mu=0.0, relative_Hopping=[1.5,1])      
-        # Run Floquet analysis
-        floquet_model = tb_model.Floquet(omegad=omg, E0=E, nt=nt, polarization=[1], data_path=f'MacBook_local_data/floquet_data_1D_2norbs_test_omega={omg:.5f}/')
-        energies, states = floquet_model.run(k_vals)
-
-        winding_number_grid[omg_idx]=floquet_model.winding_number(band=0)
-        print(f"Winding number for omega={omg:.2f}: {winding_number_grid[omg_idx]}")
-        
-        
-        floquet_model.plot_band_structure(k_vals,save_band_structure=True)
-
-        print('')
-    # Convert b_grid and E to 2D meshgrid for plotting
-    B, E_mesh = np.meshgrid(omega, E)
-
-    # Plot the winding number map (real part only if complex)
-    plt.figure(figsize=(6, 5))
-    plt.pcolormesh(B, E_mesh, winding_number_grid.T.real, shading='auto', cmap='viridis')
-    plt.colorbar(label='Winding Number')
-    plt.xlabel('Driving Frequency omega')
-    plt.ylabel(r'$E_0 / \omega$')
-    plt.title(f'Floquet Winding Number Map (Band {winding_number_band}/)')
-    plt.tight_layout()
-    plt.show()
-
-if __name__ == "__main__":
-    # test_Gomez_Leon_2013()
-    test_1D_2norbs()
