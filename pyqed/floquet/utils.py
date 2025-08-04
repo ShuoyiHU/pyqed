@@ -17,6 +17,24 @@ def load_data_from_hdf5(filename):
     with h5py.File(filename, 'r') as f:
         return (f['band_energy'][:],
                 f['band_eigenstates'][:])
+def save_data_generic(filename, **data_to_save):
+    """Saves any number of numpy arrays to an HDF5 file."""
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    with h5py.File(filename, 'w') as f:
+        for dataset_name, data in data_to_save.items():
+            f.create_dataset(dataset_name, data=data)
+
+def load_data_generic(filename, *dataset_names):
+    """Loads specific datasets from an HDF5 file."""
+    with h5py.File(filename, 'r') as f:
+        loaded_data = {}
+        names_to_load = dataset_names if dataset_names else list(f.keys())
+        for name in names_to_load:
+            if name in f:
+                loaded_data[name] = f[name][:]
+            else:
+                print(f"Warning: Dataset '{name}' not found in {filename}.")
+    return loaded_data
 
 def track_valence_band(k_values, T, E0, omega,
                        previous_val=None, previous_con=None,
@@ -360,4 +378,3 @@ if __name__ == '__main__':
         print("\nResult: The system is a non-trivial Z2 pump (topological).")
     else:
         print("\nResult: The system is a trivial Z2 pump.")
-
