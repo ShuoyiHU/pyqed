@@ -479,7 +479,7 @@ class Ehrenfest:
         # if nac is None:
         #     nac = self.model.nac(x)
             
-        energy,grad, nac = self.model.nonadiabatic_coupling(x)
+        energy, grad, nac = self.model.nonadiabatic_coupling(x)
 
         # diagonal part
         F_diag = - contract('a, ai -> i', np.abs(c)**2, grad)
@@ -548,7 +548,7 @@ class Ehrenfest:
 
                     from pyqed import rk4
 
-                    c[k] = rk4(c, self._rhs_c, dt, x[k], vk)
+                    c[k] = rk4(c[k], self._rhs_c, vk, energy, nac)
                     # ck0 = self.c[k].copy()
                     # k1 = self._rhs_c(ck0,           x[k], vk)
                     # k2 = self._rhs_c(ck0+0.5* dt*k1, x[k], vk)
