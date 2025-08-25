@@ -11,16 +11,23 @@ Ehrenfest dynamcis with Shin-Metiu moddel
 from pyqed.models.ShinMetiu import ShinMetiu2
 import numpy as np
 
-from pyqed.namd.ehrenfest import Ehrenfest
+from pyqed.namd.mf import Ehrenfest
+
+from pyqed import proton_mass as mp
+
 
 mol = ShinMetiu2()
 
 mol.build(domain=[[-10, 10], ] * 2, npts=[31, 31])
 
-ed = Ehrenfest(ndim=mol.ndim, ntraj=10, nstates=mol.nstates, model=mol, mass=[1836, ] * 2)
+ed = Ehrenfest(ndim=mol.ndim, ntraj=1, nstates=mol.nstates, mass=[mp, ] * 2)
 
-ed.run(dt=0.1, nt=10, method='RK4')
+ed.nac_driver = mol.nonadiabatic_coupling
 
+ed.sample(init_state=2, x0=[0, 1.3], ax=18)
+ed.run(dt=0.5, nt=400, nout=2)
+
+rho = ed.rdm()
 
 
 

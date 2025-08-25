@@ -9,7 +9,10 @@ Created on Wed Nov 29 15:40:01 2023
 
 import numpy as np
 from numpy import exp, pi, sqrt, meshgrid
-from pyqed import transform, dag, isunitary, rk4, isdiag, sinc, sort, interval
+# from pyqed import transform, dag, isunitary, rk4, isdiag, sinc, sort, interval
+from pyqed import transform, dag, isunitary, rk4, isdiag, sinc, sort, isherm, interval,\
+    cartesian_product, discretize, norm2
+
 from pyqed.wpd import ResultSPO2, SPO2
 from pyqed.ldr.ldr import LDR2
 from pyqed.nonherm import eig
@@ -25,10 +28,12 @@ from scipy.linalg import inv
 from scipy.sparse import kron, eye
 from scipy.linalg import eigh
 
-try:
-    import proplot as plt
-except:
-    import matplotlib.pyplot as plt
+from copy import copy
+
+# try:
+#     import proplot as plt
+# except:
+#     import matplotlib.pyplot as plt
 
 
 # def kinetic(x, mass=1, dvr='sinc'):
@@ -161,26 +166,66 @@ class NHLDR2(LDR2):
 
     LDR-SincDVR
     """
-    def __init__(self, x, y, nstates=2, ndim=2, mass=None, dvr='sine'):
-        self.x = x
-        self.y = y
-        self.dx = interval(x)
-        self.dy = interval(y)
-        self.nx = len(x)
-        self.ny = len(y)
-        self.nstates = nstates
+    def __init__(self, domains, levels, nstates=2, ndim=2, mass=None, dvr_type='sine'):
 
-        self.kx = 2 * np.pi * scipy.fft.fftfreq(len(x), self.dx)
-        self.ky = 2 * np.pi * scipy.fft.fftfreq(len(y), self.dy)
+        assert(len(domains) == len(levels) == ndim)
 
-        self.nx = len(x)
-        self.ny = len(y)
-
-        self.dvr = dvr
-
+        self.domains = domains
         if mass is None:
             mass = [1, ] * ndim
         self.mass = mass
+
+        self.L = [domain[1] - domain[0] for domain in domains]
+
+        if (ndim > 12):
+            raise ValueError('Dimension D = {} cannot be larger than 10.'.format(ndim))
+
+        x = []
+        w = []
+        dvr = []
+
+        if dvr_type in ['sinc', 'sine']:
+            # uniform grid
+            for d in range(ndim):
+                l = levels[d]
+                # x.append(discretize(*domains[d], levels[d], endpoints=False))
+                # _w = [1/(2**l-1), ] * (2**l-1)
+                # w.append(_w)
+
+                _dvr = SineDVR(*domains[d], 2**l-1, self.mass[d])
+                x.append(_dvr.x)
+                # w.append(_dvr.w)
+                dvr.append(copy(_dvr))
+
+        # elif dvr_type == 'gauss_hermite':
+
+        #     assert x0 is not None
+
+        #     for d in range(ndim):
+        #         _dvr = HermiteDVR(x0[d], levels[d])
+        #         x.append(_dvr.x)
+        #         w.append(_dvr.w)
+        #         dvr.append(_dvr.copy())
+
+        else:
+            raise ValueError('DVR {} is not supported. Please use sinc.')
+
+        self.x, self.y = x
+
+        self.dx = interval(self.x)
+        self.dy = interval(self.y)
+
+        self.nx = len(self.x)
+        self.ny = len(self.y)
+
+        self.nstates = nstates
+
+        self.kx = 2 * np.pi * scipy.fft.fftfreq(len(self.x), self.dx)
+        self.ky = 2 * np.pi * scipy.fft.fftfreq(len(self.y), self.dy)
+
+
+
+        self.dvr = dvr
 
         self.ngrid = [self.nx, self.ny]
 
@@ -202,6 +247,7 @@ class NHLDR2(LDR2):
         self.left_eigenstates = None
         self.apes = None
         self.norm_right = None
+        self.A = None
 
     @property
     def v(self):
@@ -279,19 +325,21 @@ class NHLDR2(LDR2):
 
         mx, my = self.mass
 
-        x = self.x
-        y = self.y
-        nx = self.nx
-        ny = self.ny
+        # x = self.x
+        # y = self.y
+        # nx = self.nx
+        # ny = self.ny
 
         # Tx = kinetic(self.x, mass=mx, dvr=self.dvr)
         # expKx = scipy.linalg.expm(-1j * Tx * dt)
 
-        dvr_x = SineDVR(x[0], x[-1], nx, mass=mx)
+        # dvr_x = SineDVR(x[0], x[-1], nx, mass=mx)
+        dvr_x, dvr_y = self.dvr
+
         Tx = dvr_x.t()
         expTx = dvr_x.expT(dt)
 
-        dvr_y = SineDVR(y[0], y[-1], ny, mass=my)
+        # dvr_y = SineDVR(y[0], y[-1], ny, mass=my)
         Ty = dvr_y.t()
         expTy = dvr_y.expT(dt)
 
@@ -514,7 +562,7 @@ class NHLDR2(LDR2):
 
         # K = self.buildK().reshape((N, N))
 
-        # overlap of electronic states
+        # overlap_LR of electronic states
         A = np.zeros((nx, ny, nx, ny, nstates, nstates), dtype=dtype)
         # self._K = np.zeros((N, N, M, M), dtype=dtype)
 
@@ -528,6 +576,8 @@ class NHLDR2(LDR2):
             A[i, j, i, j] = np.eye(nstates) #* K[i, i] # identity matrix at the same geometry
 
             for l in range(k):
+
+                if l != k:
 
                     ii, jj = np.unravel_index(l, (nx, ny))
 
@@ -616,24 +666,31 @@ class NHLDR2(LDR2):
         psi = psi0.copy()
 
         # psi = np.einsum('ija, ija -> ija', self.exp_V_half, psi)
-        psi = self.exp_V_half * psi
+        # psi = self.exp_V_half * psi
 
+        # for k in range(nt//nout):
+        #     for kk in range(nout):
+
+        #         psi = np.einsum('ijaklb, klb->ija', self.exp_T, psi)
+        #         psi = self.exp_V * psi
+
+        #     r.psilist.append(psi.copy())
+
+        # psi = self.exp_V_half * psi
+        
+        # r.psilist.append(psi.copy())
+        
+        # psi = self.exp_V_half * psi
 
         for k in range(nt//nout):
             for kk in range(nout):
-                # psi = np.einsum('ija, ija -> ija', self.exp_V_half, psi)
-
-                # psi = self._KEO_linear(psi)
-                # psi = np.einsum('ijaklb, klb->ija', self.A, psi)
-
+                
+                psi = self.exp_V_half * psi
                 psi = np.einsum('ijaklb, klb->ija', self.exp_T, psi)
-                psi = self.exp_V * psi
-                # psi = np.einsum('ija, ija -> ija', self.exp_V_half, psi)
+                psi = self.exp_V_half * psi
 
             r.psilist.append(psi.copy())
-
-        psi = self.exp_V_half * psi
-
+        
         return r
 
     def rdm_el(self, psi):
@@ -712,6 +769,94 @@ class NHLDR2(LDR2):
 
         return np.array(xAve)*self.dx*self.dy, np.array(yAve) * self.dx * self.dy
 
+
+
+class NHLDRN:
+    """
+    many-dimensional many-state Non-Hermitian nonadiabatic conical intersection dynamics
+
+    The required input is the complex APES and left-right electronic overlap matrix.
+
+
+    This is extremely expansive, the maximum dimension should be < 4.
+
+    """
+    def __init__(self, domains, levels, ndim=2, nstates=2, x0=None, mass=None, \
+                 dvr_type='sine'):
+
+        assert(len(domains) == len(levels) == ndim)
+
+        self.domains = domains
+        if mass is None:
+            mass = [1, ] * ndim
+        self.mass = mass
+
+        self.L = [domain[1] - domain[0] for domain in domains]
+
+        if (ndim > 12):
+            raise ValueError('Dimension D = {} cannot be larger than 10.'.format(ndim))
+
+        x = []
+        w = []
+        dvr = []
+        if dvr_type in ['sinc', 'sine']:
+            # uniform grid
+            for d in range(ndim):
+                l = levels[d]
+                # x.append(discretize(*domains[d], levels[d], endpoints=False))
+                # _w = [1/(2**l-1), ] * (2**l-1)
+                # w.append(_w)
+
+                _dvr = SineDVR(*domains[d], 2**l-1, self.mass[d])
+                x.append(_dvr.x)
+                # w.append(_dvr.w)
+                dvr.append(copy(_dvr))
+
+        elif dvr_type == 'gauss_hermite':
+
+            assert x0 is not None
+
+            for d in range(ndim):
+                _dvr = HermiteDVR(x0[d], levels[d])
+                x.append(_dvr.x)
+                w.append(_dvr.w)
+                dvr.append(_dvr.copy())
+
+        else:
+            raise ValueError('DVR {} is not supported. Please use sinc.')
+
+
+        self.x = x
+        self.w = w # weights
+        self.dvr = dvr
+        self.dx = [interval(_x) for _x in x]
+        self.nx = [len(_x) for _x in x]
+
+        self.dvr_type = [dvr_type, ] * ndim
+
+
+
+        self.nstates = nstates
+        self.ndim = ndim
+
+        # all configurations in a vector
+        self.points = np.fliplr(cartesian_product(x))
+        self.ntot = len(self.points)
+
+        ###
+        self.H = None
+        self.K = None
+        # self._V = None
+
+        self._v = None # DPEM
+
+        self.exp_K = None
+        self.exp_V = None
+        self.exp_T = None # dressed KEO in LDR
+        self.Alr = self.A = None # left-right global overlap matrix
+        self.Arr = None
+        self.apes = None
+        self.dpem = None # diabatic potential energy matrix
 
 
 

@@ -95,10 +95,10 @@ def logarithmic_discretize(n, base=2):
     Returns
     -------
     TYPE
-        :math:`\Lambda^{-n}, n = 0, 1 ...` in descending order.
+        :math:`\Lambda^{-m}, m = 0, 1 ...n-1.` in descending order.
 
     """
-    return list(reversed(np.logspace(-n, 0, n+1, base=base, endpoint=True)))
+    return list(reversed(np.logspace(-(n-1), 0, n, base=base, endpoint=True)))
 
 
 def integrate(f, a, b, **args):

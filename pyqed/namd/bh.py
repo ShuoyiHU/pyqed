@@ -474,8 +474,8 @@ def hpsi_full(psi, kx, ky, vmat, nac_x, nac_y, coordinates='linear', \
 #     #f.close()
 #     return psi
 
-class BH2:
-    def __init__(self, x, y, mass=[1,1], nstates=2):
+class BornHuang2:
+    def __init__(self, x, y, mass=[1,1], nstates=2, ndim=2):
         """
         2D non-adiabatic wave packet dynamics in
         adiabatic representation using RK4 integrator

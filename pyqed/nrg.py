@@ -310,6 +310,84 @@ class NRG:
         E, U = eigsh(H, k=6)
         
 
+
+# import numpy as np
+# from hamiltonian_not_diagonal import form_not_diagonal_hamiltonian
+
+def XYZ(L=12, L0=4, JX=1, JY=1, JZ=1):
+    """
+    NRG for Heisenberg XYZ model 
+    
+    .. math::
+        H = \sum_{<i,j>} -J_z Z_i Z_j - J_x X_i X_j - J_y Y_i Y_j
+    
+    where X, Y, Z are spin-half operators. 
+    
+    Ref:
+        
+    https://quantum-spin-systems.readthedocs.io/en/latest/chapter2_eng.html#numerical-renormalization-group-nrg-method
+
+    Returns
+    -------
+    TYPE
+        DESCRIPTION.
+
+    """
+
+    NUMBER_OF_SPINS_APPROXIMATION = 4
+    
+    SX = 0.5 * np.array([(0, 1), (1, 0)])
+    SY = 0.5 * np.array([(0, -1j), (1j, 0)])
+    SZ = 0.5 * np.array([(1, 0), (0, -1)])
+    
+    
+    # %% Create Hamiltonian m*m by the iterative way
+    
+    hamiltonian = -JZ * np.kron(SZ, SZ) - JX * np.kron(SX, SX) - JY * np.kron(SY, SY)
+    
+    for i in range(NUMBER_OF_SPINS_APPROXIMATION - 2):
+        i = i + 1
+        sx_tilde = np.kron(np.eye(2 ** i), SX)
+        sy_tilde = np.kron(np.eye(2 ** i), SY)
+        sz_tilde = np.kron(np.eye(2 ** i), SZ)
+        
+        hamiltonian = np.kron(hamiltonian, np.eye(2)) - JZ * np.kron(sz_tilde, SZ) - \
+            JX * np.kron(sx_tilde, SX) - JY * np.kron(sy_tilde, SY)
+    
+    # % tilde operators
+    sx_tilde = np.kron(np.eye(2), sx_tilde)
+    sy_tilde = np.kron(np.eye(2), sy_tilde)
+    sz_tilde = np.kron(np.eye(2), sz_tilde)
+    
+    # %% Normal Renormalization Group
+    
+    for i in range(NUMBER_OF_SPINS_APPROXIMATION+2, L+2):
+        
+        [eigen_values, eigen_vectors] = np.linalg.eigh(hamiltonian)
+        
+        hamiltonian = eigen_vectors.T @ hamiltonian @ eigen_vectors
+        
+        hamiltonian = hamiltonian[:2**NUMBER_OF_SPINS_APPROXIMATION,
+                                  :2**NUMBER_OF_SPINS_APPROXIMATION]
+        
+        eigen_vectors = eigen_vectors[:2**NUMBER_OF_SPINS_APPROXIMATION,
+                                      :2**NUMBER_OF_SPINS_APPROXIMATION]
+        
+        sx_tilde = eigen_vectors.T @ sx_tilde @ eigen_vectors
+        sy_tilde = eigen_vectors.T @ sy_tilde @ eigen_vectors
+        sz_tilde = eigen_vectors.T @ sz_tilde @ eigen_vectors
+        
+        hamiltonian = np.kron(hamiltonian, np.eye(2)) - JZ * np.kron(sz_tilde, SZ) - \
+            JX * np.kron(sx_tilde, SX) - JY * np.kron(sy_tilde, SY)
+    
+    return np.linalg.eigh(hamiltonian)
+    
+
+# %% Compare with certain results
+
+# [eigen_values_nrg_certain, eigen_vectors_nrg_certain] = \
+#     np.linalg.eigh(form_not_diagonal_hamiltonian(1, NUMBER_OF_SPINS_FINAL)[0])
+
 if __name__=='__main__':
     
     I, X, Y, Z = pauli()
@@ -330,15 +408,14 @@ if __name__=='__main__':
     # a = mol.promote(a, subspace='B')
     # a = mol.transform_basis(a)
     
-    nrg = NRG(H)
+    # nrg = NRG(H)
+    # x, g = discretize(J, 0, 10, 10, mesh='log')
+
+    # print(x, g)
     
-    # x, g = nrg.discretize(10)
+    e, u = XYZ()
 
-    x, g = discretize(J, 0, 10, 10, mesh='log')
-
-    print(x, g)
-    
-
+    print(e)
     
     
     # build the overlap matrix

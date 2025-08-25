@@ -323,11 +323,42 @@ class AbInitioEhrenfestTrajectory(EhrenfestTrajectory, Molecule):
     #     pass
 
 class TDDFTDriver:
-    def __init__(self, atom):
+    def __init__(self, mol, nstates):
+        """
+        NAC driver for Ehrenfest dynamics based on PySCF/TDDFT
+
+        Parameters
+        ----------
+        mol : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        None.
+
+        """
+        self.mol = mol 
+        self.ks = mol.apply("RKS").run()
+        self.td = self.ks.apply("TDRKS")
+        self.td.nstates = nstates
+        self.nstates = nstates 
+        
         return
+    
+    def grad(self):
+        g = np.zeros((self.nstates))
+        
+        for n in range(self.nstates):
+            g[n] = self.td.nuc_grad_method().kernel(state=n)
+            
+        return g
 
     def nonadiabatic_coupling(self):
+        pass
+    
+    def as_scanner(self):
         # return e, grad, nac
+
         pass
 
 class Ehrenfest:
@@ -666,14 +697,15 @@ class Ehrenfest:
                     #     if angle(traj.nac_prev, traj.nac)
                     
                     # print(angle(traj.nac_prev[0, 1], traj.nac[0,1]))
-
-                    traj.force = force(traj.x, traj.c, traj.energy, traj.grad, traj.nac)
-
+                    
+                    # half-step x
+                    traj.x += dt2 * traj.p / mass
+                    
                     # half p
+                    traj.force = force(traj.x, traj.c, traj.energy, traj.grad, traj.nac)
                     traj.p += dt2 * traj.force
 
-                    # half-step x
-                    traj.x += dt2 * traj.p_prev / mass
+
                     
                     
 
@@ -683,8 +715,6 @@ class Ehrenfest:
                 print(xAve)
 
                     #     traj.c += dt * self._dc(traj.c, v, energy, nac)
-
-        # self.trajs = trajs
 
         return self
 
