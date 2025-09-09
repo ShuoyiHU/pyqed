@@ -13,6 +13,54 @@ import scipy as sp
 import sys
 import heapq
 from functools import reduce
+import math
+
+def householder(a): 
+    """
+    
+    tridiagonalize a matrxi by Householder method 
+    
+    .. math::
+        T = P.T a P
+
+    Parameters
+    ----------
+    a : TYPE
+        DESCRIPTION.
+
+    Returns
+    -------
+    TYPE
+        DESCRIPTION.
+    TYPE
+        DESCRIPTION.
+    p : TYPE
+        DESCRIPTION.
+
+    """
+    n = len(a)
+    for k in range(n-2):
+        u = a[k+1:n,k]
+        uMag = math.sqrt(np.dot(u,u))
+        if u[0] < 0.0: uMag = -uMag
+        u[0] = u[0] + uMag
+        h = np.dot(u,u)/2.0
+        v = np.dot(a[k+1:n,k+1:n],u)/h
+        g = np.dot(u,v)/(2.0*h)
+        v = v - g*u
+        a[k+1:n,k+1:n] = a[k+1:n,k+1:n] - np.outer(v,u) \
+                         - np.outer(u,v)
+        a[k,k+1] = -uMag
+    
+    # transformation matrix
+    p = np.identity(n)*1.0
+    for k in range(n-2):
+        u = a[k+1:n,k]
+        h = np.dot(u,u)/2.0
+        v = np.dot(p[1:n,k+1:n],u)/h           
+        p[1:n,k+1:n] = p[1:n,k+1:n] - np.outer(v,u)    
+    
+    return np.diagonal(a),np.diagonal(a,1), p
 
 
 def eigh(a, k=None, **args):

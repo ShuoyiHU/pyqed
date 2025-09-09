@@ -3,6 +3,9 @@
 """
 Created on Fri Dec 27 23:40:10 2024
 
+
+Exact diagonalization for quantum chemistry
+
 @author: bingg
 """
 
@@ -17,18 +20,13 @@ atom= 'H 0, 0, -3.6; \
 
 mol = Molecule(atom, basis='sto6g')
 
-# import os
-# print(os.path.dirname(__file__))
-
-print(mol.natom)
-
 
 mol.build()
 
 
 #print(mol.eri.shape)
 mf = mol.RHF().run()
-print(mf.mo_occ)
+# print(mf.mo_occ)
 
 # FCI(mf).run(3)
 
@@ -38,4 +36,6 @@ eri = mf.get_eri_mo()
 
 model = SpinHalfFermionChain(h1e, eri, [mol.nelec//2, mol.nelec//2])
 model.run()
+
+# model.make_rdm1()
 # model = SpinHalfFermionChain(h1e, eri)
