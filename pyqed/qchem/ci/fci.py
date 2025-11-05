@@ -14,11 +14,11 @@ https://chemrxiv.org/engage/api-gateway/chemrxiv/assets/orp/resource/item/651592
 import numpy as np
 
 from itertools import combinations
-from pyscf import ao2mo, scf
+from pyscf import ao2mo
 from scipy.sparse.linalg import eigsh
-from functools import reduce
+# from functools import reduce
 
-from pyscf.ao2mo.outcore import general_iofree as ao2mofn
+# from pyscf.ao2mo.outcore import general_iofree as ao2mofn
 from opt_einsum import contract
 
 from pyqed.qchem.hf.rhf import RHF
@@ -30,6 +30,12 @@ def get_SO_matrix(mf, SF=False, H1=None, H2=None):
 
     SF: bool
         spin-flip
+
+    Returns
+    =======
+    H1: list of hcore matrices
+        hcore
+    H2: eri
     """
     # from pyscf import ao2mo
 
@@ -459,6 +465,7 @@ def SlaterCondon(Binary):
 def CI_H(Binary, H1, H2, SC1, SC2):
     """
     Explicitly construct the CI Hamiltonian Matrix
+
     GIVEN: H1 (1-body Hamtilonian)
     H2 (2-body Hamtilonian)
 
@@ -472,7 +479,7 @@ def CI_H(Binary, H1, H2, SC1, SC2):
     I_A, J_A, a_t , a, I_B, J_B, b_t , b, ca, cb = SC1
     I_AA, J_AA, aa_t, aa, I_BB, J_BB, bb_t, bb, I_AB, J_AB, ab_t, ab, ba_t, ba = SC2
 
-    # sum of MO energies
+    # sum of MO energies I: configuration index, S: spin index, p: MO index
     H_CI = np.einsum("Spp, ISp -> I", H1, Binary, optimize=True)
 
     # ERI
@@ -609,12 +616,12 @@ if __name__=='__main__':
     # from pyscf.fci import FCI
 
     from pyqed.qchem.mol import get_hcore_mo, get_eri_mo, Molecule
-    from pyqed.qchem.jordan_wigner.spinful import SpinHalfFermionChain
+    # from pyqed.qchem.jordan_wigner.spinful import SpinHalfFermionChain
     # from pyqed.qchem.hf import RHF
 
     # mol = gto.Mole()
     mol = Molecule(atom = [
-        # ['H' , (0. , 0. , 0)],
+        ['H' , (0. , 0. , 0)],
         ['Li' , (0. , 0. , 1.4)]])
 
     mol.basis = 'sto3g'
@@ -628,9 +635,21 @@ if __name__=='__main__':
 
     print(mol.eri.shape)
 
+    Binary = get_fci_combos(mf)
 
-    fci = FCI(mf).run()
-    print(fci.e_tot)
+    print('Number of determinants', Binary.shape[0])
+
+    H1, H2 = get_SO_matrix(mf)
+
+    SC1, SC2 = SlaterCondon(Binary)
+    # H_CI = CI_H(Binary, H1, H2, SC1, SC2)
+
+    # fci = FCI(mf).run()
+    # print(fci.e_tot)
+
+    I_A, J_A, a_t , a, I_B, J_B, b_t , b, ca, cb = SC1
+
+    print(I_A.shape, ca.shape)
 
     #### benchmark with FCI/pyscf
 

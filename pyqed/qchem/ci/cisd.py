@@ -23,6 +23,8 @@ from pyqed import dag
 from pyqed.qchem.ci.fci import SlaterCondon, CI_H, get_SO_matrix
 
 
+from pyqed.qchem.ci.cis import CI
+
 def givenΛgetB(ΛA, ΛB, N_mo):
     "Given Λ(i occupied orbitals for each determinant) get B (binary rep.)"
     Binary = np.zeros((ΛA.shape[0], 2, N_mo), dtype=np.int8)
@@ -139,36 +141,6 @@ def determinantsign(Binary):
 
 
 
-
-
-class CI:
-    def __init__(self, mf, frozen=None, max_cycle=50):
-
-#        assert(isinstance(mf, (scf.rhf.RHF, RHF)))
-
-        self.mf = mf
-        self.mol = mf.mol
-        self.mo_energy = mf.mo_energy
-        self.mo_coeff = mf.mo_coeff
-
-        # self.nstates = nstates
-
-        self.nao = mf.mol.nao
-        self.nmo = self.nao
-
-        self.nocc = mf.mol.nelec//2
-
-        self.max_cycle = max_cycle
-
-        self.nso = self.nmo * 2
-
-
-        # self.mo_energy = np.zeros(self.nso)
-        # self.mo_energy[0::2] = self.mo_energy[1::2] = mf.mo_energy
-
-
-        self.binary = None
-        self.H = None
 
 
 

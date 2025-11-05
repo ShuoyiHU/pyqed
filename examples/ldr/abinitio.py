@@ -38,7 +38,7 @@ def neighbor(n, d, dims):
     Parameters
     ----------
     n : TYPE
-        DESCRIPTION.
+        flattened index.
     d : TYPE
         DESCRIPTION.
     dims : TYPE
@@ -730,7 +730,7 @@ def overlap_matrix(cibra, ciket):
     return S
 
 if __name__=='__main__':
-    from pyqed.phys import gwp
+    from pyqed.phys import gwp2
     from pyqed.units import au2fs
     from pyqed.qchem import Molecule
 
@@ -752,12 +752,7 @@ if __name__=='__main__':
 
         """
         l = 2
-        left = np.array([-l / 2, 0, 0])
-        right = np.array([ l/2, 0, 0])
-        R = [0, 0, 0]
-
-        R = x  + [0]
-        return R
+        return np.array([-l/2, 0, 0], [x[0], x[1], 0], [ l/2, 0, 0])
 
     ndim = 2 # Number of nuclear degrees of freedom
     nstates = 3 # Number of electronic states
@@ -796,7 +791,7 @@ if __name__=='__main__':
     mol = Molecule(atom, charge=1, basis='631g')
     mol.build()
 
-    driver = QChemDriver(mol, nstates=nstates, method='cisd')
+    driver = QChemDriver(mol, nstates=nstates)
     # apes = mol.scan_pes()
 
 
@@ -810,13 +805,13 @@ if __name__=='__main__':
     for i in range(npts):
             # q = [x[i], y[j]] # reactive coordinates
 
-            R = coord_transform(ldr.points[i]) # transform to Cartesian coordinates
+        R = coord_transform(ldr.points[i]) # transform to Cartesian coordinates
 
-            myci = driver.run(R)
+        myci = driver.cisd(R)
 
-            v[i] = myci.e_tot
+        v[i] = myci.e_tot
 
-            ci_list.append(myci)  # Store all energy states for the configuration
+        ci_list.append(myci)  # Store all energy states for the configuration
 
     # with open('qchem_data_total.pkl', 'wb') as f:
     #     pickle.dump(pes_data, f)
@@ -828,7 +823,7 @@ if __name__=='__main__':
 
     links = lpa.link()
 
-    A = lpa.approximate_overlap()
+    A = lpa.global_overlap()
 
   #psi0 = ldr.initialize_wavepacket(ref_geom=ref_geom, idx0=0, idx1=0, a=10, A=overlap_matrix, target_state=1)
 
@@ -841,13 +836,11 @@ if __name__=='__main__':
 
 
     psi0 = np.zeros((nx, ny, nstates), dtype=complex)
-    for i in range(nx):
-        for j in range(ny):
-            x = np.array([ref_geom[0][i], ref_geom[1][j]])
-            psi0[i, j, 1] = gwp(x, a=30, x0=[0,0], ndim=2)
-
+    x, y = ldr.x 
+    psi0[:,:,1] = gwp2(x, y, a=np.eye(2) * 30)
+    
     # project it into the computational space using the overlap matrix
-    psi0 = np.einsum('ijk,ij->ijk', A[:, :, :, idx0, idx1, target_state], psi0[:,:,target_state])
+    psi0 = np.einsum('ijk,ij->ijk', A[:, :, :, 10, 10, 1], psi0[:,:,1])
 
     ldr.run(psi0, dt=0.2, nt=1000)
 

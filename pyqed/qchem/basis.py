@@ -348,6 +348,34 @@ def ERI(a,b,c,d):
                     d.exps[jd],d.shell,d.origin)
     return eri
 
+ALIAS = {
+    '631g'       : '6-31g.1.gbs',
+    'sto3g'      : "sto-3g.1.gbs",
+    'sto6g'      : 'sto-6g.1.gbs',
+    '631g**'     : "6-31g_st__st_.0.gbs",
+    '6311g**'    : "6-311g_st__st_.0.gbs",
+    '6311g'      : "6-311g.0.gbs",
+    '631g++'     : "/6-31g++.gbs",
+    'ccpvdz'     : 'cc-pvdz.0.gbs'    ,
+    'ccpvtz'     : 'cc-pvtz.dat'    ,
+    'ccpvqz'     : 'cc-pvqz.dat'    ,
+    'ccpv5z'     : 'cc-pv5z.dat'    ,
+    'ccpvdpdz'   : 'cc-pvdpdz.dat'  ,
+    'augccpvdz'  : 'aug-cc-pvdz.dat',
+    'augccpvtz'  : 'aug-cc-pvtz.dat',
+    'augccpvqz'  : 'aug-cc-pvqz.dat',
+    'augccpv5z'  : 'aug-cc-pv5z.dat',
+    'augccpvdpdz': 'aug-cc-pvdpdz.dat',
+    'ccpvdzdk'   : 'cc-pvdz-dk.dat' ,
+    'ccpvtzdk'   : 'cc-pvtz-dk.dat' ,
+    'ccpvqzdk'   : 'cc-pvqz-dk.dat' ,
+    'ccpv5zdk'   : 'cc-pv5z-dk.dat' ,
+    'ccpvdzdkh'  : 'cc-pvdz-dk.dat' ,
+    'ccpvtzdkh'  : 'cc-pvtz-dk.dat' ,
+    'ccpvqzdkh'  : 'cc-pvqz-dk.dat' ,
+    'ccpv5zdkh'  : 'cc-pv5z-dk.dat' ,
+}
+
 def build(mol):
     """
     build electronic integrals in AO using GBasis package
@@ -366,45 +394,30 @@ def build(mol):
     atcoords = mol.atom_coords()
     atnums = mol.atom_charges()
 
-    basis_dir = os.path.abspath(f'{pyqed.__file__}/../qchem/')
+    basis_dir = os.path.abspath(f'{pyqed.__file__}/../qchem/basis_set/')
 
     if isinstance(mol.basis, str):
 
-        if mol.basis.replace('-','').lower() == '631g':
-
-            # Obtain basis functions from the basis set files
-            basis_dict = parse_gbs(basis_dir + "/6-31g.1.gbs")
-
-        elif mol.basis.replace('-','').lower() == 'sto3g':
-
-            basis_dict = parse_gbs(basis_dir + "/sto-3g.1.gbs")
-
-        elif mol.basis.replace('-','').lower() == 'sto6g':
-
-            basis_dict = parse_gbs(basis_dir + "/sto-6g.1.gbs")
-
-        elif mol.basis.replace('-','').lower() == '6311g':
-
-            basis_dict = parse_gbs(basis_dir + "/6-311g.0.gbs")
-
-
-
+        basis_dict = parse_gbs(basis_dir + '/' + ALIAS[mol.basis.replace('-','').lower()])
         basis = make_contractions(basis_dict, atoms, atcoords, coord_types="p")
     else:
 
         raise NotImplementedError('Customized basis not supported yet.')
 
+    # To obtain the total number of AOs we check for each shell its angular momentum and coordinate type
     total_ao = 0
     for shell in basis:
-        total_ao += shell.angmom_components_cart.shape[0]
+        if shell.coord_type == "cartesian":
+            total_ao += shell.angmom_components_cart.shape[0]
+        elif shell.coord_type == "spherical":
+            total_ao += len(shell.angmom_components_sph)
 
     mol.nao = total_ao
 
-    print("Number of generalized shells:", len(basis))
+    print("Number of AOs = ", mol.nao)
 
     # compute overlap integrals in AO basis
     mol.overlap = overlap_integral(basis)
-
 
 
     # olp_mo = overlap_integral(basis, transform=mo_coeffs.T)

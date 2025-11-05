@@ -21,7 +21,7 @@ from itertools import combinations
 import warnings
 
 from pyqed.qchem.ci.fci import givenΛgetB, SpinOuterProduct
-from pyqed.qchem.dvr import RHF, RHF1D, RHF2D
+from pyqed.qchem.dvr import RHF1D
 
 
 
@@ -60,17 +60,24 @@ class CASCI:
 
         """
         self.ncas = ncas # number of MOs
+
+
+
         if self.ncas > 10:
             warnings.warn('Active space with {} orbitals is probably too big.'.format(self.ncas))
 
         self.nstates = None
         if nelecas is None:
-            nelecas = mf.mol.nelec
+            self.nelecas = mf.mol.nelec
+            self.ncore = 0
+        else:
+            raise ValueError('For now all electrons have to be active.')
+            self.nelecas = nelecas
+            self.ncore = mf.nelec//2 - nelecas//2 # core orbs
 
-        if nelecas <= 2:
+
+        if self.nelecas <= 2:
             print('Electrons < 2. Use CIS or CISD instead.')
-
-        self.nelecas = nelecas
 
 
         self.mf = mf
@@ -78,6 +85,8 @@ class CASCI:
         self.chemical_potential = mu
 
         self.mo_coeff = mf.mo_coeff
+
+        self.binary = None
 
     def get_SO_matrix(self, SF=False, H1=None, H2=None):
         """
@@ -257,13 +266,23 @@ class CASCI:
 
         mf = self.mf
         ncas = self.ncas
+        ncore = self.ncore
 
         mo_occ = mf.mo_occ[:, :ncas]/2
+
+        print(mo_occ)
+
+
+        # mo_occ = self.mf.mo_occ[self.ncore: self.ncore+ncas]/2
+
 
         mf.mo_coeff = mf.mo_coeff[:, :ncas]
 
         Binary = get_fci_combos(mo_occ)
-        print('Binary shape', Binary.shape)
+
+        # print('Binary shape', Binary.shape)
+
+        self.binary = Binary
 
         # build the 1e and 2e Hamiltonian in MOs
 
@@ -318,6 +337,168 @@ class CASSCF(CASCI):
     """
     def run(self):
         pass
+
+# def nonorthogonal_transition_density_matrix(cibra, ciket, h1e=None, h2e=None):
+
+def overlap(cibra, ciket, h1e=None, h2e=None, return_tdm1=False):
+    '''s
+    Overlap between two nonorthogonal determinant wavefunctions with
+    a common set of orthonormal AOs.
+
+    For non-orthogonal AOs, the code can be easily adapted.
+
+    .. math::
+
+        \gamma^{II'}_{qp} = \langle \Phi_I | p^\dag q | \Phi_{I'}\rangle
+
+        \Gamma_{pqrs} = \langle \Phi_I | p^\dag r^\dag s q | \Phi_{I'}\rangle
+
+        C_I^* Tr{O \gamma^{II'} } C_{I'}
+
+    where Phi denotes Slater determinant and p,q,r,s refers to orthonormal AOs.
+
+    CASCI electronic overlap matrix
+
+    The MO overlap is a block matrix
+
+    for Restricted calculation only! (spin unpolarized.)
+
+    TODO: unrestricted HF.
+
+    S = [S_CC, S_CA]
+        [S_AC, S_AA]
+
+
+
+    Compute the overlap between Slater determinants first
+    and contract with CI coefficients
+
+    Parameters
+    ----------
+    cibra : TYPE
+        DESCRIPTION.
+    binary1 : TYPE
+        DESCRIPTION.
+    ciket : TYPE
+        DESCRIPTION.
+    h1e: ndarray
+        single-electron operators to be contracted with the 1e NO-TDM
+    binary2 : TYPE
+        DESCRIPTION.
+    s : TYPE
+        AO overlap.
+
+
+
+    Args:
+        s : 2D array
+            The overlap matrix of non-orthogonal one-particle basis
+
+    Returns
+    -------
+    None.
+
+    Refs:
+        Ulsuno, Comp Phys Comm 2013
+
+
+    '''
+    # nstates = len(cibra) + 1
+
+    # overlap matrix between MOs at different geometries
+    # if s is None:
+
+    #     from gbasis.integrals.overlap_asymm import overlap_integral_asymmetric
+
+    #     s = overlap_integral_asymmetric(cibra.mol._bas, ciket.mol._bas)
+    #     s = reduce(np.dot, (cibra.mf.mo_coeff.T, s, ciket.mf.mo_coeff))
+
+    try:
+        assert(isinstance(cibra.mf, RHF1D))
+    except:
+        raise Warning('use RHF.')
+
+    C1 = cibra.mf.mo_coeff
+    C2 = ciket.mf.mo_coeff
+
+    s = dag(C1) @ C2 # MO overlap
+    sinv = np.linalg.inv(s)
+
+    nao = C1.shape[0] # number of AOs
+
+    nsd_bra = cibra.binary.shape[0]
+    nsd_ket = ciket.binary.shape[0]
+
+    S = np.zeros((nsd_bra, nsd_ket)) # overlap between determinants
+    S1 = np.zeros((nsd_bra, nsd_ket))
+
+    ncore_bra = cibra.ncore
+    ncore_ket = ciket.ncore
+
+    # scc = s[:ncore_bra, :ncore_ket]
+    # sca = s[:ncore_bra, ncore_ket:]
+    # sac = s[ncore_bra:, :ncore_ket]
+    # saa = s[ncore_bra:, ncore_ket:]
+
+    # scc_det = np.linalg.det(scc)
+    # scc_inv = np.linalg.inv(scc)
+
+    # for I in range(nsd_bra):
+    #     occidx1_a  = [i for i, char in enumerate(cibra.binary[I, 0]) if char == 1]
+    #     occidx1_b  = [i for i, char in enumerate(cibra.binary[I, 1]) if char == 1]
+
+    #     for J in range(nsd_ket):
+    #         occidx2_a  =  [i for i, char in enumerate(ciket.binary[J, 0]) if char == 1]
+    #         occidx2_b  =  [i for i, char in enumerate(ciket.binary[J, 1]) if char == 1]
+
+            # print('b', occidx2_a, occidx2_b)
+            # print(ciket.binary[J])
+
+    # TODO: the overlap matrix can be efficiently computed for CAS factoring out the core-electron overlap.
+            # saa_occ_a = saa[np.ix_(occidx1_a, occidx2_a)]
+            # sca_occ_a = sca[:, occidx2_a]
+            # sac_occ_a = sac[occidx1_a, :]
+
+            # saa_occ_b = saa[np.ix_(occidx1_b, occidx2_b)]
+            # sca_occ_b = sca[:, occidx2_b]
+            # sac_occ_b = sac[occidx1_b, :]
+
+            # S[I, J] = scc_det**2 * np.linalg.det(saa_occ_a - sac_occ_a @ scc_inv @ sca_occ_a)*\
+            #     np.linalg.det(saa_occ_b - sac_occ_b @ scc_inv @ sca_occ_b)
+
+
+
+    core_bra = list(range(cibra.ncore))
+    core_ket = list(range(ciket.ncore))
+
+    for I in range(nsd_bra):
+
+        occidx1_a  = core_bra + [i + ncore_bra for i, char in enumerate(cibra.binary[I, 0]) if char == 1]
+        occidx1_b  = core_bra + [i + ncore_bra for i, char in enumerate(cibra.binary[I, 1]) if char == 1]
+
+        for J in range(nsd_ket):
+            occidx2_a  = core_ket + [i + ncore_ket for i, char in enumerate(ciket.binary[J, 0]) if char == 1]
+            occidx2_b  = core_ket + [i + ncore_ket for i, char in enumerate(ciket.binary[J, 1]) if char == 1]
+
+            # print('b', occidx2_a, occidx2_b)
+            # print(ciket.binary[J])
+
+    # TODO: the overlap matrix can be efficiently computed for CAS factoring out the core-electron overlap.
+
+            S[I, J] = np.linalg.det(s[np.ix_(occidx1_a, occidx2_a)]) * \
+                      np.linalg.det(s[np.ix_(occidx1_b, occidx2_b)])
+
+            D = (C1[:, occidx1_a] @ sinv @ dag(C2[:, occidx2_a]) + \
+                C1[:, occidx1_b] @ sinv @ dag(C2[:, occidx2_b])) * S[I,J]
+
+            S1[I, J] = np.trace(h1e @ D)
+
+
+    overlap = contract('IB, IJ, JA', cibra.ci.conj(), S, ciket.ci)
+    tdm1 = contract('IB, IJ, JA', cibra.ci.conj(), S1, ciket.ci)
+
+    return overlap, tdm1
+
 
 
 def get_fci_combos(mo_occ):

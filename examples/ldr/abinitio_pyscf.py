@@ -610,21 +610,25 @@ class QChemDriver:
         # self.y = reference_geometry[1]
 
         self.ci = None
+        self.overlap = None # callable 
 
         return
 
-    def run(self, R):
+    def run(self, R, *args):
 
         self.mol.set_geom_(R)
 
         if self.method == 'cisd':
             return self.cisd()
+        elif self.method == 'casscf':
+            return self.casscf(*args)
         else:
+        
             raise ValueError('Method {} is not supported. Try cisd.'.format(self.method))
 
-    def cisd(self, R, *args):
+    def cisd(self, *args):
 
-        self.mol.set_geom_(R) # update geometry
+        self.mol.set_geom_(R)
 
         mf = scf.RHF(self.mol, *args)
         # mf.init_guess = 'atom'  # Use 'atom' initial guess method
@@ -639,16 +643,52 @@ class QChemDriver:
         self.ci = myci.ci
 
         return self
+    
+    def casscf(self, ncas, nelecas, mo_indices=None, weights=None):
+        
+        from pyscf import mcscf
+        
+        self.mol.set_geom_(R)
 
+        
+        mf = scf.RHF(self.mol).run()
+        mc = mcscf.CASSCF(mf, ncas, nelecas)
+        mc.fcisolver.spin = self.mol.spin
+        # mc.ncore = 3
+        
+        if weights is None:
+            nstates = self.nstates
+            weights = np.ones(nstates)/nstates # state average CAS
+            mc = mc.state_average_(weights)
+            
+        mc.fix_spin_(ss=0, shift=0.5) # singlet spin
+        
+        mc.max_cycle_macro = 100
+        mc.max_cycle_micro = 50
+        mc.conv_tol = 1e-7
+        mc.fcisolver.max_memory = 50000
+        
+        mo = mc.sort_mo(mo_indices)
+
+        mc = mcscf.newton(mc)
+        mc.kernel(mo)
+    
+        return mc 
+    
         # return {
-        #     'e_s0': myci.e_tot[0],
-        #     'e_s1': myci.e_tot[1],
-        #     'e_s2': myci.e_tot[2],
-        #     'mo_coeff': mf.mo_coeff,
-        #     'mo_energy': mf.mo_energy,
+        #     'e_states': mc.e_states,
+        #     'mo_coeff': mc.mo_coeff,
+        #     'ci_vector': mc.ci,
         #     'mol_basis': mf.mol.basis,
         #     'mol_atom': mf.mol.atom,
-        #     'ci_vector': myci.ci
+        #     'ncas': mc.ncas,
+        #     'nelecas': mc.nelecas,
+        #     'nmo': mc.mo_coeff.shape[1],
+        #     'ovlp_ao': mf.mol.intor_symmetric('int1e_ovlp'),
+        #     'mo_orbitals_indices': list(mo_indices),
+        #     'charge': mf.mol.charge,
+        #     'spin': mf.mol.spin,     
+        #     'unit': mf.mol.unit,
         # }
 
 

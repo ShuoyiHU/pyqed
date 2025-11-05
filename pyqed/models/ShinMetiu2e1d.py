@@ -766,7 +766,7 @@ class AtomicChain(ShinMetiu1d):
     """
     1D chain of atoms
     """
-    def __init__(self, R, nstates=None, charge=0, dvr_type='sine', spin=0, Z=1, diag_method = 'scipy'):
+    def __init__(self, R, Rf=1, nstates=None, charge=0, dvr_type='sine', spin=0, Z=1, diag_method = 'scipy'):
 
         self.geometry = self.atom_coords = self.R = R
         self.nuc_charge = Z
@@ -779,6 +779,7 @@ class AtomicChain(ShinMetiu1d):
         super().__init__(method = diag_method, nstates=nstates, nelec=self.nelec, \
                        dvr_type=dvr_type, spin=spin)
 
+        self.Rf = Rf
 
     def v_en(self, r):
         """

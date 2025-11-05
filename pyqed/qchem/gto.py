@@ -3,7 +3,7 @@
 Created on Tue Mar  7 10:48:35 2017
 
 
-Full CI calculation for H2
+Our own basis set and integral calculation
 
 Main structure:
     1. functions dealing with all integrals
@@ -17,9 +17,34 @@ from scipy.special import erf
 from numpy import sqrt, exp
 import scipy
 
+from pyqed import qchem
 
 pi = np.pi
 
+class Molecule(qchem.Molecule):
+    
+    def build(self):
+        """
+        build AO integrals using raw implementation 
+        """
+        basis = [] 
+        for atm_id in self.natom:
+            basis.append(sto3g_hydrogen(center=self.atom_coord(atm_id)))
+        
+        self.basis = basis
+        
+        self.nbas = len(basis)
+        
+        return self
+            
+    
+    def electron_nuclear_attraction(self, gradient=False):
+        pass
+    
+    def overlap_integral(self, gradient=False):
+        pass
+    
+    
 
 class Gaussian:
     def __init__(self, alpha, center, i=0, j=0, k=0, cartesian=True):
@@ -35,10 +60,10 @@ class Gaussian:
         self.j = j
         self.k = k
 
-class ContractedGaussian:
+class CGF:
     def __init__(self,n,d,g):
         """
-        contracted Gaussians
+        contracted Gaussian functions
         .. math::
             \phi = \sum_i=1^n d_i g_i
 
@@ -48,6 +73,8 @@ class ContractedGaussian:
         self.n = n
         self.d = d
         self.g = g
+        
+        self.shell = None 
 
         return
 
@@ -100,11 +127,31 @@ def sto3g_helium(center):
 
 
 
-#The overlap integrals describe how the basis functions overlap
-#as the atom centered gaussian basis functions are non-orthognal
-#they have a non-zero overlap. The integral has the following form:
-#S_{ij} = \int \phi_i(r-R_a) \phi_j(r-R_b) \mathrm{d}r
+
 def overlap_integral_sto(b1, b2):
+    """
+    The overlap integrals describe how the basis functions overlap
+    as the atom centered gaussian basis functions are non-orthognal
+    they have a non-zero overlap. The integral has the following form:
+        
+    .. math::
+        
+        S_{ij} = \int \phi_i(r-R_a) \phi_j(r-R_b) \mathrm{d}r    
+
+    Parameters
+    ----------
+    b1 : TYPE
+        DESCRIPTION.
+    b2 : TYPE
+        DESCRIPTION.
+
+    Returns
+    -------
+    TYPE
+        DESCRIPTION.
+
+    """
+
     return two_center_contraction(b1, b2, overlap_integral)
 
 def overlap_integral(g1,g2):
@@ -595,10 +642,11 @@ def heh_pes():
     file.close()
 
 
-
-energy = test_h2(1.6/0.529,'FCI')
-
-mol = 'H 0 0 0; H 0 0 0.74'
+if __name__=='__main__':
+    
+    energy = test_h2(1.6/0.529,'FCI')
+    
+    mol = 'H 0 0 0; H 0 0 0.74'
 #h2_pes('HF')
 #h2_pes('FCI')
     #h2_pes()

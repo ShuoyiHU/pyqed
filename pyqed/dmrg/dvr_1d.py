@@ -8,7 +8,7 @@ Created on Mon Jun 10 13:59:10 2024
 
 DMRG/DVR calculation for 1D fermion and bosonic quantum field theory using a conventional DMRG algorithm
 
-particularly for quantum chemistry problems using hybrid Gaussian/DVR basis functions 
+particularly for quantum chemistry problems using hybrid Gaussian/DVR basis functions
 (but only one transversal orbital is allowed)
 
 
@@ -38,6 +38,8 @@ from pyqed.dvr import SineDVR
 from pyqed.qchem.ci.fci import SpinOuterProduct, givenΛgetB
 from pyqed.qchem.jordan_wigner.spinful import SpinHalfFermionOperators
 
+from pyqed.mps.fermion import SpinHalfFermionChain
+
 # from numba import vectorize, float64, jit
 # import sys
 from opt_einsum import contract
@@ -61,144 +63,144 @@ Nd = ops["Nd"]
 model_d = 4  # single-site basis size
 
 
-class SpinHalfFermionChain:
+# class SpinHalfFermionChain:
 
-    """
-    exact diagonalization of spin-half open fermion chain with long-range interactions
+#     """
+#     exact diagonalization of spin-half open fermion chain with long-range interactions
 
-    by Jordan-Wigner transformation
+#     by Jordan-Wigner transformation
 
-    .. math::
+#     .. math::
 
-        H = \sum_{<rs>} (c_r^\dagger c_s + c†scr−γ(c†rc†s+cscr))−2λ \sum_r c^\dagger_r c_r,
+#         H = \sum_{<rs>} (c_r^\dagger c_s + c†scr−γ(c†rc†s+cscr))−2λ \sum_r c^\dagger_r c_r,
 
-    where r and s indicate neighbors on the chain.
+#     where r and s indicate neighbors on the chain.
 
-    Electron interactions can be included in the Hamiltonian easily.
+#     Electron interactions can be included in the Hamiltonian easily.
 
-    """
-    def __init__(self, h1e, eri, nelec=None):
-        # if L is None:
-        L = h1e.shape[-1]
-        self.L = self.nsites = L
+#     """
+#     def __init__(self, h1e, eri, nelec=None):
+#         # if L is None:
+#         L = h1e.shape[-1]
+#         self.L = self.nsites = L
 
-        self.h1e = h1e
-        self.eri = eri
-        self.d = 4 # local dimension of each site
-        # self.filling = filling
-        self.nelec = nelec
+#         self.h1e = h1e
+#         self.eri = eri
+#         self.d = 4 # local dimension of each site
+#         # self.filling = filling
+#         self.nelec = nelec
 
-        self.H = None
-        self.ops = None # basic operators for a chain
+#         self.H = None
+#         self.ops = None # basic operators for a chain
 
-    def run(self, nstates=1):
+#     def run(self, nstates=1):
 
-        # # single electron part
-        # Ca = mf.mo_coeff[:, :self.ncas]
-        # hcore_mo = contract('ia, ij, jb -> ab', Ca.conj(), mf.hcore, Ca)
-
-
-        # eri = self.mf.eri
-        # eri_mo = contract('ip, iq, ij, jr, js -> pqrs', Ca.conj(), Ca, eri, Ca.conj(), Ca)
-
-        # # eri_mo = contract('ip, jq, ij, ir, js', mo.conj(), mo.conj(), eri, mo, mo)
-
-        # self.hcore_mo = hcore_mo
-
-        H = self.jordan_wigner()
-
-        E, X = eigsh(H, k=nstates, which='SA')
-        print('Energies = ', E)
-
-        return E, X
+#         # # single electron part
+#         # Ca = mf.mo_coeff[:, :self.ncas]
+#         # hcore_mo = contract('ia, ij, jb -> ab', Ca.conj(), mf.hcore, Ca)
 
 
+#         # eri = self.mf.eri
+#         # eri_mo = contract('ip, iq, ij, jr, js -> pqrs', Ca.conj(), Ca, eri, Ca.conj(), Ca)
 
-    def jordan_wigner(self):
-        """
-        MOs based on Restricted HF calculations
+#         # # eri_mo = contract('ip, jq, ij, ir, js', mo.conj(), mo.conj(), eri, mo, mo)
 
-        Returns
-        -------
-        H : TYPE
-            DESCRIPTION.
+#         # self.hcore_mo = hcore_mo
 
-        """
-        # an inefficient implementation without consdiering any syemmetry
+#         H = self.jordan_wigner()
 
-        from pyqed.qchem.jordan_wigner.spinful import jordan_wigner_one_body, annihilate, \
-            create, Is #, jordan_wigner_two_body
+#         E, X = eigsh(H, k=nstates, which='SA')
+#         print('Energies = ', E)
 
-        nelec = self.nelec
-        h1e = self.h1e
-        v = self.eri
-
-
-        norb = h1e.shape[-1]
-        nmo = L = norb # does not necesarrily have to MOs
-
-
-        Cu = annihilate(norb, spin='up')
-        Cd = annihilate(norb, spin='down')
-        Cdu = create(norb, spin='up')
-        Cdd = create(norb, spin='down')
-
-        H = 0
-        # for p in range(nmo):
-        #     for q in range(p+1):
-                # H += jordan_wigner_one_body(q, p, hcore_mo[q, p], hc=True)
-        for p in range(nmo):
-            for q in range(nmo):
-                H += h1e[p, q] * (Cdu[p] @ Cu[q] + Cdd[p] @ Cd[q])
-
-        # build total number operator
-        # number_operator = 0
-        Na = 0
-        Nb = 0
-        for p in range(L):
-            Na += Cdu[p] @ Cu[p]
-            Nb += Cdd[p] @ Cd[p]
-        Ntot = Na + Nb
-
-        # poor man's implementation of JWT for 2e operators wihtout exploiting any symmetry
-        for p in range(nmo):
-            for q in range(nmo):
-                for r in range(nmo):
-                    for s in range(nmo):
-                        H += 0.5 * v[p, q, r, s] * (\
-                            Cdu[p] @ Cdu[r] @ Cu[s] @ Cu[q] +\
-                            Cdu[p] @ Cdd[r] @ Cd[s] @ Cu[q] +\
-                            Cdd[p] @ Cdu[r] @ Cu[s] @ Cd[q] +
-                            Cdd[p] @ Cdd[r] @ Cd[s] @ Cd[q])
-                        # H += jordan_wigner_two_body(p, q, s, r, )
-
-        # digonal elements for p = q, r = s
-        if self.nelec is not None:
-            I = tensor(Is(L))
-
-            H += 0.2* ((Na - nelec/2 * I) @ (Na - self.nelec/2 * I) + \
-                (Nb - self.nelec/2 * I) @ (Nb - self.nelec/2 * I))
-        self.H = H
-
-        self.ops = {"H": H,
-               "Cd": Cd,
-               "Cu": Cu,
-               "Cdd": Cdd,
-               "Cdu": Cdu,
-               "Nu" : Na,
-               "Nd" : Nb,
-               "Ntot": Ntot
-               }
-
-        return H
+#         return E, X
 
 
 
-    def DMRG(self):
-        pass
+#     def jordan_wigner(self):
+#         """
+#         MOs based on Restricted HF calculations
 
-    def gen_mps(self):
-        pass
+#         Returns
+#         -------
+#         H : TYPE
+#             DESCRIPTION.
+
+#         """
+#         # an inefficient implementation without consdiering any syemmetry
+
+#         from pyqed.qchem.jordan_wigner.spinful import jordan_wigner_one_body, annihilate, \
+#             create, Is #, jordan_wigner_two_body
+
+#         nelec = self.nelec
+#         h1e = self.h1e
+#         v = self.eri
+
+
+#         norb = h1e.shape[-1]
+#         nmo = L = norb # does not necesarrily have to MOs
+
+
+#         Cu = annihilate(norb, spin='up')
+#         Cd = annihilate(norb, spin='down')
+#         Cdu = create(norb, spin='up')
+#         Cdd = create(norb, spin='down')
+
+#         H = 0
+#         # for p in range(nmo):
+#         #     for q in range(p+1):
+#                 # H += jordan_wigner_one_body(q, p, hcore_mo[q, p], hc=True)
+#         for p in range(nmo):
+#             for q in range(nmo):
+#                 H += h1e[p, q] * (Cdu[p] @ Cu[q] + Cdd[p] @ Cd[q])
+
+#         # build total number operator
+#         # number_operator = 0
+#         Na = 0
+#         Nb = 0
+#         for p in range(L):
+#             Na += Cdu[p] @ Cu[p]
+#             Nb += Cdd[p] @ Cd[p]
+#         Ntot = Na + Nb
+
+#         # poor man's implementation of JWT for 2e operators wihtout exploiting any symmetry
+#         for p in range(nmo):
+#             for q in range(nmo):
+#                 for r in range(nmo):
+#                     for s in range(nmo):
+#                         H += 0.5 * v[p, q, r, s] * (\
+#                             Cdu[p] @ Cdu[r] @ Cu[s] @ Cu[q] +\
+#                             Cdu[p] @ Cdd[r] @ Cd[s] @ Cu[q] +\
+#                             Cdd[p] @ Cdu[r] @ Cu[s] @ Cd[q] +
+#                             Cdd[p] @ Cdd[r] @ Cd[s] @ Cd[q])
+#                         # H += jordan_wigner_two_body(p, q, s, r, )
+
+#         # digonal elements for p = q, r = s
+#         if self.nelec is not None:
+#             I = tensor(Is(L))
+
+#             H += 0.2* ((Na - nelec/2 * I) @ (Na - self.nelec/2 * I) + \
+#                 (Nb - self.nelec/2 * I) @ (Nb - self.nelec/2 * I))
+#         self.H = H
+
+#         self.ops = {"H": H,
+#                "Cd": Cd,
+#                "Cu": Cu,
+#                "Cdd": Cdd,
+#                "Cdu": Cdu,
+#                "Nu" : Na,
+#                "Nd" : Nb,
+#                "Ntot": Ntot
+#                }
+
+#         return H
+
+
+
+#     def DMRG(self):
+#         pass
+
+#     def gen_mps(self):
+#         pass
 
 
 # We will use python's "namedtuple" to represent the Block and EnlargedBlock objects
@@ -244,7 +246,6 @@ def H2(Sz1, Sp1, Sz2, Sp2):  # two-site part of H
     )
 
 
-import scipy
 # scipy.linalg.kron(a, b)
 def enlarge_block(block, h1e, eri, forward=True):
     """
@@ -834,7 +835,7 @@ def finite_system_algorithm(L, m_warmup, m):
         if sys_label == "l" and 2 * sys_block.length == L:
             break  # escape from the "while True" loop
 
-class QCDMRG:
+class DMRG:
     """
     ab initio DRMG/DVR quantum chemistry calculation for 1D fermion chain
     """
@@ -1011,6 +1012,29 @@ class QCDMRG:
 
 
 def kernel(h1e, eri, m, m_warmup=None, shift=0, tol=1e-6):
+    """
+    conventional sweeping algorithm for DMRG optimization (without MPS)
+
+    Parameters
+    ----------
+    h1e : TYPE
+        DESCRIPTION.
+    eri : TYPE
+        DESCRIPTION.
+    m : TYPE
+        DESCRIPTION.
+    m_warmup : TYPE, optional
+        DESCRIPTION. The default is None.
+    shift : TYPE, optional
+        DESCRIPTION. The default is 0.
+    tol : TYPE, optional
+        DESCRIPTION. The default is 1e-6.
+
+    Returns
+    -------
+    None.
+
+    """
 
     block_disk = {}  # "disk" storage for Block objects
 
@@ -1108,7 +1132,7 @@ def kernel(h1e, eri, m, m_warmup=None, shift=0, tol=1e-6):
 ### DMRG
 
 def debug(mf):
-    
+
     L = nsites = mf.nx
     # onsite Hamiltonian
     H1 = [ (h1e[j, j] * Ntot + 0.5 * eri[j, j] * (Nu @ Nd + Nd @ Nu)) for j in range(nsites)]
@@ -1176,7 +1200,7 @@ def debug(mf):
         H  = model.jordan_wigner()
         print(H.shape)
         print(eigsh(H,k=6)[0])
-            
+
 class DMRGSCF(DMRG):
     """
     optimize the orbitals
@@ -1251,11 +1275,11 @@ if __name__=='__main__':
     mf.nx = 32
 
 
-    
+
     mf.run()
-    
+
     print(mf.e_nuc)
-    
+
     # exact
     # w, u = mol.single_point(R)
     # print(w)
@@ -1272,23 +1296,23 @@ if __name__=='__main__':
 
     print(h1e)
     # print(eri)
-    
+
     from scipy.linalg import svd
     import matplotlib.pyplot as plt
-    
+
     u, s, vh = svd(mf.T - np.diag(np.diag(mf.T, k=0)))
-    
+
     # print(np.diag(np.diag(h1e,k=0)))
-          
-    
-    
+
+
+
     fig, ax = plt.subplots()
     ax.plot(s, 'o')
-    
+
     # u, s, vh = svd(eri)
-    
+
     # print(s)
-    
+
     # fig, ax = plt.subplots()
     # ax.plot(s, 'o')
 

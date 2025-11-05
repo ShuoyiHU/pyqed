@@ -17,6 +17,35 @@ import heapq
 from functools import reduce
 import math
 
+
+def discrete_cosine_transform_matrix(n):
+    """
+    transform the Cartesian coordinates to collective coordinates
+    (e.g. enter-of-mass and relative motion)
+
+    .. math::
+
+        y_k = 2 \sum_{n=0}^{N-1} x_n \cos( \frac{\pi k (2n + 1) }{2N} )
+
+
+    Parameters
+    ----------
+    n : TYPE
+        DESCRIPTION.
+    dtype : TYPE, optional
+        DESCRIPTION. The default is None.
+
+    Returns
+    -------
+    TYPE
+        DESCRIPTION.
+
+    """
+    from scipy.fft import dct
+
+    return dct(np.eye(n), type=2, axis=0, norm='ortho')
+
+
 def householder(a): 
     """
     
@@ -583,7 +612,7 @@ def morse(r, D, a, re):
     return D * (1. - exp(-a * (r - re)))**2
 
 
-def gwp2(x, y, sigma=np.identity(2), xc=[0, 0], kc=[0, 0]):
+def gwp2(x, y, sigma=np.eye(2), xc=[0, 0], kc=[0, 0]):
     """
     generate a 2D Gaussian wavepacket in grid
     :param x0: float, mean value of gaussian wavepacket along x

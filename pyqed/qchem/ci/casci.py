@@ -26,29 +26,32 @@ from pyqed.qchem.ci.fci import givenΛgetB, SpinOuterProduct, get_fci_combos, Sl
 from pyqed.qchem.jordan_wigner.spinful import jordan_wigner_one_body, annihilate, \
             create, Is #, jordan_wigner_two_body
 
-def h1e_for_cas(casci, mo_coeff=None, ncas=None, ncore=None):
+# from opt_einsum import contract
+from pyqed.qchem.hf.rhf import ao2mo
+
+def h1e_for_cas(mf, ncas, ncore, mo_coeff=None):
     '''CAS space one-electron hamiltonian
 
     Args:
-        casci : a CASSCF/CASCI object or RHF object
+        casci : a RHF object
 
     Returns:
         A tuple, the first is the effective one-electron hamiltonian defined in CAS space,
         the second is the electronic energy from core.
     '''
-    if mo_coeff is None: mo_coeff = casci.mo_coeff
-    if ncas is None: ncas = casci.ncas
-    if ncore is None: ncore = casci.ncore
+    if mo_coeff is None: mo_coeff = mf.mo_coeff
+    # if ncas is None: ncas = .ncas
+    # if ncore is None: ncore = casci.ncore
     mo_core = mo_coeff[:,:ncore]
     mo_cas = mo_coeff[:,ncore:ncore+ncas]
 
-    hcore = casci.get_hcore()
-    energy_core = casci.energy_nuc()
+    hcore = mf.get_hcore()
+    energy_core = mf.energy_nuc()
     if mo_core.size == 0:
         corevhf = 0
     else:
         core_dm = np.dot(mo_core, mo_core.conj().T) * 2
-        corevhf = get_veff(casci.mol, core_dm)
+        corevhf = get_veff(mf.mol, core_dm)
         energy_core += np.einsum('ij,ji', core_dm, hcore).real
         energy_core += np.einsum('ij,ji', core_dm, corevhf).real * .5
     h1eff = reduce(np.dot, (mo_cas.conj().T, hcore+corevhf, mo_cas))
@@ -93,6 +96,8 @@ class CASCI:
         self.nelecas = nelecas
 
         ncore = mf.nelec//2 - self.nelecas//2 # core orbs
+        assert(ncore >= 0)
+
         self.ncore = ncore
 
         if ncas > 10:
@@ -106,8 +111,8 @@ class CASCI:
         #     print('Electrons < 2. Use CIS or CISD instead.')
 
 
-        self.mo_core = mf.mo_coeff[:,:ncore]
-        self.mo_cas = mf.mo_coeff[:,ncore:ncore+ncas]
+        self.mo_core = None
+        self.mo_cas = None
 
         self.mf = mf
         self.chemical_potential = mu
@@ -122,6 +127,8 @@ class CASCI:
         self.Nu = None
         self.Nd = None
         self.binary = None
+        self.SC1 = None # SlaterCondon rule 1
+        self.eri_so = None # spin-orbital ERI
 
     def get_SO_matrix(self, spin_flip=False, H1=None, H2=None):
         """
@@ -137,7 +144,8 @@ class CASCI:
         # molecular orbitals
         Ca, Cb = [self.mo_cas, ] * 2
 
-        H, energy_core = h1e_for_cas(mf, ncas=self.ncas, ncore=self.ncore)
+        H, energy_core = h1e_for_cas(mf, ncas=self.ncas, ncore=self.ncore, \
+                                     mo_coeff=self.mo_coeff)
 
         self.e_core = energy_core
 
@@ -313,8 +321,45 @@ class CASCI:
         self.H = H
         return H
 
+    def fix_spin(self, s=None, ss=None, shift=0.2):
+        """
+        fix the spin by energy penalty
 
-    def run(self, nstates=1, method='ci', ci0=None):
+        .. math::
+
+            \mu (\hat{S}^2 - S(S+1))
+
+        Parameters
+        ----------
+        s : TYPE, optional
+            DESCRIPTION. The default is None.
+        ss : TYPE, optional
+            DESCRIPTION. The default is None.
+        shift : TYPE, optional
+            DESCRIPTION. The default is 0.2.
+
+        Returns
+        -------
+        None.
+
+        """
+        if s is None:
+            s = (np.sqrt(4*ss+1)-1)/2
+            if not np.isclose(2*s, round(2*s)):
+                raise Warning("s = {} inconsistant spin value".format(s))
+        else:
+            ss = s * (s+1)
+
+        if s == 0:
+            # first-order spin penalty J. Phys. Chem. A 2022, 126, 12, 2050–2060
+            # H' = H + J \hat{S}^2
+            pass
+        else:
+            # second-order spin penalty
+            raise NotImplementedError('Second-order spin panelty not implemented.')
+
+
+    def run(self, nstates=1, mo_coeff=None, method='ci', ci0=None):
         """
         solve the full CI in the active space
 
@@ -322,11 +367,15 @@ class CASCI:
         ----------
         nstates : TYPE, optional
             DESCRIPTION. The default is 3.
+        mo : CAS MOs
+            Default is canonical MOs.
         method : TYPE, optional
             choose which solver to use.
             'ci' is the standard CI solver.
             'jw' is the exact diagonalizaion by Jordan-Wigner transformation.
             The default is 'ci'.
+
+        TODO: spin
 
         Returns
         -------
@@ -336,30 +385,48 @@ class CASCI:
             DESCRIPTION.
 
         """
+        # print('------------------------------')
+        # print("             CASCI              ")
+        # print('------------------------------\n')
 
         if method == 'ci':
+
+            # define the core and active space orbitals
+            if mo_coeff is None:
+                self.mo_coeff = self.mf.mo_coeff # use HF MOs
+            else:
+                self.mo_coeff = mo_coeff
+
+            ncore = self.ncore
+            ncas = self.ncas
+
+            self.mo_core = self.mo_coeff[:,:ncore]
+            self.mo_cas = self.mo_coeff[:,ncore:ncore+ncas]
+
             # FCI solver, more efficient than the JW solver
 
-            mo_occ = [self.mf.mo_occ[self.ncore: self.ncore+self.ncas]//2, ] * 2
-
+            mo_occ = [self.mf.mo_occ[ncore: ncore+ncas]//2, ] * 2
             binary = get_fci_combos(mo_occ = mo_occ)
-
             self.binary = binary
 
-            print('------------------------------')
-            print("             CASCI              ")
-            print('------------------------------\n')
+
             print('Number of determinants', binary.shape[0])
 
             H1, H2 = self.get_SO_matrix()
 
             SC1, SC2 = SlaterCondon(binary)
 
+            self.SC1 = SC1
+            self.SC2 = SC2
+            self.eri_so = H2
+
             I_A, J_A, a_t , a, I_B, J_B, b_t , b, ca, cb = SC1
 
-            # print(I_A, J_A)
-            # print(a_t, a)
+            # print(binary[I_A[0]], binary[J_A[0]])
 
+            # print(a_t[0], a[0])
+
+            # print('ca', ca)
 
             H_CI = CI_H(binary, H1, H2, SC1, SC2)
 
@@ -378,14 +445,15 @@ class CASCI:
 
         # nuclear repulsion energy is included in Ecore
         self.e_tot = E + self.e_core
-        self.ci = X
+        self.ci = [X[:, n] for n in range(nstates)]
 
         for i in range(nstates):
-            print("CASCI Root {} {}".format(i, self.e_tot[i]))
+            ss = spin_square(*self.make_rdm12(i))
+            print("CASCI Root {}  E = {:.10f}  S^2 = {:.6f}".format(i, self.e_tot[i], ss))
 
         return self
 
-    def make_rdm1(self):
+    def make_rdm1_contract(self, state_id, h1e=None, representation='ao'):
         """
         spin-traced 1e reduced density matrix
         .. math::
@@ -399,9 +467,80 @@ class CASCI:
 
         """
 
-        pass
+        ci = self.ci[state_id]
+        if representation.lower() == 'ao':
+            C = self.mf.mo_coeff
+            h1e = ao2mo(h1e, C)
 
-    def make_rdm2(self):
+        ncore = self.ncore
+        ncas = self.ncas
+
+        if ncore > 0:
+            c_core = 2 * np.trace(h1e[:ncore,:ncore])
+        else:
+            c_core = 0
+
+        h1e = h1e[ncore:ncas+ncore, ncore:ncas+ncore]
+
+        c_cas = contract_with_rdm1(ci, self.binary, self.SC1, h1e=h1e)
+
+        return c_core + c_cas
+
+    def make_rdm1(self, state_id, with_core=False, with_vir=False, representation='mo'):
+        """
+        spin-traced 1e reduced density matrix
+        .. math::
+
+            \gamma[p,q] = <q_alpha^\dagger p_alpha> + <q_beta^\dagger p_beta>
+
+
+        Returns
+        -------
+        None.
+
+        """
+
+        ci = self.ci[state_id]
+        # if representation.lower() == 'ao':
+        #     C = self.mf.mo_coeff
+        #     h1e = ao2mo(h1e, C)
+
+        ncore = self.ncore
+        ncas = self.ncas
+        nmo = self.mf.nmo
+
+        # if ncore > 0:
+        #     c_core = 2 * np.trace(h1e[:ncore,:ncore])
+        # else:
+        #     c_core = 0
+        if with_core and with_vir:
+            
+            D = np.zeros((nmo, nmo), dtype=float)
+            if ncore > 0: D[:ncore, :ncore] = 2
+            D[ncore:ncore+ncas, ncore:ncore+ncas] = make_rdm1(ci, self.binary, self.SC1)
+    
+            return D
+        else:
+            return make_rdm1(ci, self.binary, self.SC1)
+            
+
+    def make_rdm1s(self, state_id):
+        """
+        spin-polarized 1e reduced density matrix
+        .. math::
+
+            \gamma_s[p,q] = <q_s^\dagger p_s>
+
+
+        Returns
+        -------
+        None.
+
+        """
+
+        raise NotImplementedError()
+
+    def make_rdm2(self, state_id=0, with_core=False, with_vir=False):
         """
         2-e reduced density matrix
 
@@ -412,17 +551,68 @@ class CASCI:
 
         with this convention, the energy is computed as
 
-        E = einsum('pqrs,pqrs', eri, rdm2)
+        E = einsum('pqrs,pqrs', eri, rdm2)/2
 
         Returns
         -------
         None.
 
         """
+        ci = self.ci[state_id]
+
+
+        if with_core: # we probably never need this!
+        
+            ncore = self.ncore
+            ncas = self.ncas
+            # nmo = self.mf.nmo
+            nmo = ncore + ncas 
+    
+            D = np.zeros((nmo, nmo, nmo, nmo))
+            
+            assert ncore > 0
+            
+            # cccc block
+            I = np.eye(ncore)
+            D[:ncore, :ncore, :ncore, :ncore] = 4 * contract('ij, kl -> ijkl', I, I) - 2 * contract('ps, rq -> pqrs', I, I)
+            
+            # ccaa block
+            dm1 = self.make_rdm1(state_id)
+            
+            for i in range(ncore):
+                D[i, i, ncore:ncore+ncas, ncore:ncore+ncas] = 2*dm1
+                D[ncore:ncore+ncas, ncore:ncore+ncas, i, i] = 2*dm1
+                D[i, ncore:ncore+ncas, i, ncore:ncore+ncas] = -dm1
+                D[ncore:ncore+ncas, i, ncore:ncore+ncas, i] = -dm1
+            
+            D[ncore:ncore+ncas, ncore:ncore+ncas, ncore:ncore+ncas, ncore:ncore+ncas]=\
+                make_rdm2(ci, self.binary, self.SC1, self.SC2)
+            
+            return D
+            
+        else: #active space DM 
+
+            return make_rdm2(ci, self.binary, self.SC1, self.SC2)    
+
+        
+    def contract_with_rdm2(self, h2e, state_id=0):
+
+        if h2e.ndim == 4: # spin-free operator
+            h2e = np.einsum('IJ, pqrs -> IJpqrs', np.ones((2,2)), h2e)
+
+        return contract_with_rdm2(self.ci[state_id], h2e, self.binary, self.SC1, self.SC2)
+
+
+
+    def make_rdm12(self, state_id):
+        dm1 = self.make_rdm1(state_id)
+        dm2 = self.make_rdm2(state_id)
+        return dm1, dm2
+
+    def spin_square(self, state_id=0):
         pass
 
-    def make_rdm12(self):
-        pass
+
 
     def dump(self, fname):
         import pickle
@@ -434,6 +624,330 @@ class CASCI:
     def overlap(self, other):
         return overlap(self, other)
 
+    def make_tdm1(self, bra_id, ket_id=0, h1e=None, representation='ao'):
+        """
+        spin-traced 1e transition density matrix
+
+        .. math::
+
+            \gamma_{pq}^{\beta \alpha} = <\Psi_\beta | \hat{E}_{qp} | \Psi_\alpha >
+
+        E_{qp} = q_alpha^\dagger p_alpha + q_beta^\dagger p_beta
+
+        Parameters
+        ----------
+        bra_id : TYPE
+            DESCRIPTION.
+        ket_id : TYPE, optional
+            DESCRIPTION. The default is 0.
+
+        Returns
+        -------
+        None.
+
+        """
+
+        if bra_id == ket_id:
+
+            print("CI ket and bra are the same. Computing 1e RDM instead.")
+            return self.make_rdm1(ket_id, h1e)
+
+        else:
+
+            if representation.lower() == 'ao':
+                C = self.mf.mo_coeff
+                h1e = ao2mo(h1e, C)
+
+            ncore = self.ncore
+            ncas = self.ncas
+
+            if ncore > 0:
+                c_core = 2 * np.trace(h1e[:ncore,:ncore])
+            else:
+                c_core = 0
+
+            h1e = h1e[ncore:ncas+ncore, ncore:ncas+ncore]
+
+
+            c_cas = make_tdm1(self.ci[bra_id], self.ci[ket_id], self.binary, self.SC1, h1e)
+
+        return c_cas + c_core
+
+
+
+
+def spin_square(dm1, dm2):
+    """
+
+    Compute the total spin S^2, require 2e RDM
+
+    Ref:
+        J. Chem. Theory Comput. 2021, 17, 5684−5703
+
+
+    For a single SO,
+    .. math::
+
+            S_i^2 = \frac{3}{4} (E_ii - e_{ii,ii})
+            S_i \cdot S_j = -frac{1}{2} (e_{ij,ji} + \frac{1}{2} e_{ii, jj}), j \ne i
+
+    where E_{ij}, e_{ijkl} are 1 and 2e RDMs.
+
+    Parameters
+    ----------
+    dm1 : TYPE
+        DESCRIPTION.
+    dm2 : TYPE
+        DESCRIPTION.
+
+    Returns
+    -------
+    None.
+
+    """
+    spin_square = (0.75*np.einsum("ii", dm1)
+               - 0.5*np.einsum("ijji", dm2)
+               - 0.25*np.einsum("iijj", dm2))
+
+    return spin_square
+
+def make_tdm1(cibra, ciket, binary, SC1, h1e):
+    """
+
+    1e transition DM contracted with 1e operators
+
+    .. math::
+
+        \langle \Phi_I  O_{pq} p^\dagger q | \Phi_J \rangle = O_{pq} A^{IJ}_{qp}}
+
+    Parameters
+    ----------
+    ci : TYPE
+        DESCRIPTION.
+    h1e : TYPE, optional
+        One electron operator in MO. The default is None.
+
+    Returns
+    -------
+    D : TYPE
+        DESCRIPTION.
+
+    SC1 (1-body Slater-Condon Rules)
+    SC2 (2-body Slater-Condon Rules)
+
+    Return
+    ======
+    HCI: CI Hamiltonian
+    """
+
+    if isinstance(h1e, np.ndarray): # spin-independent 1e operator
+        h1e = [h1e, h1e]
+
+    I_A, J_A, a_t , a, I_B, J_B, b_t , b, ca, cb = SC1
+
+    # sum of MO energies
+    H = np.einsum("Spp, ISp -> I", h1e, binary, optimize=True)
+    H = np.diag(H)
+
+    ## Rule 1
+    H[I_A, J_A] -= np.einsum("pq, Kp, Kq -> K", h1e[0], a_t, a, optimize=True)
+    H[I_B , J_B ] -= np.einsum("pq, Kp, Kq -> K", h1e[1], b_t, b, optimize=True)
+
+
+    return np.einsum('I, IJ, J -> ', cibra.conj(), H, ciket)
+
+def contract_with_rdm1(ci, binary, SC1, h1e):
+    """
+
+    make 1e RDM contracted with 1e operators without returning RDM
+
+    .. math::
+        \Tr{ O D} = O_{pq} D_{qp}} = O_{pq} \hat{E}_{pq}
+
+    Parameters
+    ----------
+    ci : TYPE
+        DESCRIPTION.
+    h1e : TYPE, optional
+        One electron operator in MO. The default is None.
+
+    Returns
+    -------
+    D : TYPE
+        DESCRIPTION.
+
+    SC1 (1-body Slater-Condon Rules)
+    SC2 (2-body Slater-Condon Rules)
+
+    Return
+    ======
+    HCI: CI Hamiltonian
+    """
+
+    if isinstance(h1e, np.ndarray): # spin-independent 1e operator
+        h1e = [h1e, h1e]
+
+    I_A, J_A, a_t , a, I_B, J_B, b_t , b, ca, cb = SC1
+
+
+    # sum of MO energies
+    H = np.einsum("Spp, ISp -> I", h1e, binary, optimize=True)
+    H = np.diag(H)
+
+    ## Rule 1
+    H[I_A, J_A] -= np.einsum("pq, Kp, Kq -> K", h1e[0], a_t, a, optimize=True)
+    H[I_B , J_B ] -= np.einsum("pq, Kp, Kq -> K", h1e[1], b_t, b, optimize=True)
+
+
+    return np.einsum('I, IJ, J -> ', ci.conj(), H, ci)
+
+def make_rdm1(ci, binary, SC1):
+    """
+
+    make spin-traced 1e RDM E_{pq}
+
+    .. math::
+
+        \hat{E}_{pq}
+
+    Parameters
+    ----------
+    ci : TYPE
+        DESCRIPTION.
+    h1e : TYPE, optional
+        One electron operator in MO. The default is None.
+
+    Returns
+    -------
+    D : TYPE
+        DESCRIPTION.
+
+    SC1 (1-body Slater-Condon Rules)
+    SC2 (2-body Slater-Condon Rules)
+
+    Return
+    ======
+    HCI: CI Hamiltonian
+    """
+
+
+    I_A, J_A, a_t , a, I_B, J_B, b_t , b, ca, cb = SC1
+
+
+    # sum of MO energies
+    # H = np.einsum("ISp -> Ip", binary, optimize=True)
+    # H = binary[:, 0, :] + binary[:, 1, :]
+
+    # H = np.diag(H)
+
+    nsd, _, nmo = binary.shape
+    H = np.zeros((nsd, nsd, nmo, nmo))
+    for I in range(nsd):
+        for p in range(nmo):
+            H[I, I, p, p] = sum(binary[I, :, p])
+
+    ## Rule 1
+    H[I_A, J_A] -= np.einsum("Kp, Kq -> Kpq", a_t, a, optimize=True)
+    H[I_B, J_B] -= np.einsum("Kp, Kq -> Kpq", b_t, b, optimize=True)
+
+
+    return np.einsum('I, IJpq, J -> pq', ci.conj(), H, ci)
+
+
+
+
+
+def contract_with_rdm2(ci, H2, Binary, SC1, SC2):
+    I_A, J_A, a_t , a, I_B, J_B, b_t , b, ca, cb = SC1
+    I_AA, J_AA, aa_t, aa, I_BB, J_BB, bb_t, bb, I_AB, J_AB, ab_t, ab, ba_t, ba = SC2
+
+    # # sum of MO energies I: configuration index, S: spin index, p: MO index
+    # H_CI = np.einsum("Spp, ISp -> I", H1, Binary, optimize=True)
+
+    # ERI
+    H_CI = np.einsum("STppqq, ISp, ITq -> I", H2, Binary, Binary, optimize=True)/2
+    H_CI = np.diag(H_CI)
+
+    ## Rule 1
+    # H_CI[I_A , J_A ] -= np.einsum("pq, Kp, Kq -> K", H1[0], a_t, a, optimize=True)
+    H_CI[I_A , J_A ] -= np.einsum("pqrr, Kp, Kq, Kr -> K", H2[0,0], a_t, a, ca, optimize=True)
+    H_CI[I_A , J_A ] -= np.einsum("pqrr, Kp, Kq, Kr -> K", H2[0,1], a_t, a, Binary[I_A,1],
+    optimize=True)
+
+    # H_CI[I_B , J_B ] -= np.einsum("pq, Kp, Kq -> K", H1[1], b_t, b, optimize=True)
+    H_CI[I_B , J_B ] -= np.einsum("pqrr, Kp, Kq, Kr -> K", H2[1,1], b_t, b, cb, optimize=True)
+    H_CI[I_B , J_B ] -= np.einsum("pqrr, Kp, Kq, Kr -> K", H2[1,0], b_t, b, Binary[I_B,0],
+    optimize=True)
+
+    if len(I_AA) > 0:
+    ## Rule 2
+        H_CI[I_AA, J_AA] = np.einsum("pqrs, Kp, Kq, Kr, Ks -> K", H2[0,0], aa_t[0], aa[0],
+        aa_t[1], aa[1], optimize=True)
+
+    if len(I_BB) > 0:
+        H_CI[I_BB, J_BB] = np.einsum("pqrs, Kp, Kq, Kr, Ks -> K", H2[1,1], bb_t[0], bb[0],
+        bb_t[1], bb[1], optimize=True)
+
+    H_CI[I_AB, J_AB] = np.einsum("pqrs, Kp, Kq, Kr, Ks -> K", H2[0,1], ab_t, ab, ba_t, ba,
+        optimize=True)
+
+    return np.einsum('I, IJ, J -> ', ci.conj(), H_CI, ci)
+
+def make_rdm2(ci, Binary, SC1, SC2):
+    """
+    build the spin-traced 2-particle operator with the 2e RDM
+
+    .. math::
+
+        \Gamma_{pqrs} = \sum_{\sigma, \tau} p^\dagger_\sigma r^\dagger_\tau s_\tau q_\sigma
+
+    TODO: fix it
+
+    Params
+    ------
+    Binary: binary string (I, s, p)
+        I: configuration index, S: spin index, p: MO index
+
+    Refs
+    ----
+    J. Chem. Theory Comput. 2022, 18, 6690−6699
+
+    """
+    I_A, J_A, a_t , a, I_B, J_B, b_t , b, ca, cb = SC1
+    I_AA, J_AA, aa_t, aa, I_BB, J_BB, bb_t, bb, I_AB, J_AB, ab_t, ab, ba_t, ba = SC2
+
+    nsd, _, nmo = Binary.shape
+    I = np.eye(nmo)
+
+    H_CI = np.zeros((nsd, nsd, nmo, nmo, nmo, nmo)) # slow implementation
+
+    # diagonal elements
+    D = np.einsum("I, ISp, ITr, pq, rs -> pqrs", np.abs(ci)**2, Binary, Binary, I, I, optimize=True)
+    D -= np.einsum("I, ISp, ISr, ps, rq -> pqrs", np.abs(ci)**2, Binary, Binary, I, I, optimize=True)
+
+    ## Rule 1
+    H_CI[I_A , J_A ] = -2 * np.einsum("Kp, Kq, Kr, rs -> Kpqrs",  a_t, a, ca, I, optimize=True)
+    H_CI[I_A , J_A ] -= np.einsum("Kp, Kq, Kr, rs -> Kpqrs", a_t, a, Binary[I_A,1], I, optimize=True)
+
+    H_CI[I_B , J_B ] -= 2 * np.einsum("Kp, Kq, Kr, rs -> Kpqrs", b_t, b, cb, I, optimize=True)
+    H_CI[I_B , J_B ] -= np.einsum("Kp, Kq, Kr, rs -> Kpqrs", b_t, b, Binary[I_B,0], I, optimize=True)
+
+    ## Rule 2
+    if len(I_AA) > 0:
+
+        H_CI[I_AA, J_AA] = 2 * np.einsum("Kp, Kq, Kr, Ks -> Kpqrs", aa_t[0], aa[0],
+        aa_t[1], aa[1], optimize=True)
+
+    if len(I_BB) > 0:
+        H_CI[I_BB, J_BB] = 2 * np.einsum("Kp, Kq, Kr, Ks -> Kpqrs", bb_t[0], bb[0],
+        bb_t[1], bb[1], optimize=True)
+
+    H_CI[I_AB, J_AB] = 2 * np.einsum("Kp, Kq, Kr, Ks -> Kpqrs", ab_t, ab, ba_t, ba,
+        optimize=True)
+
+    D += contract('I, IJpqrs, J -> pqrs', ci.conj(), H_CI, ci)
+
+    return D
 
 def overlap(cibra, ciket, s=None):
     """

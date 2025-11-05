@@ -12,8 +12,12 @@ from scipy.sparse import identity, kron, csr_matrix, diags
 from scipy.sparse.linalg import eigsh
 from scipy.linalg import kron, norm, eigh
 
-from scipy.special import erf
-from scipy.constants import e, epsilon_0, hbar
+from jax.scipy.special import erf
+# from scipy.special import erf
+import jax.numpy as jnp
+from jax.numpy.linalg import vector_norm as norm
+
+# from scipy.constants import e, epsilon_0, hbar
 import logging
 import warnings
 
@@ -33,7 +37,7 @@ import sys
 from opt_einsum import contract
 from itertools import combinations
 
-def soft_coulomb(r, R=1):
+def soft_coulomb(r, R=10):
     if np.isclose(r, 0):
             # if r_R_distance == 0:
         return 2 / (R * np.sqrt(np.pi))
@@ -134,7 +138,7 @@ def get_veff(eri, dm):
     """
 
     # hartree potential
-    J = np.einsum('ij, jj -> i', eri, dm)
+    J = jnp.einsum('ij, jj -> i', eri, dm)
     J = np.diag(J)
 
     # exchange
@@ -152,7 +156,7 @@ class RHF1D:
     """
     def __init__(self, mol, init_guess='hcore', dvr_type = 'sine', domain=None, nx=None): # nelec, spin):
         # self.spin = spin
-        # self.nelec = nelec
+        self.nelec = mol.nelec
         self.mol = mol
 
         self.T = None
@@ -183,7 +187,7 @@ class RHF1D:
         self.hcore = None
 
         self.eri = None
-        
+
         self.dvr = None
 
     # def create_grid(self, domain, level, endpoints=False):
@@ -212,11 +216,14 @@ class RHF1D:
         x = self.x
 
         v = soft_coulomb(0, self.mol.Re) * np.eye(nx)
+
         for i in range(nx):
             for j in range(i):
                 d = np.linalg.norm(x[i] - x[j])
-                v[i,j] = soft_coulomb(d, self.mol.Re)
-                v[j,i] = v[i,j]
+                v[i,j] = v[j,i] = soft_coulomb(d, self.mol.Re)
+
+                # v.at[i,j].set(_v)
+                # v.at[j,i].set(_v)
 
         self.eri = v
         return v
@@ -270,9 +277,9 @@ class RHF1D:
 
         if self.dvr_type == 'sine':
             dvr = SineDVR(*self.domain, nx)
-        else: 
+        else:
             raise ValueError('DVR {} is not supported yet, use sine.'.format(self.dvr_type))
-        
+
 
         x = dvr.x
         self.x = x
@@ -311,7 +318,7 @@ class RHF1D:
     def energy_nuc(self):
         return self.mol.energy_nuc()
 
-    def run(self):
+    def run(self, dm0=None):
         # scf cycle
         max_cycle = self.max_cycle
         tol = self.tol
@@ -332,20 +339,27 @@ class RHF1D:
 
         eri = self.get_eri()
 
-        if self.init_guess == 'hcore':
+        if dm0 is not None:
 
-            mo_energy, mo_coeff = eigh(hcore)
-            dm = make_rdm1(mo_coeff, mo_occ)
+            vhf = get_veff(eri, dm0)
+            old_energy = energy_elec(dm0, hcore, vhf)
+
+        else:
+
+            if self.init_guess == 'hcore':
+
+                mo_energy, mo_coeff = eigh(hcore)
+                dm = make_rdm1(mo_coeff, mo_occ)
 
 
-            vhf = get_veff(eri, dm)
-            old_energy = energy_elec(dm, hcore, vhf)
+                vhf = get_veff(eri, dm)
+                old_energy = energy_elec(dm, hcore, vhf)
 
         print("\n {:4s} {:13s} de\n".format("iter", "total energy"))
 
         nuclear_energy = mol.energy_nuc()
 
-        print('nuclear repulsion', nuclear_energy)
+        # print('nuclear repulsion', nuclear_energy)
 
         conv = False
         for scf_iter in range(max_cycle):
@@ -372,9 +386,7 @@ class RHF1D:
 
             electronic_energy = energy_elec(dm, hcore, vhf)
 
-
-
-            print("E_elec = ", electronic_energy)
+            # print("E_elec = ", electronic_energy)
 
             total_energy = electronic_energy + nuclear_energy
 
@@ -403,7 +415,21 @@ class RHF1D:
         self.e_tot = total_energy
         print('HF energy = ', total_energy)
 
-        return total_energy
+        return self
+
+    def as_scanner(self):
+        """
+        return a function for computing the PES
+
+        Returns
+        -------
+        None.
+
+        """
+
+        dm = self.make_rdm()
+
+
 
     # def energy_elec(dm, h1e=None, vhf=None):
     #     r'''
@@ -775,10 +801,10 @@ class RHF:
 
 
 
-def wavefunction_overlap():
-    # wavefunction overlap between two exact many-electron wavefunctions at
-    # different geometries
-    pass
+# def wavefunction_overlap():
+#     # wavefunction overlap between two exact many-electron wavefunctions at
+#     # different geometries
+#     pass
 
 
 class RCISD:
@@ -852,14 +878,7 @@ class RCISD:
         pass
 
 
-def overlap(cibra, ciket, nmo, nocc, s=None):
-    '''
-    Overlap between two CISD wavefunctions.
 
-    Args:
-        s : 2D array
-            The overlap matrix of non-orthogonal one-particle basis
-    '''
 
 
 def contract(civec):
@@ -870,11 +889,63 @@ def contract(civec):
 #         pass
 
 
+def discrete_cosine_transform_matrix(n):
+    """
+    transform the Cartesian coordinates to collective coordinates
+    (e.g. enter-of-mass and relative motion)
+
+    .. math::
+
+        y_k = 2 \sum_{n=0}^{N-1} x_n \cos( \frac{\pi k (2n + 1) }{2N} )
+
+
+    Parameters
+    ----------
+    n : TYPE
+        DESCRIPTION.
+    dtype : TYPE, optional
+        DESCRIPTION. The default is None.
+
+    Returns
+    -------
+    TYPE
+        DESCRIPTION.
+
+    """
+    from scipy.fft import dct
+
+    return dct(np.eye(n), type=2, axis=0, norm='ortho')
+    # return dft(n, scale='sqrtn')
+
+
+
+# print(T.T @ T)
+
+
+
+# natom = 5
+# elements = ['H'] * natom
+# T = discrete_cosine_transform_matrix(natom - 2) # remove the boundary atoms
+
+# print(T)
+
+
+# nroots = 6
+
+# for n in range(N):
+# # if True:
+#     d = ds[n]
+
+
+
+
 if __name__=='__main__':
 
     # import proplot as plt
     from pyqed.qchem.dvr import RHF1D
-    # from pyqed.qchem.casci import CASCI
+    # from pyqed.qchem.ci.casci import CASCI
+    from pyqed.qchem.dvr.casci import CASCI
+
     from pyqed.models.ShinMetiu2e1d import ShinMetiu1d
     # import matplotlib.pyplot as plt
     # r = np.linspace(0, 1)
@@ -883,51 +954,122 @@ if __name__=='__main__':
 
     # fig, ax = plt.subplots()
     # ax.plot(r, v)
+    from pyqed.qchem.dvr.rhf import RHF1D
+    from pyqed.models.ShinMetiu2e1d import AtomicChain
+    from pyqed import au2angstrom
 
+    import numpy as np
+
+    natom = 8
+    l = 10/au2angstrom
+
+    z0 = np.linspace(-1, 1, natom, endpoint=True) * l/2
+    print(z0 * au2angstrom)
+
+    print('interatomic distance = ', (z0[1] - z0[0])*au2angstrom)
+
+
+    # print('number of electrons = ', mol.nelec)
+    ###############################################################################
+
+    elements = ['H'] * natom
+    T = discrete_cosine_transform_matrix(natom - 2) # remove the boundary atoms
+
+    print(T)
+
+
+    N = 8
+    ds = np.linspace(-2, 2, N)
+    e_hf = np.zeros(N)
+    nstates = 3
+    e_casci = np.zeros((N, nstates))
+
+    i = 5
+    print(T[:,i])
+
+    Rf = 2
+    for n in range(N):
+
+        q = np.zeros(natom-2) # collective coordinates
+        q[i] = ds[n]
+
+
+        z = z0.copy()
+        z[1:natom-1] += T.T @ q
+
+        print('geometry', z)
+
+        mol = AtomicChain(z, Rf, charge=0)
+
+
+        # HF
+        mf = RHF1D(mol, dvr_type='sine')
+        mf.domain = [-12/au2angstrom, 12/au2angstrom]
+        mf.nx = 32
+
+        mf.run()
+        e_hf[n] = mf.e_tot
+
+        # CASCI
+        cas = CASCI(mf, ncas=mol.nelec//2+2)
+
+        E, X = cas.run(nstates)
+        e_casci[n] = E
+
+
+
+    import ultraplot as plt
+    fig, ax = plt.subplots()
+
+    ax.plot(ds, e_hf)
+
+    ax.plot(ds, e_casci[:,0])
+
+    h1e = mf.hcore
+    eri = mf.eri
+
+    L = nsites = mf.nx
 
     ###############################################################################
-    mol = ShinMetiu1d(method='scipy', nstates=3, nelec=4)
-    mol.spin = 0
-    mol.create_grid([-15/au2angstrom, 15/au2angstrom], level=5)
-    mol.R = 0.
+    # mol = ShinMetiu1d(method='scipy', nstates=3, nelec=4)
+    # mol.spin = 0
+    # mol.create_grid([-15/au2angstrom, 15/au2angstrom], level=5)
+    # mol.R = 0.
 
-    # exact
-    # w, u = mol.single_point(R)
-    # print(w)
-
-
-    # fig, ax = plt.subplots()
-    # ax.imshow(u[:, 1].reshape(mol.nx, mol.nx), origin='lower')
-
-    # HF
-    mf = RHF1D(mol)
-    mf.create_grid([-15/au2angstrom, 15/au2angstrom], level=5)
-    mf.run()
-
-    mo = mf.mo_coeff
-    print('orb energies', mf.mo_energy)
-    e_nuc = mol.energy_nuc(R=0)
-
-    # print(mol.e_nuc)
+    # # exact
+    # # w, u = mol.single_point(R)
+    # # print(w)
 
 
-    # fig, ax = plt.subplots()
-    # ax.imshow(mf.eri)
+    # # fig, ax = plt.subplots()
+    # # ax.imshow(u[:, 1].reshape(mol.nx, mol.nx), origin='lower')
 
-    # fig, ax = plt.subplots()
-    # for j in range(4):
-    #     ax.plot(mol.x, mo[:, j])
+    # # HF
+    # mf = RHF1D(mol)
+    # mf.create_grid([-15/au2angstrom, 15/au2angstrom], level=5)
+    # mf.run()
+
+    # mo = mf.mo_coeff
+    # print('orb energies', mf.mo_energy)
+    # e_nuc = mol.energy_nuc(R=0)
+
+    # # print(mol.e_nuc)
 
 
-    # cas = CASCI(mf, ncas=6)
-    # nstates = 6
-    # E, X = cas.run(nstates)
-    # print(E+mol.energy_nuc(R))
+    # # fig, ax = plt.subplots()
+    # # ax.imshow(mf.eri)
 
-    # H = cas.qubitization()
-    # E, X = scipy.sparse.linalg.eigsh(H, k=nstates, which='SA')
-    # print(E + e_nuc)
+    # # fig, ax = plt.subplots()
+    # # for j in range(4):
+    # #     ax.plot(mol.x, mo[:, j])
 
-    # E, X = np.linalg.eigh(H.toarray())
-    # for i in range(len(E)):
-    #     print(E[i] + e_nuc)
+
+
+
+    # # H = cas.qubitization()
+    # # E, X = scipy.sparse.linalg.eigsh(H, k=nstates, which='SA')
+    # # print(E + e_nuc)
+
+    # # E, X = np.linalg.eigh(H.toarray())
+    # # for i in range(len(E)):
+    # #     print(E[i] + e_nuc)

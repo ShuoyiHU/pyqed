@@ -31,3 +31,6 @@ MacBook_local_data
 local_data
 dataset
 local_data_GL2013
+*.bib
+*.notes
+*.family_notes

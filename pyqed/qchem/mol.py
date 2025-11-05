@@ -856,48 +856,46 @@ class Molecule:
 
         # mol = gto.M(atom, **kwargs)
 
-        # if isinstance(atom, str):
-        #     # The input atom is a geometry file
-        #     if os.path.isfile(self.atom):
-        #         try:
-        #             self.atom = fromfile(atom)
-        #         except ValueError:
-        #             sys.stderr.write('\nFailed to parse geometry file  %s\n\n' % atom)
-        #             raise
-        # else:
+        if isinstance(atom, str):
+            # The input atom is a geometry file
+            if os.path.isfile(atom):
+                try:
+                    self._atom = fromfile(atom)
+                except ValueError:
+                    sys.stderr.write('\nFailed to parse geometry file  %s\n\n' % atom)
+                    raise
+        else:
+            self._atom = format_atom(atom)
 
-        self._atom = format_atom(atom)
         self.natom = len(self._atom)
-
-
 
         # self.mol = mol
         # self.atom_coord = mol.atom_coord
 
-        # print(self.atom_coords.shape)
-
         # TODO: add unit support.
-        # if unit.lower() in ['b', 'bohr']:
-        #     for a in range(self.natom):
-        #         self._atom[a][1] = list(np.array(self._atom[a][1]))
+        if unit.lower() in ['b', 'bohr']:
+            for a in range(self.natom):
+                self._atom[a][1] = list(np.array(self._atom[a][1]))
 
-        # elif unit in ['a', 'angstrom']:
-        #     raise ValueError('unit can only be Bohr.')
-            # for a in range(self.natom):
-            #     self._atom[a][1] = list(np.array(self._atom[a][1])/au2angstrom)
+        elif unit.lower() in ['a', 'angstrom']:
+            # raise ValueError('unit can only be Bohr.')
+            for a in range(self.natom):
+                self._atom[a][1] = list(np.array(self._atom[a][1])/au2angstrom)
 
         # self.mass = mol.atom_mass_list()
 
         self.spin = spin
         self.charge = charge
 
-        self.atom = atom
+        # self.atom = atom
 
         self.distmat = None
         self.basis = basis
+
         self._nelec = None
 
         ######## DO NOT CHANGE ####
+
         self.e_nuc = None
         self.overlap = None
         self.hcore = None
@@ -906,16 +904,16 @@ class Molecule:
         self.nao = None
         self.nmo = None
         self.unit = unit
+        self._bas = None
 
 
+    @property
+    def atom(self):
+        return self._atom
 
-    # @property
-    # def atom(self):
-    #     return self._atom
-
-    # @atom.setter
-    # def atom(self, atm):
-    #     self._atom = atm
+    @atom.setter
+    def atom(self, atm):
+        self._atom = atm
 
 
     def atom_coord(self, a):
@@ -951,6 +949,40 @@ class Molecule:
 
 
         build(self)
+
+    def moment_integral(self, orders=None, center=np.array([0,0,0])):
+        """
+
+        Parameters
+        ----------
+        orders : np.ndarray(D, 3)
+            Orders of the moment for each dimension (x, y, z).
+            Note that a two dimensional array must be given, even if there is
+            only one set of orders of the moment. The default is None.
+        center : TYPE, optional
+            . The default is np.array([0,0,0]).
+
+        Returns
+        -------
+        TYPE
+            DESCRIPTION.
+
+        """
+
+        from gbasis.integrals.moment import moment_integral
+
+        # set the orders of the moment integrals
+        if orders is None:
+            orders = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+
+        return moment_integral(self._bas, moment_coord=center, moment_orders=orders)
+
+    def momentum_integral(self, orders=(1,0,0), center=(0,0,0)):
+
+        from gbasis.integrals.momentum import momentum_integral
+
+        return momentum_integral(self.basis)
+
 
     def topyscf(self):
         """
