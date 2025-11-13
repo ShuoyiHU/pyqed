@@ -1145,7 +1145,7 @@ def overlap(cibra, ciket, s=None):
     #                   np.linalg.det(s[np.ix_(occidx1_b, occidx2_b)])
 
 
-    return contract('IB, IJ, JA', cibra.ci.conj(), S, ciket.ci)
+    return contract('BI, IJ, AJ -> BA', np.array(cibra.ci).conj(), S, np.array(ciket.ci))
 
 if __name__ == "__main__":
     from pyqed import Molecule

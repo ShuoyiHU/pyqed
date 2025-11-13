@@ -9,20 +9,20 @@ import numpy as np
 
 from pyqed import Molecule
 from pyqed.qchem.hf.rhf import ao2mo
-from pyqed.qchem.ci.cisd import overlap
-from pyqed.qchem.ci import CASCI, spin_square
+# from pyqed.qchem.ci.cisd import overlap
+from pyqed.qchem.mcscf import CASCI, spin_square, overlap
 
 mol = Molecule(atom = [
 ['H' , (0. , 0. , 0)],
-['Li' , (0. , 0. , 1)], ])
+['Li' , (0. , 0. , 2)], ])
 
 mol.basis = '631g'
 mol.charge = 0
 
 # mol.molecular_frame()
-print(mol.atom_coords())
+# print(mol.atom_coords())
 
-nstates = 5
+
 # Rs = np.linspace(1,4,4)
 # E = np.zeros((nstates, len(Rs)))
 
@@ -34,12 +34,13 @@ mf = mol.RHF()
 mf.run()
 
 ncas, nelecas = (4, 2)
-casci = CASCI(mf, ncas, nelecas)
+nstates = 3
+mc = CASCI(mf, ncas, nelecas)
 
-print('ncore = ', casci.ncore)
+# print('ncore = ', casci.ncore)
 
-casci.run(nstates)
-C = mf.mo_coeff
+mc.run(nstates)
+# C = mf.mo_coeff
 
 # print(C.shape)
 
@@ -54,16 +55,27 @@ C = mf.mo_coeff
 
 # print(h1e)
 
+mol = Molecule(atom = [
+['H' , (0. , 0. , 0)],
+['Li' , (0. , 0. ,2.1)], ], basis='631g')
+mol.build()
+mf = mol.RHF().run()
+mc2 = CASCI(mf, ncas, nelecas).run(nstates)
+
+A = overlap(mc, mc2)
+print(A)
+
+
 ####################
 # transition density matrix
 
 # h1e = r[:,:,2]
 # D = casci.make_tdm1(2, 0, h1e=h1e)
 
-state_id = 2
-dm1 = casci.make_rdm1(state_id)
+# state_id = 2
+# dm1 = casci.make_rdm1(state_id)
 
-print(dm1.shape)
+# print(dm1.shape)
 
 # print(D)
 # print(C @ D @ C.T)
@@ -72,12 +84,12 @@ print(dm1.shape)
 
 # print(e)
 
-dm2 = casci.make_rdm2(state_id)
-print(dm2.shape)
+# dm2 = casci.make_rdm2(state_id)
+# print(dm2.shape)
 
-print(dm2[:, :, 1, 1])
-print(dm2[:, :, 3, 2])
-# # print('pqqs -> ps')
+# print(dm2[:, :, 1, 1])
+# print(dm2[:, :, 3, 2])
+# # # print('pqqs -> ps')
 
 # # eri = mf.get_eri('mo')
 
@@ -92,35 +104,35 @@ print(dm2[:, :, 3, 2])
 
 
 # #################
-print('\n-------------- PYSCF -------------\n')
+# print('\n-------------- PYSCF -------------\n')
 
-from pyscf import mcscf, gto, fci, ao2mo
-from pyscf.mcscf.casci import CASCI
+# from pyscf import mcscf, gto, fci, ao2mo
+# from pyscf.mcscf.casci import CASCI
 
-mol = mol.topyscf()
+# mol = mol.topyscf()
 
 
-mf = mol.RHF()
-mf.kernel()
-C = mf.mo_coeff
+# mf = mol.RHF()
+# mf.kernel()
+# C = mf.mo_coeff
 
-# ncas=4
-# nelecas=2
+# # ncas=4
+# # nelecas=2
 
-mc = CASCI(mf, ncas, nelecas)
-mc.fcisolver = fci.direct_spin0.FCI(mol)
-mc.fcisolver.nroots = 3
+# mc = CASCI(mf, ncas, nelecas)
+# mc.fcisolver = fci.direct_spin0.FCI(mol)
+# mc.fcisolver.nroots = 3
 
-mc.run()
+# mc.run()
 
-dm1 = mc.fcisolver.make_rdm1(mc.ci[1], norb=ncas, nelec=nelecas)
-print(dm1.shape)
+# dm1 = mc.fcisolver.make_rdm1(mc.ci[1], norb=ncas, nelec=nelecas)
+# print(dm1.shape)
 
-D = mc.fcisolver.make_rdm2(mc.ci[1], norb=ncas, nelec=nelecas)
-print(D.shape)
+# D = mc.fcisolver.make_rdm2(mc.ci[1], norb=ncas, nelec=nelecas)
+# print(D.shape)
 
-print(D[:, :, 1, 1])
-print(D[:, :, 3, 2])
+# print(D[:, :, 1, 1])
+# print(D[:, :, 3, 2])
 # eri = mol.intor('int2e', aosym='s1')
 
 # eri_mo = ao2mo.full(eri, C)

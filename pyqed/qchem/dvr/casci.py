@@ -405,7 +405,7 @@ def overlap(cibra, ciket, h1e=None, h2e=None, return_tdm1=False):
     Parameters
     ----------
     cibra : TYPE
-        DESCRIPTION.
+        MCSCF objects.
     binary1 : TYPE
         DESCRIPTION.
     ciket : TYPE
