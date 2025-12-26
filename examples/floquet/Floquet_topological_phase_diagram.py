@@ -166,18 +166,19 @@ if __name__ == "__main__":
     # --- Configuration Area ---
     # Define the physical model parameters to scan
     model_config = GomezLeonModelParameters(
-        b_values=np.linspace(0, 1, 11),  # Scan over a range of 'b'
+        b_values=np.linspace(0, 1, 51),  # Scan over a range of 'b'
         # c_values=[0.0, 0.1]              # Run the full simulation for each 'c'
         c_values=[0.0]              # Run the full simulation for each 'c'
     )
 
     # Define the simulation and field parameters
     field_config = GomezLeonFieldParameters(
-        E0_max=200.0,
+        E0_max=2000.0,
         num_steps_E=101,
-        nt=11,
-        slice_b_value=0.75, # Request a slice plot for band_gap and winding number relationship at b=0.75
-        base_data_path='my_favorite_data_path/refactored_gomez_leon/'  # Adjust as needed
+        omega=100.0,  # Frequency of the field
+        nt=1,
+        # slice_b_value=None, # Request a slice plot for band_gap and winding number relationship at b=0.75
+        base_data_path="/Volumes/Shuoyi's SSD/high_frequency_topological_diagram/"  # Adjust as needed
     )
 
     # --- Execution Area ---

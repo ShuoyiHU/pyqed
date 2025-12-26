@@ -9,12 +9,11 @@ from sklearn.cluster import KMeans
 import matplotlib.pyplot as plt
 # from tqdm import tqdm
 import time
-from pyqed.floquet.utils import track_valence_band, berry_phase_winding, figure, track_valence_band_GL2013, save_data_to_hdf5, load_data_from_hdf5
+from pyqed.floquet.utils import track_valence_band, berry_phase_winding, figure, track_valence_band_GL2013, save_data_to_hdf5, load_data_from_hdf5, load_data_with_full_spectrum, load_data_with_full_spectrum_and_eigenstates
 from numpy import exp, eye, zeros, arctan2
 from scipy.linalg import eigh
 import h5py
 import math
-from opt_einsum import contract
 
 class TightBinding(Mol):
     """
@@ -495,7 +494,7 @@ class FloquetBloch:
         self.data_path    = data_path
         self.k = None #placeholder
 
-    def build_extendedH(self, kpt, Ecur=None, omegad = None, return_Hn_instead_of_F=False):
+    def build_extendedH(self, kpt, Ecur=None, omegad = None):
         """
         Construct the Floquet Hamiltonian(s) F(k) for one or many E₀.
 
@@ -513,10 +512,8 @@ class FloquetBloch:
         """
         from itertools import combinations
         kpt = np.atleast_1d(kpt).astype(float)
-        Norbs, nt = self.norbs, self.nt
-        if omegad is None:
-            raise ValueError("Please Provide E")
-        omega = float(omegad)
+        Norbs, nt, omega = self.norbs, self.nt, self.omegad_scalar
+
         # decide which E₀'s to loop over
         if Ecur is None:
             raise ValueError("Please Provide E")
@@ -542,8 +539,10 @@ class FloquetBloch:
                     shifted_base = base
                     arg = Ecur/omega * np.dot(Avec, shifted_base)
                     for p in self.all_p:
-                        Hn[p][i, j] += t * jv(p, arg) * phase
-                        Hn[p][j, i] += t * jv(-p, arg) * np.conj(phase)
+                        Hn[p][i, j] += t * p* jv(p, arg) * phase
+                        Hn[p][j, i] += t * p* jv(-p, arg) * np.conj(phase)
+                        # Hn[p][i, j] += t *(1j)** p* jv(p, arg) * phase
+                        # Hn[p][j, i] += t *(1j)** p* jv(-p, arg) * np.conj(phase)
                     x += 1
                     continue
                 # if x == 1:
@@ -571,21 +570,17 @@ class FloquetBloch:
                         t = self.relative_Hopping[block_start + offset_1 + m ]
                         if base[m]>=0:
                             shifted_base = base[m] - self.a_vec[m]
-                            if isinstance(kpt[m], (list, np.ndarray)):
-                                phase = np.exp(1j * np.dot(kpt[m][0],self.a_vec[m]))
-                            else:
-                                phase = np.exp(1j * np.dot(kpt[m],-self.a_vec[m])) # this is in closed lift basis
+                            phase = np.exp(1j * np.dot(kpt[m],-self.a_vec[m])) # this is in closed lift basis
                         else:
                             shifted_base = base[m] + self.a_vec[m]
-                            if isinstance(kpt[m], (list, np.ndarray)):
-                                phase = np.exp(1j * np.dot(kpt[m][0],self.a_vec[m]))
-                            else:
-                                phase = np.exp(1j * np.dot(kpt[m],self.a_vec[m])) # this is in closed lift basis
+                            phase = np.exp(1j * np.dot(kpt[m],self.a_vec[m])) # this is in closed lift basis
                         arg = Ecur/omega * np.dot(Avec[m], shifted_base)
                         for p in self.all_p:
                             # print(type(phase), type(arg), type(t), type(kpt), type(Avec), type(self.a_vec[m]))
-                            Hn[p][i, j] += t * jv(p, arg) * phase
-                            Hn[p][j, i] += t * jv(-p, arg) * np.conj(phase)
+                            Hn[p][i, j] += t * p* jv(p, arg) * phase
+                            Hn[p][j, i] += t * p* jv(-p, arg) * np.conj(phase)
+                            # Hn[p][i, j] += t *(1j)** p* jv(p, arg) * phase
+                            # Hn[p][j, i] += t *(1j)** p* jv(-p, arg) * np.conj(phase)
                     x +=1 
                     continue
                 if x == 2:
@@ -607,8 +602,10 @@ class FloquetBloch:
                         arg   = Ecur/omega * np.dot(Avec, sb)
                         phase = np.exp(1j * np.dot(kpt, sb))
                         for p in self.all_p:
-                            Hn[p][i, j] += t * jv(p, arg) * phase
-                            Hn[p][j, i] += t * jv(-p, arg) * np.conj(phase)
+                            Hn[p][i, j] += t * p* jv(p, arg) * phase
+                            Hn[p][j, i] += t * p* jv(-p, arg) * np.conj(phase)
+                            # Hn[p][i, j] += t *(1j)** p* jv(p, arg) * phase
+                            # Hn[p][j, i] += t *(1j)** p* jv(-p, arg) * np.conj(phase)
                     x +=1
                     continue
                 if x == 3:
@@ -630,40 +627,37 @@ class FloquetBloch:
                         arg   = Ecur/omega * np.dot(Avec, sb)
                         phase = np.exp(1j * np.dot(kpt, sb))
                         for p in self.all_p:
-                            Hn[p][i, j] += t * jv(p, arg) * phase
-                            Hn[p][j, i] += t * jv(-p, arg) * np.conj(phase)
+                            Hn[p][i, j] += t *p* jv(p, arg) * phase
+                            Hn[p][j, i] += t *p* jv(-p, arg) * np.conj(phase)
+                            # Hn[p][i, j] += t *(1j)** p* jv(p, arg) * phase
+                            # Hn[p][j, i] += t *(1j)** p* jv(-p, arg) * np.conj(phase)
                     x +=1
                     continue
                 if x == 4:
                     raise ValueError("Current capability of the code is to dim 3")
-        if return_Hn_instead_of_F:
-            Hn_list = [Hn[p] for p in self.all_p]
-            # Hn[0] is for the static part. Here, M(t) is defined from Delta H, so we set Hn[0] to zero.
-            Hn_list[nt // 2] = np.zeros((Norbs, Norbs), complex)
-            return Hn_list
-        else:
-            # 2) assemble the full Floquet matrix F
-            NF = Norbs * nt
-            F  = np.zeros((NF, NF), complex)
-            for n in range(nt):
-                for m in range(nt):
-                    p = n - m
-                    block = Hn.get(p, np.zeros((Norbs, Norbs), complex))
-                    if n == m:
-                        # add (n-N0)*ω identity on the diagonal block
-                        block = block + np.eye(Norbs) * ((n - self.N0) * omega)
-                    i0, i1 = n*Norbs, (n+1)*Norbs
-                    j0, j1 = m*Norbs, (m+1)*Norbs
-                    F[i0:i1, j0:j1] = block
 
-            # results.append(F)
+        # 2) assemble the full Floquet matrix F
+        NF = Norbs * nt
+        F  = np.zeros((NF, NF), complex)
+        for n in range(nt):
+            for m in range(nt):
+                p = n - m
+                block = Hn.get(p, np.zeros((Norbs, Norbs), complex))
+                if n == m:
+                    # add (n-N0)*ω identity on the diagonal block
+                    block = block + np.eye(Norbs) * ((n - self.N0) * omega)
+                i0, i1 = n*Norbs, (n+1)*Norbs
+                j0, j1 = m*Norbs, (m+1)*Norbs
+                F[i0:i1, j0:j1] = block
 
-            # return single array if only one E₀ requested
-            return F
+        # results.append(F)
+
+        # return single array if only one E₀ requested
+        return F
 
 
 
-    def track_band(self, k_values, E0=None, omega = None, quasienergy = None, previous_state = None, filename=None, band_index=None):
+    def track_band(self, k_values, E0=None, quasienergy = None, previous_state = None, filename=None, band_index=None):
         '''
         Compute the energy and corresponding eigenstate of the assigned band for the given k list, stored and saved in local file.
         this is a helper function for .run, usually should not be directly called.
@@ -671,37 +665,33 @@ class FloquetBloch:
         ----------
         k : array_like, shape (M, dim)
             k-point(s) to compute.
-        quasienergy: np.array, shape (len(k),)
         previous_state: list of np.array, each np.array element in the list have shape (len(k), Norbs * nt)
 
         Improve:
         band_index has not been considered yet
         '''
         nt = self.nt
-        # if previous_state is None and quasienergy is None:
-        #     raise ValueError("One of the information (quasienergy, previous_state) is required to track the band.")
         if E0 != 0 and previous_state is None:
             raise ValueError("previous_state is required to track the band at when external field is applied.")
-        if omega is None:
-            omega = self.omegad_scalar
+            
         if filename and os.path.exists(filename):
-            print(f"Loading data from {filename}...")   
+            print(f"Loading data from {filename}...")    
             return load_data_from_hdf5(filename)    
 
         NF = self.norbs * nt
         band_energy = np.zeros((len(k_values), self.norbs), dtype=complex)
         band_eigenstates = [np.zeros((len(k_values), NF), dtype=complex) for a in range(self.norbs)]
         Norbs = self.norbs
+        omega = self.omegad_scalar
         for i, k0 in enumerate(k_values):
-            extended_Floquet_hamiltonian = self.build_extendedH(k0, E0, omegad=omega)
+            extended_Floquet_hamiltonian = self.build_extendedH(k0, E0)
             if E0 == 0:
-                # filename = os.path.join(self.data_path, f"band_E{E0:.6f}.h5")
+                filename = os.path.join(self.data_path, f"band_E{E0:.6f}.h5")
+                # Solve the static Hamiltonian to get real band energies at E0 = 0 for tracking, later we will compare this with Floquet quasienergy for Floquet states selection
                 Real_band_energy, _ = linalg.eigh(self.Hk_func(k0))
-                        # Diagonalize
+                # Diagonalize the extended Floquet Hamiltonian
                 eigvals, eigvecs = linalg.eigh(extended_Floquet_hamiltonian)  # shape(eigvals)=(NF,), shape(eigvecs)=(NF,NF)
-                # print(eigvecs)
-                # specify a range to choose the quasienergies, choose the first BZ
-                # [-hbar omega/2, hbar * omega/2]
+                # Test if number of Floquet States the first BZ [-hbar omega/2, hbar * omega/2] equals to the norbs, if not, increase nt
                 eigvals_subset = np.zeros(Norbs, dtype=complex)
                 eigvecs_subset = np.zeros((NF , Norbs), dtype=complex)
                 # check if the Floquet states is complete
@@ -718,28 +708,21 @@ class FloquetBloch:
                 # now track one Floquet level per real band
                 for band_idx in range(self.norbs):
                     # 1) pick out the ONE real-band energy
-                    target_energy = Real_band_energy[band_idx]           # a scalar
-
+                    target_energy = Real_band_energy[band_idx]          # a scalar
                     # 2) form a 1-D distance array
-                    distances = np.abs(eigvals - target_energy)          # shape = (NF,)
-
+                    distances = np.abs(eigvals - target_energy)         # shape = (NF,)
                     # 3) get the single best Floquet index
-                    floq_idx  = np.argmin(distances)                     # integer
-
-                    # 4) assign that ONE scalar into your storage
+                    floq_idx  = np.argmin(distances)                      # integer
+                    # 4) assign that ONE scalar into storage
                     band_energy[i, band_idx]            = eigvals[floq_idx]
                     band_eigenstates[band_idx][i, :]    = eigvecs[:, floq_idx]
-                # return band_energy, band_eigenstates
             else:
-                # filename = os.path.join(self.data_path, f"band_E{E0:.6f}.h5")
-                # Diagonalize
+                filename = os.path.join(self.data_path, f"band_E{E0:.6f}.h5")
+                # Diagonalize the extended Floquet Hamiltonian
                 eigvals, eigvecs = linalg.eigh(extended_Floquet_hamiltonian)  # shape(eigvals)=(NF,), shape(eigvecs)=(NF,NF)s
-                # print(eigvecs.shape)
-                # specify a range to choose the quasienergies, choose the first BZ
-                # [-hbar omega/2, hbar * omega/2]
+                # Test if number of Floquet States the first BZ [-hbar omega/2, hbar * omega/2] equals to the norbs, if not, increase nt
                 eigvals_subset = np.zeros(Norbs, dtype=complex)
                 eigvecs_subset = np.zeros((NF , Norbs), dtype=complex)
-                # check if the Floquet states is complete
                 j = 0
                 for m in range(NF):
                     if -omega/2 <= eigvals[m].real <= omega/2:
@@ -750,29 +733,22 @@ class FloquetBloch:
                     print("Error: Number of Floquet states {} is not equal to \
                         the number of orbitals {} in the first BZ. \n".format(j, Norbs))
                     sys.exit()
-                # overlap = np.zeros(NF)
-                # for i in range(NF):
-                #     overlap[i] = np.abs(np.dot(previous_state.conj(), eigvecs[:, i]))**2
 
-                # idx = np.argsort(overlap)[::-1]  # Sort indices by descending overlap
-
-                # for band_idx in range(self.norb):
-                #     band_eigenstates[band_idx][:, i] = eigvecs[:, idx[band_idx]]
-                #     band_energy[i][band_idx] = eigvals[idx[band_idx]]
-
-                # return band_energy, band_eigenstates
-                    # — build overlap matrix: shape (Norbs, NF) —
+                # — build overlap matrix: shape (Norbs, NF) —
                 overlap = np.zeros((Norbs, NF), dtype=float)
                 for band_idx in range(Norbs):
-                    prev_vec = previous_state[band_idx][i, :]            # shape (NF,)
+                    # --- MODIFIED LOGIC: SELECT THE REFERENCE VECTOR FOR TRACKING ---
+                    if i == 0:
+                        # For the first k-point, track from the state at the previous E-field.
+                        prev_vec = previous_state[band_idx][i, :]
+                    else:
+                        # For subsequent k-points, track from the state at the previous k-point of the current E-field.
+                        prev_vec = band_eigenstates[band_idx][i - 1, :]
+                    
                     # dot prev_vec* with every eigvecs[:,m] -> scalar, then abs²
                     # np.vdot does conj(prev_vec)·eigvecs[:,m]
                     for m in range(NF):
-                        x = np.vdot(prev_vec, eigvecs[:, m])
-                        overlap[band_idx, m] = np.abs(x)**2
-                        # if x < 0:
-                        #     eigvecs[:, m] = -eigvecs[:, m]  # ensure positive overlap
-                        # overlap[band_idx, m] = np.abs(np.vdot(prev_vec, eigvecs[:, m]))**2
+                        overlap[band_idx, m] = np.abs(np.vdot(prev_vec, eigvecs[:, m]))**2
 
                 # — assignment so each band picks its best *unused* Floquet level —
                 assigned = set()
@@ -783,25 +759,13 @@ class FloquetBloch:
                         if m not in assigned:
                             assigned.add(m)
                             assignment[band_idx] = m
-                            break
+                            break 
 
                 # — store each band’s matched eigenvalue & eigenvector —
                 for band_idx, m in assignment.items():
-                    band_energy[i, band_idx]         = eigvals[m]
+                    band_energy[i, band_idx]        = eigvals[m]
                     band_eigenstates[band_idx][i, :] = eigvecs[:, m]
-                    #align the sign of the eigenstate with the previous state
-                    # A more robust way to align the phase of the eigenstate
-                    if previous_state is not None:
-                        # Calculate the complex inner product
-                        phase_factor = np.vdot(previous_state[band_idx][i, :], band_eigenstates[band_idx][i, :])
-                        
-                        # Calculate the phase correction factor e^{-i\phi}
-                        correction = phase_factor / np.abs(phase_factor)
-                        
-                        # Apply the correction to align the new eigenvector with the old one
-                        band_eigenstates[band_idx][i, :] /= correction
-                        # Note: Dividing by 'correction' is equivalent to multiplying by its conjugate,
-                        # since its magnitude is 1.
+
                 # — ensure our N_orbs quasi‐energies are ascending; if not, reorder — 
                 # get the real parts for comparison
                 vals = band_energy[i].real    # shape (Norbs,)
@@ -819,13 +783,106 @@ class FloquetBloch:
                         band_eigenstates[new_b][i, :] = old_states[old_b]
 
         if self.data_path is not None:        
-            # print(band_eigenstates[nt//2], band_eigenstates[nt//2+1],band_energy)
-            print(np.shape(band_eigenstates))
-            # print(band_eigenstates)
-            print(band_eigenstates[0][0][nt:nt+1])
-            print(band_eigenstates[1][0][nt:nt+1])
             save_data_to_hdf5(filename, band_energy, band_eigenstates)
+
         return band_energy, band_eigenstates
+
+
+
+    def _track_band(self, k_values, E0=None, quasienergy=None, previous_state=None, filename=None, band_index=None):
+        """
+        Computes and saves tracked bands, their eigenstates, the full Floquet
+        spectrum, and all corresponding eigenvectors.
+        """
+        nt = self.nt
+        NF = self.norbs * nt
+
+        if E0 != 0 and previous_state is None:
+            raise ValueError("previous_state is required to track the band when an external field is applied.")
+
+        # Check for existing data, but note that the loader must now handle four datasets.
+        if filename and os.path.exists(filename):
+            try:
+                print(f"Loading data from {filename}...")
+                # You will need a new loader function to read the four saved datasets.
+                # See the example loader function in the next section.
+                return load_data_with_full_spectrum_and_eigenstates(filename)
+            except (KeyError, IOError) as e:
+                print(f"Warning: Could not load complete data from {filename}. Recalculating... Error: {e}")
+
+        # Initialize data structures
+        band_energy = np.zeros((len(k_values), self.norbs), dtype=complex)
+        band_eigenstates = [np.zeros((len(k_values), NF), dtype=complex) for _ in range(self.norbs)]
+        full_spectrum_energies = np.zeros((len(k_values), NF), dtype=float)
+        # ADDED: Array to store all eigenvectors
+        full_spectrum_eigenstates = np.zeros((len(k_values), NF, NF), dtype=complex)
+
+        Norbs = self.norbs
+        omega = self.omegad_scalar
+
+        for i, k0 in enumerate(k_values):
+            extended_Floquet_hamiltonian = self.build_extendedH(k0, E0)
+            eigvals, eigvecs = linalg.eigh(extended_Floquet_hamiltonian)
+
+            # ADDED: Sort and store ALL eigenvalues and their corresponding eigenvectors
+            sort_indices = np.argsort(eigvals.real)
+            full_spectrum_energies[i, :] = eigvals.real[sort_indices]
+            full_spectrum_eigenstates[i, :, :] = eigvecs[:, sort_indices]
+
+            # --- The original tracking logic below remains unchanged ---
+            if E0 == 0:
+                # (Logic for E0=0 remains identical to your original code)
+                Real_band_energy, _ = linalg.eigh(self.Hk_func(k0))
+                for band_idx in range(self.norbs):
+                    target_energy = Real_band_energy[band_idx]
+                    distances = np.abs(eigvals - target_energy)
+                    floq_idx = np.argmin(distances)
+                    band_energy[i, band_idx] = eigvals[floq_idx]
+                    band_eigenstates[band_idx][i, :] = eigvecs[:, floq_idx]
+            else:
+                # (Logic for E0 != 0 remains identical to your original code)
+                overlap = np.zeros((Norbs, NF), dtype=float)
+                for band_idx in range(Norbs):
+                    # This part uses the logic from your other request (tracking from prev k-point)
+                    if i == 0:
+                        prev_vec = previous_state[band_idx][i, :]
+                    else:
+                        prev_vec = band_eigenstates[band_idx][i - 1, :]
+
+                    for m in range(NF):
+                        overlap[band_idx, m] = np.abs(np.vdot(prev_vec, eigvecs[:, m]))**2
+
+                assigned = set()
+                assignment = {}
+                for band_idx in range(Norbs):
+                    for m in np.argsort(overlap[band_idx])[::-1]:
+                        if m not in assigned:
+                            assigned.add(m)
+                            assignment[band_idx] = m
+                            break
+                for band_idx, m in assignment.items():
+                    band_energy[i, band_idx] = eigvals[m]
+                    band_eigenstates[band_idx][i, :] = eigvecs[:, m]
+                vals = band_energy[i].real
+                if not np.all(np.diff(vals) >= 0):
+                    order = np.argsort(vals)
+                    band_energy[i, :] = band_energy[i, order]
+                    old_states = [band_eigenstates[b][i, :].copy() for b in range(Norbs)]
+                    for new_b, old_b in enumerate(order):
+                        band_eigenstates[new_b][i, :] = old_states[old_b]
+
+        # MODIFIED: Save all four datasets to the HDF5 file
+        if self.data_path is not None:
+            print(f"Saving full spectrum and tracked bands to {filename}...")
+            with h5py.File(filename, 'w') as f:
+                f.create_dataset('tracked_energies', data=band_energy)
+                f.create_dataset('full_spectrum_energies', data=full_spectrum_energies)
+                f.create_dataset('full_spectrum_eigenstates', data=full_spectrum_eigenstates)
+                for idx, state_array in enumerate(band_eigenstates):
+                    f.create_dataset(f'tracked_eigenstates_{idx}', data=state_array)
+
+        # MODIFIED: Return all data, including the full set of eigenvectors
+        return band_energy, band_eigenstates, full_spectrum_energies, full_spectrum_eigenstates
 
 
     def run(self, k, nE_steps = None, calculated_bands=None):
@@ -858,6 +915,62 @@ class FloquetBloch:
                 quasienergy, previous_state = self.track_band(k, E_current, quasienergy=quasienergy, previous_state=previous_state, filename=filename, band_index=calculated_bands)
             print("current E is ", E_current, " time_past ", time.time()-time_start)
         return quasienergy, previous_state
+
+
+    def _run(self, k, nE_steps=None, calculated_bands=None):
+        """
+        Compute and cache Floquet bands over k and a list of E values.
+
+        This method now returns a dictionary containing the full results for each E-field step.
+        """
+        self.k = k
+        time_start = time.time()
+        
+        # --- E-field list setup (same as your code) ---
+        if self._E_list is None and nE_steps is None:
+            raise ValueError('Please specify nE_steps or provide a list of E values.')
+        if self._E_list is None:
+            E_list = np.linspace(0, self.E0_scalar, nE_steps)
+        else:
+            E_list = list(self._E_list)
+            if 0.0 not in E_list:
+                E_list.insert(0, 0)
+
+        # MODIFIED: Initialize a dictionary to store results from all E-field steps.
+        all_results = {}
+        
+        # Initialize the previous_state for the first iteration of the loop.
+        previous_state = None
+
+        for E_current in E_list:
+            filename = os.path.join(self.data_path, f"band_E{E_current:.6f}.h5")
+
+            # Call _track_band, which now returns four datasets.
+            # The 'previous_state' from the last step is essential for tracking in the current step.
+            tracked_energies, current_eigenstates, full_spectrum, full_eigenstates = self._track_band(
+                k,
+                E_current,
+                previous_state=previous_state,  # Use state from previous E-step
+                filename=filename,
+                band_index=calculated_bands
+            )
+
+            # MODIFIED: Store all results for the current E-field in the main dictionary.
+            # Using a formatted string for the key ensures consistency.
+            all_results[f"{E_current:.6f}"] = {
+                'tracked_energies': tracked_energies,
+                'tracked_eigenstates': current_eigenstates,
+                'full_spectrum': full_spectrum,
+                'full_eigenstates': full_eigenstates
+            }
+            
+            # IMPORTANT: Update previous_state for the next iteration.
+            previous_state = current_eigenstates
+            
+            print(f"Calculation for E = {E_current:.6f} complete. Time elapsed: {time.time() - time_start:.2f}s")
+
+        # MODIFIED: Return the dictionary containing all results.
+        return all_results
 
 
     def run_dynamics(self, k, nE_steps = None, omega_path = None, calculated_bands=None, E_path = None):
@@ -1030,6 +1143,87 @@ class FloquetBloch:
         print(results)
         # 6) return scalar if one E, else list
         return results[0] if len(results) == 1 else results
+
+    def cumulative_winding_number(self, E=None, energy_threshold=0.0):
+        """
+        Computes the cumulative Floquet winding number (Zak phase) by summing the
+        phases of all bands that lie below a given energy threshold.
+
+        This is used to determine the overall topological character of the system,
+        where a final value of π (or 1 in these units) indicates non-trivial
+        topology with edge states.
+
+        Parameters
+        ----------
+        E : float or list of float, optional
+            Field amplitude(s) to evaluate. If None, uses all E's from the last run.
+        energy_threshold : float, optional
+            The quasi-energy value to use as a cutoff. Defaults to 0.0.
+
+        Returns
+        -------
+        float or list of float
+            The cumulative winding number(s), typically 0 or 1.
+        """
+        # 1) Make sure a k-space run has been performed
+        if self.k is None:
+            raise RuntimeError("Call run() before computing winding number.")
+
+        # 2) Build the list of E-field values to process
+        if E is None:
+            E_list = self._E_list if self._E_list is not None else [self.E0_scalar]
+        elif isinstance(E, (float, int)):
+            E_list = [float(E)]
+        else:
+            E_list = list(E)
+
+        final_results = []
+
+        # 3) Loop over each field amplitude
+        for E_val in E_list:
+            fname = os.path.join(self.data_path, f"band_E{E_val:.6f}.h5")
+            
+            # NOTE: This assumes you have a loader that can read the full spectrum
+            # energies and eigenvectors saved by the modified _track_band function.
+            # Let's call it 'load_full_data' for this example.
+            try:
+                # This function needs to load 'full_spectrum_energies' and 'full_spectrum_eigenstates'
+                _, _, full_energies, full_eigenstates = load_data_with_full_spectrum_and_eigenstates(fname)
+            except (IOError, KeyError):
+                raise FileNotFoundError(f"Could not load the required full spectrum data from {fname}. Please ensure the file was generated with the updated _track_band function that saves all eigenvectors.")
+
+            Nk, NF = full_energies.shape  # (num_k_points, num_floquet_bands)
+            total_winding = 0.0
+
+            # 4) Loop over each band in the full spectrum
+            for band_idx in range(NF):
+                band_energies_k = full_energies[:, band_idx]
+
+                # 5) Check if the entire band is below the energy threshold
+                if np.max(band_energies_k) < energy_threshold:
+                    
+                    # 6) If it is, calculate the Zak phase for this single band
+                    # Get eigenvectors for this band: shape (Nk, NF_components)
+                    # We need to transpose to get (NF_components, Nk) for the calculation.
+                    vecs_for_band = full_eigenstates[:, :, band_idx].T
+
+                    # Build the projector chain P = |ψ₀⟩⟨ψ₀|...|ψ_{Nk-1}⟩⟨ψ_{Nk-1}|
+                    P = np.outer(vecs_for_band[:, 0], np.conjugate(vecs_for_band[:, 0]))
+                    for k_idx in range(1, Nk):
+                        v = vecs_for_band[:, k_idx]
+                        P = P @ np.outer(v, np.conjugate(v))
+
+                    # Zak phase is the angle of the trace, normalized by pi
+                    angle = np.angle(np.trace(P))
+                    winding_for_band = angle / np.pi
+                    total_winding += winding_for_band
+
+            # The final result is the sum of phases mod 2, which should be 0 or 1
+            cumulative_phase = np.round(total_winding) % 2
+            final_results.append(cumulative_phase)
+            # print(final_results)
+        # 7) Return scalar if one E, else list
+        return final_results[0] if len(final_results) == 1 else final_results
 
     def subspace_winding(self, bands, E=None):
         """
@@ -1303,209 +1497,6 @@ class FloquetBloch:
             
         else:
             raise ValueError("param_name_to_diff must be 'epsilon' or 'omega'")
-
-
-    def track_Floquet_Modes(self, k_values, E0=None):
-        """
-        Computes Floquet modes for a single k-point and E-field amplitude.
-        ...
-        """
-        # ... (rest of your existing function) ...
-        if E0 is None: E0 = self.E0_scalar
-        NF = self.norbs * self.nt
-        Norbs = self.norbs
-        omega = self.omegad_scalar
-        
-        k0 = k_values[0] if isinstance(k_values, list) else k_values
-        if isinstance(k_values, list) and len(k_values) > 1:
-            print('Warning: k_values is a list, but only the first k-point will be used for tracking Floquet modes.') 
-            
-        extended_Floquet_hamiltonian = self.build_extendedH(k0, E0, omegad=omega)
-        
-        if not np.allclose(extended_Floquet_hamiltonian, extended_Floquet_hamiltonian.conj().T):
-            print("Warning: Floquet Hamiltonian is not Hermitian. Normalization may be violated.")
-        
-        eigvals, eigvecs = linalg.eigh(extended_Floquet_hamiltonian)
-        
-        eigvals_subset = np.zeros(Norbs, dtype=float)
-        eigvecs_subset = np.zeros((NF , Norbs), dtype=complex)
-        
-        j = 0
-        for m in range(NF):
-            if -omega/2 <= eigvals[m].real <= omega/2:
-                if j < Norbs:
-                    eigvals_subset[j] = eigvals[m].real
-                    eigvecs_subset[:,j] = eigvecs[:,m]
-                    j += 1
-        
-        if j != Norbs:
-            print(f"Warning: Found {j} states in the 1st BZ, but expected {Norbs}. This may be a sign of a bad basis or too few harmonics.")
-
-        sort_indices = np.argsort(eigvals_subset)
-        eigvals_sorted = eigvals_subset[sort_indices]
-        eigvecs_sorted = eigvecs_subset[:, sort_indices]
-        
-        return eigvals_sorted, eigvecs_sorted.reshape((Norbs, self.nt, Norbs))
-
-
-    def overlap_matrix_of_Floquet_modes(self, time_independent_tensor, t):
-        """
-        Calculates S(t) using a pre-computed time-independent tensor.
-        
-        Parameters
-        ----------
-        time_independent_tensor : ndarray, shape (n_modes, n_modes, nt, nt)
-            The pre-calculated result of contract('ico,jdo->ijcd', ...).
-        t : float
-            Time at which to evaluate the overlap matrix.
-            
-        Returns
-        -------
-        overlap_matrix : ndarray, shape (n_modes, n_modes)
-        """
-        # from opt_einsum import contract
-        # nt = time_independent_tensor.shape[2]
-        
-        # c_minus_d = np.arange(nt)[:, np.newaxis] - np.arange(nt)[np.newaxis, :]
-        phase_matrix = np.eye(self.nt, dtype=complex)
-        
-        return contract('ijcd,cd->ij', time_independent_tensor, phase_matrix)
-        # return time_independent_tensor
-
-    def Coupling_matrix(self, Fourier_Comps_Floquet_Modes, k_vals, E0curr, E_basis_set, t=0):
-        """
-        Compute the time-averaged Floquet coupling matrix M_ij where each basis-mode j
-        uses Delta_H built from delta_E = E0curr - E_basis_set[e_idx].
-
-        Fourier_Comps_Floquet_Modes : ndarray (n_modes, nt, norbs)
-        Fourier components of Floquet modes (mode index groups correspond to E_basis_set).
-        k_vals : k-point(s) passed to build_extendedH
-        E0curr : float
-        Current driving amplitude E(t)
-        E_basis_set : array_like length nE_basis
-        E values used to build the expanded basis (modes are ordered by E then band)
-        t : float
-        Ignored here (time-averaged coupling).
-        """
-        from opt_einsum import contract
-        import numpy as np
-
-        n_modes, nt, norbs = Fourier_Comps_Floquet_Modes.shape
-        nE_basis = len(E_basis_set)
-        # Validate shapes: n_modes should equal nE_basis * norbs
-        if n_modes != nE_basis * norbs:
-            raise ValueError("n_modes != len(E_basis_set) * norbs; check basis ordering and shapes.")
-        FCFM = Fourier_Comps_Floquet_Modes.reshape(nE_basis*norbs, nt*norbs)
-        # Pre-allocate Delta_H_full
-        Delta_H_full = np.zeros((n_modes, nt * norbs, nt* norbs), dtype=complex)
-
-        # Precompute index differences kd[c,d] = (c-d) % nt
-        c_idx = np.arange(nt)[:, None]   # shape (nt,1)
-        d_idx = np.arange(nt)[None, :]   # shape (1,nt)
-        kd = (c_idx - d_idx) % nt        # shape (nt, nt)
-
-        # For each E in the E_basis_set, compute Hn_all for delta_E = E0curr - E
-        # and fill Delta_H_full for all modes that originate from that E
-        for e_idx, E_ref in enumerate(E_basis_set):
-            delta_E = E0curr - E_ref
-            # build_extendedH should return an array-like of shape (nt, norbs, norbs)
-            Hn_list = np.array(self.build_extendedH(kpt=k_vals, Ecur=E0curr,
-                                        omegad=self.omegad_scalar,
-                                        return_Hn_instead_of_F=False)) - np.array(self.build_extendedH(kpt=k_vals, Ecur=E_ref,
-                                        omegad=self.omegad_scalar,
-                                        return_Hn_instead_of_F=False))
-            # print("Hn_list shape:", Hn_list.shape)  # Debugging line
-            # sys.exit()  # Debugging line
-            # Fill blocks in Delta_H_full for all modes corresponding to E_ref
-            Delta_H_full[e_idx*norbs:(e_idx+1)*norbs, :, :] = Hn_list
-        # # implementing coupling_matrix_ij = np.conj(FCFM[i]) @ Delta_H_full[j] @ FCFM[j].T
-        # # if using loops, implementation is like: and contraction method is tested to result the same 
-        # coupling_matrix = np.zeros((n_modes, n_modes), dtype=complex)
-        # for i in range(n_modes):
-        #     for j in range(n_modes):
-        #         coupling_matrix[i][j] = np.conj(FCFM[i]) @ Delta_H_full[j] @ FCFM[j].T
-                
-        coupling_matrix = contract('iq, jqp, pj->ij', 
-                                    np.conj(FCFM), 
-                                    Delta_H_full, 
-                                    FCFM.T,
-                                    backend='numpy')
-
-        # print(coupling_matrix)  # Debugging line
-        # asym = np.max(np.abs(coupling_matrix - coupling_matrix.conj().T))  # Debugging line
-        # print("Hermiticity of coupling:", asym)  # Debugging line
-        # sys.exit()  # Debugging line
-        return coupling_matrix
-
-    # version below consider the time dependent phase factor from the Fourier components, but the overlap matrix got strange behaviour, so we are currently checking if we should remove this 
-    # def overlap_matrix_of_Floquet_modes(self, time_independent_tensor, t):
-    #     """
-    #     Calculates S(t) using a pre-computed time-independent tensor.
-        
-    #     Parameters
-    #     ----------
-    #     time_independent_tensor : ndarray, shape (n_modes, n_modes, nt, nt)
-    #         The pre-calculated result of contract('ico,jdo->ijcd', ...).
-    #     t : float
-    #         Time at which to evaluate the overlap matrix.
-            
-    #     Returns
-    #     -------
-    #     overlap_matrix : ndarray, shape (n_modes, n_modes)
-    #     """
-    #     from opt_einsum import contract
-    #     nt = time_independent_tensor.shape[2]
-        
-    #     c_minus_d = np.arange(nt)[:, np.newaxis] - np.arange(nt)[np.newaxis, :]
-    #     phase_matrix = np.exp(1j * c_minus_d * self.omegad_scalar * t)
-        
-    #     return contract('ijcd,cd->ij', time_independent_tensor, phase_matrix)
-
-    # def Coupling_matrix(self, Fourier_Comps_Floquet_Modes, k_vals, E0curr, E_basis_set, t=0):
-    #     """
-    #     Compute the coupling matrix M(t) using tensor contraction.
-
-    #     Parameters
-    #     ----------
-    #     Fourier_Comps_Floquet_Modes : array_like, dim (n_modes, nt, norbs)
-    #     k_vals : array_like
-    #         The k-point for the calculation.
-    #     E0curr : float
-    #         The current electric field amplitude E(t).
-    #     E_basis_set: array_like
-    #         The set of E-field values used to construct the basis.
-    #     t : float
-    #         Time at which to evaluate the coupling matrix.
-
-    #     Returns
-    #     -------
-    #     coupling_matrix : ndarray, shape (n_modes, n_modes)
-    #     """
-    #     from opt_einsum import contract
-    #     total_basis_number, nt, norbs = Fourier_Comps_Floquet_Modes.shape
-
-    #     Fourier_Comps_Delta_H = np.zeros((total_basis_number, nt, norbs, norbs), dtype=complex)
-    #     for j, E in enumerate(E_basis_set):
-    #         delta_E = E0curr - E
-    #         delta_H_t_k = self.build_extendedH(kpt=k_vals, Ecur=delta_E, omegad=self.omegad_scalar, return_Hn_instead_of_F=True)
-            
-    #         Fourier_Comps_Delta_H[j * 2, :, :, :] = delta_H_t_k
-    #         Fourier_Comps_Delta_H[j * 2 + 1, :, :, :] = delta_H_t_k
-        
-    #     c = np.arange(nt).reshape(-1, 1, 1)
-    #     k = np.arange(nt).reshape(1, -1, 1)
-    #     d = np.arange(nt).reshape(1, 1, -1)
-    #     phase_tensor = np.exp(1j * (c - k - d) * self.omegad_scalar * t)
-        
-    #     coupling_matrix = contract('ico,jkop,jdp,ckd->ij', 
-    #                                 np.conj(Fourier_Comps_Floquet_Modes), 
-    #                                 Fourier_Comps_Delta_H, 
-    #                                 Fourier_Comps_Floquet_Modes, 
-    #                                 phase_tensor,
-    #                                 backend='numpy')
-    #     return coupling_matrix
-    
-
 
 class TimeEvolution:
     """

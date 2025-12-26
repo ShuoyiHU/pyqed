@@ -7,7 +7,6 @@ from pyqed.floquet.utils import track_valence_band, berry_phase_winding, figure,
 from  pyqed.floquet.floquet import TightBinding, FloquetBloch
 import h5py
 import gc 
-from scipy.special import gamma
 
 class TimeEvolution:
     """
@@ -102,7 +101,7 @@ class TimeEvolution:
                 denominator = energies_current[1] - energies_current[0]
                 # if abs(denominator) > 1e-9:
                 nac_magnitude_vs_time[t_idx] = np.abs(numerator / denominator)
-                nac_magnitude_vs_time[t_idx] = np.abs(numerator)
+                # nac_magnitude_vs_time[t_idx] = np.abs(numerator)
                 # else:
                 #     nac_magnitude_vs_time[t_idx] = 0.0 # Assign 0 if states are degenerate
             
@@ -155,47 +154,12 @@ def load_evolution_data(filename):
         nac_magnitudes = f['nac_magnitudes'][:]
     return C_t, nac_magnitudes
 
-from scipy.integrate import quad
-from scipy.special import j0 # Bessel function of the first kind, order 0 (J₀)
-
-def energy_gap(t, k, omega, b, E_max, t0, sigma):
-    """
-    Calculates the instantaneous energy gap E_k(t) at a specific time t.
-    """
-    # 1. Calculate the instantaneous electric field E(t)
-    E_val = E_max * np.exp(-((t - t0)**2) / (2 * sigma**2))
-
-    # 2. Calculate arguments for the Bessel functions
-    arg1 = (b * E_val) / omega
-    arg2 = ((1 - b) * E_val) / omega
-
-    # 3. Evaluate the Bessel functions J₀(x)
-    j0_1 = j0(arg1)
-    j0_2 = j0(arg2)
-
-    # 4. Use your updated formula for the term inside the square root
-    inner_term = 2.25 * j0_1**2 + 3 * np.cos(k) * j0_1 * j0_2 + j0_2**2
-    
-    if inner_term < 0:
-        return np.sqrt(-inner_term)
-
-    return np.sqrt(inner_term)
-
-def calculate_stueckelberg_phase(t1, t2, k, omega, b, E_max, t0, sigma):
-    """
-    Calculates the Stückelberg phase by integrating the energy gap E_k(t).
-    """
-    phase, _ = quad(energy_gap, t1, t2, args=(k, omega, b, E_max, t0, sigma))
-    delta = 4.36853*(k+np.pi)**2
-    phase = phase + delta * (np.log(delta)-1) + np.angle(gamma(1-1j*delta))+ np.pi/4
-    return phase
-
 
 if __name__ == "__main__":
     # np.set_printoptions(precision=4, linewidth=180) # self_use, print nicely for checking the matrix elements
     from scipy.special import jv, jvp
     # --- Simulation Parameters ---
-    coords = [[0], [0.7]]
+    coords = [[0, 0], [0.75, 0.1]]
 
     # # --- realistic parameters setup ---
     # tb_model = TightBinding(coords, lambda_decay=1.0, lattice_constant=[1.0], relative_Hopping=[0.1286,0.0919])
@@ -212,20 +176,20 @@ if __name__ == "__main__":
     # os.makedirs(evolution_cache_dir, exist_ok=True)
 
     # ---simplified parameters for test purpose---
-    tb_model = TightBinding(coords, lambda_decay=1.0, lattice_constant=[1.0], relative_Hopping=[1.5,1])
+    tb_model = TightBinding(coords, lambda_decay=1.0, lattice_constant=[1.0, 0], relative_Hopping=[1.5,1])
     total_time = 50
-    # total_time = 2*np.pi+np.pi/10
+    total_time = 2*np.pi+np.pi/10
     # num_time_steps = 10000
-    num_time_steps = 5000
+    num_time_steps = 10000
     omega = 10
     nt_assigned = 11
     # --- Setup output and cache directories ---
-    output_plot_dir = 'MacBook_local_data/model_parameter/dynamics_plots'
-    evolution_cache_dir = 'MacBook_local_data/model_parameter/evolution_cache'
+    output_plot_dir = "/Volumes/Shuoyi's SSD/model_parameter_2D_chiral_not_normalized/dynamics_plots"
+    evolution_cache_dir = "/Volumes/Shuoyi's SSD/model_parameter_2D_chiral_not_normalized/evolution_cache"
     os.makedirs(output_plot_dir, exist_ok=True)
     os.makedirs(evolution_cache_dir, exist_ok=True)
     t_space = np.linspace(-total_time/2, total_time/2, num_time_steps+1)
-    E_max = 25
+    E_max = 200
 
 
     # --- Gaussian pulse parameters ---
@@ -235,29 +199,29 @@ if __name__ == "__main__":
     omega_path = np.full_like(t_space, 10.0)
 
     # --- K-space scan setup ---
-    num_k_points = 401
-    k_grid_1 = np.linspace(np.pi*1999/2000, np.pi*3999/4000, 51)
-    k_grid_2 = np.linspace(np.pi*3999/4000, np.pi, 401)
-    k_grid = np.concatenate((k_grid_1, k_grid_2))
-    # k_grid = [3.1401,3.1402,3.1403,3.1404,3.1405,3.1406,3.1407,3.1408,3.1409,3.1410,3.1411,3.1412,3.1413,3.1414,3.1415]
-    
-    # k_grid = [3.1415926]
-    # k_grid_1 = np.linspace(-np.pi, -4*np.pi/5, 81) #only calculate half for fast testing, corrected later 
-    # k_grid_2 = np.linspace(-4*np.pi/5, 0, 41) #only calculate half for fast testing, corrected later 
-    # k_grid = np.concatenate((k_grid_1, k_grid_2))
-    
+    num_k_points = 201
+    k_grid = np.linspace(-np.pi, np.pi, num_k_points)
+    k_grid_0 = np.linspace(-np.pi+0.1, -0.1, 51) #only calculate half for fast testing, corrected later 
+    k_grid_1 = np.linspace(-np.pi, -np.pi+0.1, 51) #only calculate half for fast testing, corrected later 
+    k_grid_2 = np.linspace(-0.1, 0, 51) #only calculate half for fast testing, corrected later 
+    # k_grid_3 = np.linspace(0, np.pi, 101) #only calculate half for fast testing, corrected later 
+    k_grid_4 = np.linspace(np.pi/8, np.pi/8*7, 101) #only calculate half for fast testing, corrected later 
+    k_grid_3 = np.linspace(0, np.pi/8, 51) #only calculate half for fast testing, corrected later 
+    k_grid_5 = np.linspace(np.pi/8*7, np.pi, 51) #only calculate half for fast testing, corrected later 
+    k_grid = np.concatenate([k_grid_1, k_grid_0, k_grid_2, k_grid_3, k_grid_4, k_grid_5])
+    k_grid = k_grid_3
     final_excited_populations = []
     
 
 
     # --- Main Loop over k-points ---
     for k_val in k_grid:
-        print(f"--- Processing k = {k_val:.10f} ---")
+        print(f"--- Processing k = {k_val:.4f} ---")
         
         # Define a unique filename for the evolution cache based on key parameters
         cache_filename = os.path.join(
             evolution_cache_dir,
-            f"k{k_val:.10f}_Emax{E_max:.3f}_T{total_time:.3f}_sigma{sigma:.3f}.h5"
+            f"k{k_val:.4f}_Emax{E_max:.3f}_T{total_time:.3f}_sigma{sigma:.3f}.h5"
         )
 
         # Check for the final evolution data first
@@ -269,10 +233,10 @@ if __name__ == "__main__":
             print("No cache found. Running full calculation...")
             
             # --- Step 1: Run Floquet pre-computation ---
-            data_path_k = f'MacBook_local_data/model_parameter/data_k_scan/k_{k_val:.10f}_Emax{E_max:.3f}_T{total_time:.3f}_sigma{sigma:.3f}'
+            data_path_k = f"/Volumes/Shuoyi's SSD/model_parameter_2D_chiral_not_normalized/data_k_scan/k_{k_val:.4f}_Emax{E_max:.3f}_T{total_time:.3f}_sigma{sigma:.3f}"
             floquet_model = tb_model.Floquet(
                 omegad=omega, E0=np.unique(epsilon_path), nt=nt_assigned,
-                polarization=[1], data_path=data_path_k
+                polarization=[1, 1j], data_path=data_path_k
             )
             floquet_model.run(k=[k_val])
 
@@ -293,7 +257,7 @@ if __name__ == "__main__":
 
         # --- Plotting and saving the individual dynamics figure ---
         plot_filename = os.path.join(output_plot_dir, 
-                                     f"dyn_k{k_val:.10f}_Emax{E_max:.2f}_s{sigma:.2f}.png")
+                                     f"dyn_k{k_val:.4f}_Emax{E_max:.2f}_s{sigma:.2f}.png")
         
         # Optional: Also skip plotting if the plot already exists
         if os.path.exists(plot_filename):
@@ -303,7 +267,7 @@ if __name__ == "__main__":
                 nrows=2, ncols=1, figsize=(12, 10), sharex=True,
                 gridspec_kw={'height_ratios': [2, 1]}
             )
-            fig.suptitle(f'Time Evolution (k={k_val:.10f}, E_max={E_max:.1f}, $\sigma$={sigma:.2f})', 
+            fig.suptitle(f'Time Evolution (k={k_val:.4f}, E_max={E_max:.1f}, $\sigma$={sigma:.2f})', 
                          fontsize=16, y=0.97)
 
             # (Your detailed plotting code...)
@@ -335,64 +299,13 @@ if __name__ == "__main__":
             print(f"Saved dynamics plot to {plot_filename}")
         # forces free up memory from the large objects created in this iteration (floquet_model, C_t, figures, etc.).
         gc.collect()
-
-
-    # # --- Final Summary Plot (after the loop) ---
-    # plt.figure(figsize=(10, 6))
-    # plt.plot(k_grid, final_excited_populations, marker='o', markersize=2, linestyle='-')
-    # plt.plot(k_grid, 2 * np.exp(-27.4483 * (k_grid + np.pi)**2) * (1 - np.exp(-27.4483 * (k_grid + np.pi)**2)), 
-    #          color='orange', linestyle='--', label=r'$2e^{-27.4483(k-\pi)^2}(1-e^{-27.4483(k-\pi)^2})$')
-    # plt.legend()
-    # plt.xlabel('Crystal Momentum (k)')
-    # plt.ylabel('Final Excitation Population')
-    # plt.title(f'Final Population vs. k (E_max={E_max:.1f}, $\sigma$={sigma:.2f})')
-    # plt.xticks([-np.pi, -np.pi/2, 0, np.pi/2, np.pi], [r'$\pi$',r'$\pi/2$','0', r'$\pi/2$', r'$\pi$'])
-    # plt.grid(True)
-    # plt.ylim(bottom=0)
-    # plt.show()
-
     # --- Final Summary Plot (after the loop) ---
-
-    print("\nCalculating theoretical LZSM curve with interference...")
-    lzsm_populations = []
-    b_param = 0.7  # From your coordinate setup [[0], [0.7]]
-    t_initial = -3.80858
-    t_final = 3.80858
-
-    # Loop over the k_grid to calculate the theoretical LZSM population for each k
-    for k_val in k_grid:
-        # Use the same single-passage probability P you had before
-        P_lz = np.exp(-27.4483 * (k_val + np.pi)**2)
-        
-        # Calculate the Stückelberg phase for this k
-        phi_s = calculate_stueckelberg_phase(
-            t_initial, t_final,
-            k_val, omega, b_param,
-            E_max, t0, sigma
-        )
-        
-        # Calculate the final population using the full LZSM interference formula
-        # P_LZSM = 4 * P * (1 - P) * cos^2(Φ_S / 2)
-        p_lzsm = 4 * P_lz * (1 - P_lz) * (np.sin(phi_s))**2
-        lzsm_populations.append(p_lzsm)
-        print(f"k={k_val:.3f}, Φ_S={phi_s:.3f}, P_LZSM={p_lzsm:.4f}", end="\r")
-
-    print("\nPlotting final results...")
     plt.figure(figsize=(10, 6))
-
-    # Plot 1: Your numerical simulation data (blue line)
-    plt.plot(k_grid, final_excited_populations, marker='o', markersize=2, linestyle='-', label='Numerical Simulation')
-
-    # Plot 2: The new LZSM theoretical curve including interference (orange dashed line)
-    plt.plot(k_grid, lzsm_populations, 
-            color='orange', linestyle='--', label=r'LZSM Theory: $4P(1-P)\sin^2(\Phi_S)$')
-
-    plt.legend()
+    plt.plot(k_grid, final_excited_populations, marker='o', markersize=2, linestyle='-')
     plt.xlabel('Crystal Momentum (k)')
     plt.ylabel('Final Excitation Population')
     plt.title(f'Final Population vs. k (E_max={E_max:.1f}, $\sigma$={sigma:.2f})')
-    # plt.xticks([-np.pi, -np.pi/2, 0, np.pi/2, np.pi], [r'$-\pi$', r'$-\pi/2$', '0', r'$\pi/2$', r'$\pi$']) # Corrected tick labels
-    plt.xticks([999*np.pi/1000, np.pi], [ r'$999 \pi/1000$', r'$\pi$']) # Corrected tick labels
+    plt.xticks([-np.pi, -np.pi/2, 0, np.pi/2, np.pi], [r'$\pi$',r'$\pi/2$','0', r'$\pi/2$', r'$\pi$'])
     plt.grid(True)
     plt.ylim(bottom=0)
     plt.show()

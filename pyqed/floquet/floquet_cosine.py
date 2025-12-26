@@ -14,7 +14,6 @@ from numpy import exp, eye, zeros, arctan2
 from scipy.linalg import eigh
 import h5py
 import math
-from opt_einsum import contract
 
 class TightBinding(Mol):
     """
@@ -495,7 +494,7 @@ class FloquetBloch:
         self.data_path    = data_path
         self.k = None #placeholder
 
-    def build_extendedH(self, kpt, Ecur=None, omegad = None, return_Hn_instead_of_F=False):
+    def build_extendedH(self, kpt, Ecur=None, omegad = None):
         """
         Construct the Floquet Hamiltonian(s) F(k) for one or many E₀.
 
@@ -542,8 +541,8 @@ class FloquetBloch:
                     shifted_base = base
                     arg = Ecur/omega * np.dot(Avec, shifted_base)
                     for p in self.all_p:
-                        Hn[p][i, j] += t * jv(p, arg) * phase
-                        Hn[p][j, i] += t * jv(-p, arg) * np.conj(phase)
+                        Hn[p][i, j] += t *(1j)** p * jv(p, arg) * phase
+                        Hn[p][j, i] += t *(1j)** p * jv(-p, arg) * np.conj(phase)
                     x += 1
                     continue
                 # if x == 1:
@@ -571,21 +570,15 @@ class FloquetBloch:
                         t = self.relative_Hopping[block_start + offset_1 + m ]
                         if base[m]>=0:
                             shifted_base = base[m] - self.a_vec[m]
-                            if isinstance(kpt[m], (list, np.ndarray)):
-                                phase = np.exp(1j * np.dot(kpt[m][0],self.a_vec[m]))
-                            else:
-                                phase = np.exp(1j * np.dot(kpt[m],-self.a_vec[m])) # this is in closed lift basis
+                            phase = np.exp(1j * np.dot(kpt[m],-self.a_vec[m])) # this is in closed lift basis
                         else:
                             shifted_base = base[m] + self.a_vec[m]
-                            if isinstance(kpt[m], (list, np.ndarray)):
-                                phase = np.exp(1j * np.dot(kpt[m][0],self.a_vec[m]))
-                            else:
-                                phase = np.exp(1j * np.dot(kpt[m],self.a_vec[m])) # this is in closed lift basis
+                            phase = np.exp(1j * np.dot(kpt[m],self.a_vec[m])) # this is in closed lift basis
                         arg = Ecur/omega * np.dot(Avec[m], shifted_base)
                         for p in self.all_p:
                             # print(type(phase), type(arg), type(t), type(kpt), type(Avec), type(self.a_vec[m]))
-                            Hn[p][i, j] += t * jv(p, arg) * phase
-                            Hn[p][j, i] += t * jv(-p, arg) * np.conj(phase)
+                            Hn[p][i, j] += t *(1j)** p * jv(p, arg) * phase
+                            Hn[p][j, i] += t *(1j)** p * jv(-p, arg) * np.conj(phase)
                     x +=1 
                     continue
                 if x == 2:
@@ -607,8 +600,8 @@ class FloquetBloch:
                         arg   = Ecur/omega * np.dot(Avec, sb)
                         phase = np.exp(1j * np.dot(kpt, sb))
                         for p in self.all_p:
-                            Hn[p][i, j] += t * jv(p, arg) * phase
-                            Hn[p][j, i] += t * jv(-p, arg) * np.conj(phase)
+                            Hn[p][i, j] += t *(1j)** p * jv(p, arg) * phase
+                            Hn[p][j, i] += t *(1j)** p * jv(-p, arg) * np.conj(phase)
                     x +=1
                     continue
                 if x == 3:
@@ -630,36 +623,31 @@ class FloquetBloch:
                         arg   = Ecur/omega * np.dot(Avec, sb)
                         phase = np.exp(1j * np.dot(kpt, sb))
                         for p in self.all_p:
-                            Hn[p][i, j] += t * jv(p, arg) * phase
-                            Hn[p][j, i] += t * jv(-p, arg) * np.conj(phase)
+                            Hn[p][i, j] += t *(1j)** p * jv(p, arg) * phase
+                            Hn[p][j, i] += t *(1j)** p * jv(-p, arg) * np.conj(phase)
                     x +=1
                     continue
                 if x == 4:
                     raise ValueError("Current capability of the code is to dim 3")
-        if return_Hn_instead_of_F:
-            Hn_list = [Hn[p] for p in self.all_p]
-            # Hn[0] is for the static part. Here, M(t) is defined from Delta H, so we set Hn[0] to zero.
-            Hn_list[nt // 2] = np.zeros((Norbs, Norbs), complex)
-            return Hn_list
-        else:
-            # 2) assemble the full Floquet matrix F
-            NF = Norbs * nt
-            F  = np.zeros((NF, NF), complex)
-            for n in range(nt):
-                for m in range(nt):
-                    p = n - m
-                    block = Hn.get(p, np.zeros((Norbs, Norbs), complex))
-                    if n == m:
-                        # add (n-N0)*ω identity on the diagonal block
-                        block = block + np.eye(Norbs) * ((n - self.N0) * omega)
-                    i0, i1 = n*Norbs, (n+1)*Norbs
-                    j0, j1 = m*Norbs, (m+1)*Norbs
-                    F[i0:i1, j0:j1] = block
 
-            # results.append(F)
+        # 2) assemble the full Floquet matrix F
+        NF = Norbs * nt
+        F  = np.zeros((NF, NF), complex)
+        for n in range(nt):
+            for m in range(nt):
+                p = n - m
+                block = Hn.get(p, np.zeros((Norbs, Norbs), complex))
+                if n == m:
+                    # add (n-N0)*ω identity on the diagonal block
+                    block = block + np.eye(Norbs) * ((n - self.N0) * omega)
+                i0, i1 = n*Norbs, (n+1)*Norbs
+                j0, j1 = m*Norbs, (m+1)*Norbs
+                F[i0:i1, j0:j1] = block
 
-            # return single array if only one E₀ requested
-            return F
+        # results.append(F)
+
+        # return single array if only one E₀ requested
+        return F
 
 
 
@@ -1303,209 +1291,6 @@ class FloquetBloch:
             
         else:
             raise ValueError("param_name_to_diff must be 'epsilon' or 'omega'")
-
-
-    def track_Floquet_Modes(self, k_values, E0=None):
-        """
-        Computes Floquet modes for a single k-point and E-field amplitude.
-        ...
-        """
-        # ... (rest of your existing function) ...
-        if E0 is None: E0 = self.E0_scalar
-        NF = self.norbs * self.nt
-        Norbs = self.norbs
-        omega = self.omegad_scalar
-        
-        k0 = k_values[0] if isinstance(k_values, list) else k_values
-        if isinstance(k_values, list) and len(k_values) > 1:
-            print('Warning: k_values is a list, but only the first k-point will be used for tracking Floquet modes.') 
-            
-        extended_Floquet_hamiltonian = self.build_extendedH(k0, E0, omegad=omega)
-        
-        if not np.allclose(extended_Floquet_hamiltonian, extended_Floquet_hamiltonian.conj().T):
-            print("Warning: Floquet Hamiltonian is not Hermitian. Normalization may be violated.")
-        
-        eigvals, eigvecs = linalg.eigh(extended_Floquet_hamiltonian)
-        
-        eigvals_subset = np.zeros(Norbs, dtype=float)
-        eigvecs_subset = np.zeros((NF , Norbs), dtype=complex)
-        
-        j = 0
-        for m in range(NF):
-            if -omega/2 <= eigvals[m].real <= omega/2:
-                if j < Norbs:
-                    eigvals_subset[j] = eigvals[m].real
-                    eigvecs_subset[:,j] = eigvecs[:,m]
-                    j += 1
-        
-        if j != Norbs:
-            print(f"Warning: Found {j} states in the 1st BZ, but expected {Norbs}. This may be a sign of a bad basis or too few harmonics.")
-
-        sort_indices = np.argsort(eigvals_subset)
-        eigvals_sorted = eigvals_subset[sort_indices]
-        eigvecs_sorted = eigvecs_subset[:, sort_indices]
-        
-        return eigvals_sorted, eigvecs_sorted.reshape((Norbs, self.nt, Norbs))
-
-
-    def overlap_matrix_of_Floquet_modes(self, time_independent_tensor, t):
-        """
-        Calculates S(t) using a pre-computed time-independent tensor.
-        
-        Parameters
-        ----------
-        time_independent_tensor : ndarray, shape (n_modes, n_modes, nt, nt)
-            The pre-calculated result of contract('ico,jdo->ijcd', ...).
-        t : float
-            Time at which to evaluate the overlap matrix.
-            
-        Returns
-        -------
-        overlap_matrix : ndarray, shape (n_modes, n_modes)
-        """
-        # from opt_einsum import contract
-        # nt = time_independent_tensor.shape[2]
-        
-        # c_minus_d = np.arange(nt)[:, np.newaxis] - np.arange(nt)[np.newaxis, :]
-        phase_matrix = np.eye(self.nt, dtype=complex)
-        
-        return contract('ijcd,cd->ij', time_independent_tensor, phase_matrix)
-        # return time_independent_tensor
-
-    def Coupling_matrix(self, Fourier_Comps_Floquet_Modes, k_vals, E0curr, E_basis_set, t=0):
-        """
-        Compute the time-averaged Floquet coupling matrix M_ij where each basis-mode j
-        uses Delta_H built from delta_E = E0curr - E_basis_set[e_idx].
-
-        Fourier_Comps_Floquet_Modes : ndarray (n_modes, nt, norbs)
-        Fourier components of Floquet modes (mode index groups correspond to E_basis_set).
-        k_vals : k-point(s) passed to build_extendedH
-        E0curr : float
-        Current driving amplitude E(t)
-        E_basis_set : array_like length nE_basis
-        E values used to build the expanded basis (modes are ordered by E then band)
-        t : float
-        Ignored here (time-averaged coupling).
-        """
-        from opt_einsum import contract
-        import numpy as np
-
-        n_modes, nt, norbs = Fourier_Comps_Floquet_Modes.shape
-        nE_basis = len(E_basis_set)
-        # Validate shapes: n_modes should equal nE_basis * norbs
-        if n_modes != nE_basis * norbs:
-            raise ValueError("n_modes != len(E_basis_set) * norbs; check basis ordering and shapes.")
-        FCFM = Fourier_Comps_Floquet_Modes.reshape(nE_basis*norbs, nt*norbs)
-        # Pre-allocate Delta_H_full
-        Delta_H_full = np.zeros((n_modes, nt * norbs, nt* norbs), dtype=complex)
-
-        # Precompute index differences kd[c,d] = (c-d) % nt
-        c_idx = np.arange(nt)[:, None]   # shape (nt,1)
-        d_idx = np.arange(nt)[None, :]   # shape (1,nt)
-        kd = (c_idx - d_idx) % nt        # shape (nt, nt)
-
-        # For each E in the E_basis_set, compute Hn_all for delta_E = E0curr - E
-        # and fill Delta_H_full for all modes that originate from that E
-        for e_idx, E_ref in enumerate(E_basis_set):
-            delta_E = E0curr - E_ref
-            # build_extendedH should return an array-like of shape (nt, norbs, norbs)
-            Hn_list = np.array(self.build_extendedH(kpt=k_vals, Ecur=E0curr,
-                                        omegad=self.omegad_scalar,
-                                        return_Hn_instead_of_F=False)) - np.array(self.build_extendedH(kpt=k_vals, Ecur=E_ref,
-                                        omegad=self.omegad_scalar,
-                                        return_Hn_instead_of_F=False))
-            # print("Hn_list shape:", Hn_list.shape)  # Debugging line
-            # sys.exit()  # Debugging line
-            # Fill blocks in Delta_H_full for all modes corresponding to E_ref
-            Delta_H_full[e_idx*norbs:(e_idx+1)*norbs, :, :] = Hn_list
-        # # implementing coupling_matrix_ij = np.conj(FCFM[i]) @ Delta_H_full[j] @ FCFM[j].T
-        # # if using loops, implementation is like: and contraction method is tested to result the same 
-        # coupling_matrix = np.zeros((n_modes, n_modes), dtype=complex)
-        # for i in range(n_modes):
-        #     for j in range(n_modes):
-        #         coupling_matrix[i][j] = np.conj(FCFM[i]) @ Delta_H_full[j] @ FCFM[j].T
-                
-        coupling_matrix = contract('iq, jqp, pj->ij', 
-                                    np.conj(FCFM), 
-                                    Delta_H_full, 
-                                    FCFM.T,
-                                    backend='numpy')
-
-        # print(coupling_matrix)  # Debugging line
-        # asym = np.max(np.abs(coupling_matrix - coupling_matrix.conj().T))  # Debugging line
-        # print("Hermiticity of coupling:", asym)  # Debugging line
-        # sys.exit()  # Debugging line
-        return coupling_matrix
-
-    # version below consider the time dependent phase factor from the Fourier components, but the overlap matrix got strange behaviour, so we are currently checking if we should remove this 
-    # def overlap_matrix_of_Floquet_modes(self, time_independent_tensor, t):
-    #     """
-    #     Calculates S(t) using a pre-computed time-independent tensor.
-        
-    #     Parameters
-    #     ----------
-    #     time_independent_tensor : ndarray, shape (n_modes, n_modes, nt, nt)
-    #         The pre-calculated result of contract('ico,jdo->ijcd', ...).
-    #     t : float
-    #         Time at which to evaluate the overlap matrix.
-            
-    #     Returns
-    #     -------
-    #     overlap_matrix : ndarray, shape (n_modes, n_modes)
-    #     """
-    #     from opt_einsum import contract
-    #     nt = time_independent_tensor.shape[2]
-        
-    #     c_minus_d = np.arange(nt)[:, np.newaxis] - np.arange(nt)[np.newaxis, :]
-    #     phase_matrix = np.exp(1j * c_minus_d * self.omegad_scalar * t)
-        
-    #     return contract('ijcd,cd->ij', time_independent_tensor, phase_matrix)
-
-    # def Coupling_matrix(self, Fourier_Comps_Floquet_Modes, k_vals, E0curr, E_basis_set, t=0):
-    #     """
-    #     Compute the coupling matrix M(t) using tensor contraction.
-
-    #     Parameters
-    #     ----------
-    #     Fourier_Comps_Floquet_Modes : array_like, dim (n_modes, nt, norbs)
-    #     k_vals : array_like
-    #         The k-point for the calculation.
-    #     E0curr : float
-    #         The current electric field amplitude E(t).
-    #     E_basis_set: array_like
-    #         The set of E-field values used to construct the basis.
-    #     t : float
-    #         Time at which to evaluate the coupling matrix.
-
-    #     Returns
-    #     -------
-    #     coupling_matrix : ndarray, shape (n_modes, n_modes)
-    #     """
-    #     from opt_einsum import contract
-    #     total_basis_number, nt, norbs = Fourier_Comps_Floquet_Modes.shape
-
-    #     Fourier_Comps_Delta_H = np.zeros((total_basis_number, nt, norbs, norbs), dtype=complex)
-    #     for j, E in enumerate(E_basis_set):
-    #         delta_E = E0curr - E
-    #         delta_H_t_k = self.build_extendedH(kpt=k_vals, Ecur=delta_E, omegad=self.omegad_scalar, return_Hn_instead_of_F=True)
-            
-    #         Fourier_Comps_Delta_H[j * 2, :, :, :] = delta_H_t_k
-    #         Fourier_Comps_Delta_H[j * 2 + 1, :, :, :] = delta_H_t_k
-        
-    #     c = np.arange(nt).reshape(-1, 1, 1)
-    #     k = np.arange(nt).reshape(1, -1, 1)
-    #     d = np.arange(nt).reshape(1, 1, -1)
-    #     phase_tensor = np.exp(1j * (c - k - d) * self.omegad_scalar * t)
-        
-    #     coupling_matrix = contract('ico,jkop,jdp,ckd->ij', 
-    #                                 np.conj(Fourier_Comps_Floquet_Modes), 
-    #                                 Fourier_Comps_Delta_H, 
-    #                                 Fourier_Comps_Floquet_Modes, 
-    #                                 phase_tensor,
-    #                                 backend='numpy')
-    #     return coupling_matrix
-    
-
 
 class TimeEvolution:
     """

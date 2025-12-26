@@ -75,7 +75,7 @@ def calculate_and_plot_winding_map(model_params: ModelParameters, field_params: 
             data_path=data_path
         )
         
-        floquet_model.run(k_vals)
+        floquet_model._run(k_vals)
         winding_number_grid[omg_idx, :] = floquet_model.winding_number(band_id=field_params.target_band_id)
         print(winding_number_grid)
         print(f"Calculation complete for omega={omg:.2f}")
@@ -99,6 +99,23 @@ def calculate_and_plot_winding_map(model_params: ModelParameters, field_params: 
 
 
 if __name__ == "__main__":
+    # # Define the parameters for the physical model
+    # gomez_leon_model = ModelParameters(
+    #     coords=[[0], [0.75]],
+    #     # relative_Hopping=[0.1286,0.0919]
+    #     relative_Hopping=[1.5, 1.0]
+    # )
+    # # Define the parameters for the simulation and external field
+    # simulation_setup = FieldParameters(
+    #     E0_max=200,
+    #     num_steps_E=101,
+    #     omega_range=(10,10.1),
+    #     num_steps_omega=2,
+    #     nt=7, # Number of Fourier components in time domain, set larger if result does not converge
+    #     save_band_structure=True,  # Set to True if you want to save individual band structures
+    #     num_k_points=100,  # Number of k-points for model, set larger if result does not converge
+    #     base_data_path='MacBook_local_data/E_omega_test_overlap_k_MethodIII/'  # Adjust as needed
+    # )
     # Define the parameters for the physical model
     gomez_leon_model = ModelParameters(
         coords=[[0], [0.75]],
@@ -107,15 +124,14 @@ if __name__ == "__main__":
     )
     # Define the parameters for the simulation and external field
     simulation_setup = FieldParameters(
-        E0_max=0.037,
-        num_steps_E=38,
-        # omega_range=(0.006,0.01),
-        omega_range=(0.0025,0.0025),
+        E0_max=5,
+        num_steps_E=101,
+        omega_range=(0.2,0.3),
         num_steps_omega=2,
-        nt=201, # Number of Fourier components in time domain, set larger if result does not converge
-        save_band_structure=False,  # Set to True if you want to save individual band structures
-        num_k_points=100,  # Number of k-points for model, set larger if result does not converge
-        base_data_path='MacBook_local_data/E_omega_realistic_frequency_test_1_over_4_band_gap/'  # Adjust as needed
+        nt=61, # Number of Fourier components in time domain, set larger if result does not converge
+        save_band_structure=True,  # Set to True if you want to save individual band structures
+        num_k_points=200,  # Number of k-points for model, set larger if result does not converge
+        base_data_path='MacBook_local_data/E_omega_test_overlap_k_Low_Frequency_MethodIII/'  # Adjust as needed
     )
 
     # run winding number calculation and plotting

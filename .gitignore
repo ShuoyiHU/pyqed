@@ -32,3 +32,4 @@ local_data
 dataset
 local_data_GL2013
 sh_file_for_HPC
+pyqed/HEOM/prony_test_radical_coulomb.py

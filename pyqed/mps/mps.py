@@ -33,6 +33,48 @@ from pyqed.mps.decompose import decompose, compress
 from scipy.linalg import expm, block_diag
 import warnings
 
+def SpinHalfFermionOperators(filling=1.):
+    d = 4
+    states = ['empty', 'up', 'down', 'full']
+    # 0) Build the operators.
+    Nu_diag = np.array([0., 1., 0., 1.], dtype=np.float64)
+    Nd_diag = np.array([0., 0., 1., 1.], dtype=np.float64)
+
+    Nu = np.diag(Nu_diag)
+    Nd = np.diag(Nd_diag)
+    Ntot = np.diag(Nu_diag + Nd_diag)
+    dN = np.diag(Nu_diag + Nd_diag - filling)
+    NuNd = np.diag(Nu_diag * Nd_diag)
+    JWu = np.diag(1. - 2 * Nu_diag)  # (-1)^Nu
+    JWd = np.diag(1. - 2 * Nd_diag)  # (-1)^Nd
+    JW = JWu * JWd  # (-1)^{Nu+Nd}
+
+
+    Cu = np.zeros((d, d))
+    Cu[0, 1] = Cu[2, 3] = 1
+    Cdu = np.transpose(Cu)
+    # For spin-down annihilation operator: include a Jordan-Wigner string JWu
+    # this ensures that Cdu.Cd = - Cd.Cdu
+    # c.f. the chapter on the Jordan-Wigner trafo in the userguide
+    Cd_noJW = np.zeros((d, d))
+    Cd_noJW[0, 2] = Cd_noJW[1, 3] = 1
+    Cd = np.dot(JWu, Cd_noJW)  # (don't do this for spin-up...)
+    Cdd = np.transpose(Cd)
+
+    # spin operators are defined as  (Cdu, Cdd) S^gamma (Cu, Cd)^T,
+    # where S^gamma is the 2x2 matrix for spin-half
+    Sz = np.diag(0.5 * (Nu_diag - Nd_diag))
+    Sp = np.dot(Cdu, Cd)
+    Sm = np.dot(Cdd, Cu)
+    Sx = 0.5 * (Sp + Sm)
+    Sy = -0.5j * (Sp - Sm)
+
+    ops = dict(JW=JW, JWu=JWu, JWd=JWd,
+               Cu=Cu, Cdu=Cdu, Cd=Cd, Cdd=Cdd,
+               Nu=Nu, Nd=Nd, Ntot=Ntot, NuNd=NuNd, dN=dN,
+               Sx=Sx, Sy=Sy, Sz=Sz, Sp=Sp, Sm=Sm)  # yapf: disable
+    return ops
+
 
 class MPS:
     def __init__(self, Bs, Ss=None, homogenous=True, bc='finite', form="B"):
@@ -307,49 +349,47 @@ class Site(object):
         """
         if dim < 1:
             raise DMRGException("Site dim must be at least 1")
-        super(Site, self).__init__()
+        # super(Site, self).__init__()
         self.dim = dim
-        self.operators = { "id" : np.eye(self.dim, self.dim) }
+        self.operators = { "id" : scipy.sparse.eye(self.dim, self.dim) }
 
     def add_operator(self, operator_name):
-        #  """
-        # Adds an operator to the site.
+        """
+        Adds an operator to the site.
 
-        #   Parameters
-       	# ----------
-        #    	operator_name : string
-       	#     The operator name.
+          Parameters
+       	----------
+           	operator_name : string
+       	    The operator name.
 
-       	# Raises
-       	# ------
-       	# DMRGException
-       	#     if `operator_name` is already in the dict.
+       	Raises
+       	------
+       	DMRGException
+       	    if `operator_name` is already in the dict.
 
-       	# Notes
-       	# -----
-       	# Postcond:
+       	Notes
+       	-----
+       	Postcond:
 
-        #       - `self.operators` has one item more, and
-        #       - the newly created operator is a (`self.dim`, `self.dim`)
-        #         matrix of full of zeros.
+              - `self.operators` has one item more, and
+              - the newly created operator is a (`self.dim`, `self.dim`)
+                matrix of full of zeros.
 
-       	# Examples
-       	# --------
-       	# >>> from dmrg101.core.sites import Site
-       	# >>> new_site = Site(2)
-       	# >>> print new_site.operators.keys()
-       	# ['id']
-       	# >>> new_site.add_operator('s_z')
-       	# >>> print new_site.operators.keys()
-       	# ['s_z', 'id']
-       	# >>> # note that the newly created op has all zeros
-       	# >>> print new_site.operators['s_z']
-       	# [[ 0.  0.]
-        # 	 [ 0.  0.]]
-        # """
+       	Examples
+       	--------
+       	>>> new_site = Site(2)
+       	>>> print new_site.operators.keys()
+       	['id']
+       	>>> new_site.add_operator('s_z')
+       	>>> print new_site.operators.keys()
+       	['s_z', 'id']
+       	>>> # note that the newly created op has all zeros
+       	>>> print new_site.operators['s_z']
+       	[[ 0.  0.]
+        	 [ 0.  0.]]
+        """
+
         if str(operator_name) in self.operators.keys():
-
-        # if str(operator_name) in self.operators.keys():
             raise DMRGException("Operator name exists already")
         else:
             self.operators[str(operator_name)] = np.zeros((self.dim, self.dim))
@@ -654,14 +694,14 @@ class MPO:
         None.
 
         """
-        self.factors = self.data = factors
+        self.factors = self.data = self.cores = factors
         self.nsites = self.L = len(factors)
         self.nbonds = self.L - 1
         # self.chi_max = chi_max
 
 
         if homogenous:
-            self.dims = [mps[0].shape[1], ] * self.nsites
+            self.dims = [factors[0].shape[1], ] * self.nsites
         else:
             self.dims = [t.shape[1] for t in factors] # physical dims of each site
 
@@ -670,6 +710,9 @@ class MPO:
     def bond_orders(self):
         return [t.shape[0] for t in self.factors] # bond orders
 
+    def ground_state(self, algorithm='dmrg'):
+        pass
+
     def dot(self, mps, rank):
         # apply MPO to MPS followed by a compression
 
@@ -677,7 +720,7 @@ class MPO:
 
         return MPS(factors)
 
-    def __matmul__(self, other):
+    def __matmul__(self, other, compress=False, D=None):
         """
         define product of two MPOs
 
@@ -698,6 +741,13 @@ class MPO:
         elif isinstance(other, MPS):
             return apply_mpo(self.factors, other.factors)
 
+    def __add__(self, other, compress=False, D=None):
+        # return ...
+        # if compress
+        pass
+
+
+# A @ B
 
 def apply_mpo(w_list, B_list, chi_max):
     """
@@ -1272,7 +1322,7 @@ def two_site_dmrg(MPS, MPO, m, sweeps=50, conv=1e-6):
     return Energy, MPS
 
 
-def expect(bra, MPO, ket=None):
+def expect_mps(bra, MPO, ket=None):
     """
     Evaluate the expectation value of an MPO on a given MPS
     .. math::
@@ -1595,47 +1645,6 @@ def fDMRG_1site_GS_OBC(H,D,Nsweeps):
     return E_list,M
 
 
-def SpinHalfFermionOperators(filling=1.):
-    d = 4
-    states = ['empty', 'up', 'down', 'full']
-    # 0) Build the operators.
-    Nu_diag = np.array([0., 1., 0., 1.], dtype=np.float64)
-    Nd_diag = np.array([0., 0., 1., 1.], dtype=np.float64)
-
-    Nu = np.diag(Nu_diag)
-    Nd = np.diag(Nd_diag)
-    Ntot = np.diag(Nu_diag + Nd_diag)
-    dN = np.diag(Nu_diag + Nd_diag - filling)
-    NuNd = np.diag(Nu_diag * Nd_diag)
-    JWu = np.diag(1. - 2 * Nu_diag)  # (-1)^Nu
-    JWd = np.diag(1. - 2 * Nd_diag)  # (-1)^Nd
-    JW = JWu * JWd  # (-1)^{Nu+Nd}
-
-
-    Cu = np.zeros((d, d))
-    Cu[0, 1] = Cu[2, 3] = 1
-    Cdu = np.transpose(Cu)
-    # For spin-down annihilation operator: include a Jordan-Wigner string JWu
-    # this ensures that Cdu.Cd = - Cd.Cdu
-    # c.f. the chapter on the Jordan-Wigner trafo in the userguide
-    Cd_noJW = np.zeros((d, d))
-    Cd_noJW[0, 2] = Cd_noJW[1, 3] = 1
-    Cd = np.dot(JWu, Cd_noJW)  # (don't do this for spin-up...)
-    Cdd = np.transpose(Cd)
-
-    # spin operators are defined as  (Cdu, Cdd) S^gamma (Cu, Cd)^T,
-    # where S^gamma is the 2x2 matrix for spin-half
-    Sz = np.diag(0.5 * (Nu_diag - Nd_diag))
-    Sp = np.dot(Cdu, Cd)
-    Sm = np.dot(Cdd, Cu)
-    Sx = 0.5 * (Sp + Sm)
-    Sy = -0.5j * (Sp - Sm)
-
-    ops = dict(JW=JW, JWu=JWu, JWd=JWd,
-               Cu=Cu, Cdu=Cdu, Cd=Cd, Cdd=Cdd,
-               Nu=Nu, Nd=Nd, Ntot=Ntot, NuNd=NuNd, dN=dN,
-               Sx=Sx, Sy=Sy, Sz=Sz, Sp=Sp, Sm=Sm)  # yapf: disable
-    return ops
 
 
 

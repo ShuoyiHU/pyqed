@@ -36,6 +36,49 @@ def load_data_generic(filename, *dataset_names):
                 print(f"Warning: Dataset '{name}' not found in {filename}.")
     return loaded_data
 
+# Define a new loading function to retrieve all datasets from the HDF5 file.
+def load_data_with_full_spectrum(filename):
+    """
+    Loads tracked bands, their eigenstates, and the full Floquet spectrum from an HDF5 file.
+    """
+    data = {}
+    with h5py.File(filename, 'r') as f:
+        data['tracked_energies'] = f['tracked_energies'][:]
+        data['full_spectrum'] = f['full_spectrum'][:]
+        
+        eigenstates = []
+        i = 0
+        while f'tracked_eigenstates_{i}' in f:
+            eigenstates.append(f[f'tracked_eigenstates_{i}'][:])
+            i += 1
+        data['tracked_eigenstates'] = eigenstates
+        
+    return data['tracked_energies'], data['tracked_eigenstates'], data['full_spectrum']
+
+def load_data_with_full_spectrum_and_eigenstates(filename):
+    """
+    Loads all data from an HDF5 file, including the full set of eigenvectors.
+    """
+    data = {}
+    with h5py.File(filename, 'r') as f:
+        data['tracked_energies'] = f['tracked_energies'][:]
+        data['full_spectrum_energies'] = f['full_spectrum_energies'][:]
+        data['full_spectrum_eigenstates'] = f['full_spectrum_eigenstates'][:]
+
+        tracked_eigenstates = []
+        i = 0
+        while f'tracked_eigenstates_{i}' in f:
+            tracked_eigenstates.append(f[f'tracked_eigenstates_{i}'][:])
+            i += 1
+        data['tracked_eigenstates'] = tracked_eigenstates
+
+    return (
+        data['tracked_energies'],
+        data['tracked_eigenstates'],
+        data['full_spectrum_energies'],
+        data['full_spectrum_eigenstates']
+    )
+
 def track_valence_band(k_values, T, E0, omega,
                        previous_val=None, previous_con=None,
                        v=0.15, w=0.2, nt=61, filename=None):

@@ -26,26 +26,68 @@ import numpy as np
 
 from scipy.sparse import identity, kron, csr_matrix, diags, eye
 from scipy.sparse.linalg import eigsh
-from scipy.linalg import norm, eigh
+from scipy.linalg import norm
 
 from scipy.special import erf
 # from scipy.constants import e, epsilon_0, hbar
 import logging
 # import warnings
 
-from pyqed import discretize, sort, dag, tensor, SpinHalfFermionOperators
+from pyqed import discretize, sort, dag, tensor
+from pyqed.mps.mps import DMRG
+from pyqed.phys import eigh
 from pyqed.davidson import davidson
-from pyqed import au2ev, au2angstrom
+from pyqed import au2ev, au2angstrom, obs
 from pyqed.dvr import SineDVR
 # from pyqed import scf
 
 from pyqed.qchem.gto.rhf import make_rdm1, energy_elec
 
-from numba import vectorize, float64, jit
+# from numba import vectorize, float64, jit
 import sys
 from opt_einsum import contract
 
+def SpinHalfFermionOperators(filling=1.):
+    d = 4
+    states = ['empty', 'up', 'down', 'full']
+    # 0) Build the operators.
+    Nu_diag = np.array([0., 1., 0., 1.], dtype=np.float64)
+    Nd_diag = np.array([0., 0., 1., 1.], dtype=np.float64)
 
+    Nu = np.diag(Nu_diag)
+    Nd = np.diag(Nd_diag)
+    Ntot = np.diag(Nu_diag + Nd_diag)
+    dN = np.diag(Nu_diag + Nd_diag - filling)
+    NuNd = np.diag(Nu_diag * Nd_diag)
+    JWu = np.diag(1. - 2 * Nu_diag)  # (-1)^Nu
+    JWd = np.diag(1. - 2 * Nd_diag)  # (-1)^Nd
+    JW = JWu * JWd  # (-1)^{Nu+Nd}
+
+
+    Cu = np.zeros((d, d))
+    Cu[0, 1] = Cu[2, 3] = 1
+    Cdu = np.transpose(Cu)
+    # For spin-down annihilation operator: include a Jordan-Wigner string JWu
+    # this ensures that Cdu.Cd = - Cd.Cdu
+    # c.f. the chapter on the Jordan-Wigner trafo in the userguide
+    Cd_noJW = np.zeros((d, d))
+    Cd_noJW[0, 2] = Cd_noJW[1, 3] = 1
+    Cd = np.dot(JWu, Cd_noJW)  # (don't do this for spin-up...)
+    Cdd = np.transpose(Cd)
+
+    # spin operators are defined as  (Cdu, Cdd) S^gamma (Cu, Cd)^T,
+    # where S^gamma is the 2x2 matrix for spin-half
+    Sz = np.diag(0.5 * (Nu_diag - Nd_diag))
+    Sp = np.dot(Cdu, Cd)
+    Sm = np.dot(Cdd, Cu)
+    Sx = 0.5 * (Sp + Sm)
+    Sy = -0.5j * (Sp - Sm)
+
+    ops = dict(JW=JW, JWu=JWu, JWd=JWd,
+               Cu=Cu, Cdu=Cdu, Cd=Cd, Cdd=Cdd,
+               Nu=Nu, Nd=Nd, Ntot=Ntot, NuNd=NuNd, dN=dN,
+               Sx=Sx, Sy=Sy, Sz=Sz, Sp=Sp, Sm=Sm)  # yapf: disable
+    return ops
 
 
 
@@ -87,7 +129,7 @@ def Is(l):
 #     return tensor(Is(i) + [sigmaz()] + Is(N - i - 1))
 
 
-def annihilate(L, spin='up'):
+def annihilate(L, spin='up', forward=True):
     """
     electron annihilation operators under JW transformation for a fermion chain
 
@@ -97,6 +139,8 @@ def annihilate(L, spin='up'):
         DESCRIPTION.
     spin : TYPE, optional
         DESCRIPTION. The default is 'up'.
+    forward: bool
+        control JW string starts from the first or the last site. Default: True.
 
     Raises
     ------
@@ -109,45 +153,91 @@ def annihilate(L, spin='up'):
         list of {c_i, i=1, 2, ..., L} operators.
 
     """
-    a = []
 
-    if spin == 'up':
+    assert(spin in ['up', 'down'])
 
-        for i in range(L):
-            ai = [JW, ] * i +  [Cu] + Is(L - i -1)
-            a.append(tensor(ai))
-        return a
+    if forward:
 
-    elif spin == 'down':
+        a = []
 
-        for i in range(L):
-            ai = [JW, ] * i +  [Cd] + Is(L - i -1)
-            a.append(tensor(ai))
-        return a
+        if spin == 'up':
 
-    else:
-        raise ValueError('Spin {} can only be up or down.')
+            for i in range(L):
+                ai = [JW, ] * i +  [Cu] + Is(L - i -1)
+                a.append(tensor(ai))
+            return a
 
+        elif spin == 'down':
 
-def create(L, spin='up'):
-    a = []
+            for i in range(L):
+                ai = [JW, ] * i +  [Cd] + Is(L - i -1)
+                a.append(tensor(ai))
+            return a
 
-    if spin == 'up':
-
-        for i in range(L):
-            ai = [JW, ] * i +  [Cdu] + Is(L - i -1)
-            a.append(tensor(ai))
-        return a
-
-    elif spin == 'down':
-
-        for i in range(L):
-            ai = [JW, ] * i +  [Cdd] + Is(L - i -1)
-            a.append(tensor(ai))
-        return a
+        else:
+            raise ValueError('Spin {} can only be up or down.')
 
     else:
-        raise ValueError('Spin {} can only be up or down.')
+
+        a = []
+
+        if spin == 'up':
+
+            for i in range(L):
+                ai = Is(i) +  [Cu] + [JW, ] * (L - i -1)
+                a.append(tensor(ai))
+            return a
+
+        elif spin == 'down':
+
+            for i in range(L):
+                ai = Is(i) +  [Cd] + [JW, ] * (L - i -1)
+                a.append(tensor(ai))
+            return a
+
+
+
+def create(L, spin='up', forward=True):
+
+    assert(spin in ['up', 'down'])
+
+    if forward:
+
+        a = []
+
+        if spin == 'up':
+
+            for i in range(L):
+                ai = [JW, ] * i +  [Cdu] + Is(L - i -1)
+                a.append(tensor(ai))
+            return a
+
+        elif spin == 'down':
+
+            for i in range(L):
+                ai = [JW, ] * i +  [Cdd] + Is(L - i -1)
+                a.append(tensor(ai))
+            return a
+
+    else:
+
+        a = []
+
+        if spin == 'up':
+
+            for i in range(L):
+                ai = Is(i) +  [Cdu] + [JW, ] * (L - i -1)
+                a.append(tensor(ai))
+            return a
+
+        elif spin == 'down':
+
+            for i in range(L):
+                ai = Is(i) +  [Cdd] + [JW, ] * (L - i -1)
+                a.append(tensor(ai))
+            return a
+
+
 
 
 def number_operator(L, spin='up'):
@@ -179,7 +269,7 @@ def number_operator(L, spin='up'):
 
 
 
-def jordan_wigner_transform(j, L):
+def jordan_wigner_transform(j, L, coeff=1, hc=False):
     """
     ["JW", ..., "JW", "Cu",  "Id", ..., "Id"]    # for the annihilation operator spin-up
     ["JW", ..., "JW", "Cd",  "Id", ..., "Id"]    # for the annihilation operator spin-down
@@ -262,168 +352,169 @@ def jordan_wigner_two_body(i, j, k, l, coeff, hc=True):
 
 
 
-class SpinHalfFermionChain:
+# class SpinHalfFermionChain:
 
-    """
-    exact diagonalization of spin-half open fermion chain with long-range interactions
+#     """
+#     exact diagonalization of spin-half open fermion chain with long-range interactions
 
-    by Jordan-Wigner transformation
+#     by Jordan-Wigner transformation
 
-    .. math::
+#     .. math::
 
-        H = \sum_{p, q} h_{pq} c_p^\dag c_q + 1/2 v_{pqrs} c^\dagger_p c^\dagger_q c_r c_s−2λ∑rc†rcr,
+#         H = \sum_{p, q} h_{pq} c_p^\dag c_q + 1/2 v_{pqrs} c^\dagger_p c^\dagger_q c_r c_s−2λ∑rc†rcr,
 
-    where r and s indicate neighbors on the chain.
+#     where r and s indicate neighbors on the chain.
 
-    Electron interactions can be included in the Hamiltonian easily.
+#     Electron interactions can be included in the Hamiltonian easily.
 
-    """
-    def __init__(self, h1e, eri, nelec):
-        # if L is None:
-        L = h1e.shape[-1]
-        self.L = self.nsites = L
+#     """
+#     def __init__(self, h1e, eri, nelec):
+#         # if L is None:
+#         L = h1e.shape[-1]
+#         self.L = self.nsites = L
 
-        self.h1e = h1e
-        self.eri = eri
-        self.d = 4 # local dimension of each site
-        # self.filling = filling
-        self.nelec = nelec
+#         self.h1e = h1e
+#         self.eri = eri
+#         self.d = 4 # local dimension of each site
+#         # self.filling = filling
+#         self.nelec = nelec
 
-        self.H = None
+#         self.H = None
+#         self.Cu = None
+#         self.Cd = None
+#         self.Cdd = None
+#         self.Cdu = None # C^\dag_\uparrow
+#         self.Nu_tot = None
+#         self.Nd_tot = None
 
-    def run(self, nstates=1):
+#     def run(self, nstates=1):
 
-        # # single electron part
-        # Ca = mf.mo_coeff[:, :self.ncas]
-        # hcore_mo = contract('ia, ij, jb -> ab', Ca.conj(), mf.hcore, Ca)
-
-
-        # eri = self.mf.eri
-        # eri_mo = contract('ip, iq, ij, jr, js -> pqrs', Ca.conj(), Ca, eri, Ca.conj(), Ca)
-
-        # # eri_mo = contract('ip, jq, ij, ir, js', mo.conj(), mo.conj(), eri, mo, mo)
-
-        # self.hcore_mo = hcore_mo
-
-        H = self.jordan_wigner(self.h1e, self.eri)
-        self.H = H
-        E, X = eigsh(H, k=nstates, which='SA')
-
-        return E, X
+#         # # single electron part
+#         # Ca = mf.mo_coeff[:, :self.ncas]
+#         # hcore_mo = contract('ia, ij, jb -> ab', Ca.conj(), mf.hcore, Ca)
 
 
+#         # eri = self.mf.eri
+#         # eri_mo = contract('ip, iq, ij, jr, js -> pqrs', Ca.conj(), Ca, eri, Ca.conj(), Ca)
 
-    def jordan_wigner(self, aosym='8'):
-        """
-        MOs based on Restricted HF calculations
+#         # # eri_mo = contract('ip, jq, ij, ir, js', mo.conj(), mo.conj(), eri, mo, mo)
 
-        Returns
-        -------
-        H : TYPE
-            DESCRIPTION.
-        aosym: int, AO symmetry
-            8: eight-fold symmetry
+#         # self.hcore_mo = hcore_mo
 
-        """
-        h1e = self.h1e
-        v = self.eri
+#         # H = self.jordan_wigner()
+#         # self.H = H
+#         E, X = eigh(self.H, k=nstates, which='SA')
 
-        # an inefficient implementation without consdiering any syemmetry
-        # can be used to compute triplet states
+#         # Nu = np.diag(dag(X) @ self.Nu_tot @ X)
+#         # Nd = np.diag(dag(X) @ self.Nd_tot @ X)
 
-        nelec = self.nelec
+#         # print('Energy  Nu     Nd')
+#         # for i in range(nstates):
+#         #     print(E[i], Nu[i], Nd[i])
 
-        norb = h1e.shape[-1]
-        nmo = L = norb # does not necesarrily have to MOs
+#         return E, X
 
 
-        Cu = annihilate(norb, spin='up')
-        Cd = annihilate(norb, spin='down')
-        Cdu = create(norb, spin='up')
-        Cdd = create(norb, spin='down')
+#     def build(self):
+#         self.jordan_wigner()
 
-        H = 0
-        # for p in range(nmo):
-        #     for q in range(p+1):
-                # H += jordan_wigner_one_body(q, p, hcore_mo[q, p], hc=True)
-        for p in range(nmo):
-            for q in range(nmo):
-                H += h1e[p, q] * (Cdu[p] @ Cu[q] + Cdd[p] @ Cd[q])
+#     def jordan_wigner(self, forward=True, aosym='8'):
+#         """
+#         MOs based on Restricted HF calculations
 
-        # build total number operator
-        # number_operator = 0
-        Na = 0
-        Nb = 0
-        for p in range(L):
-            Na += Cdu[p] @ Cu[p]
-            Nb += Cdd[p] @ Cd[p]
+#         Returns
+#         -------
+#         H : TYPE
+#             DESCRIPTION.
+#         aosym: int, AO symmetry
+#             8: eight-fold symmetry
 
+#         """
+#         h1e = self.h1e
+#         v = self.eri
 
-        # poor man's implementation of JWT for 2e operators wihtout exploiting any symmetry
-        for p in range(nmo):
-            for q in range(nmo):
-                for r in range(nmo):
-                    for s in range(nmo):
-                        H += 0.5 * v[p, q, r, s] * (\
-                            Cdu[p] @ Cdu[r] @ Cu[s] @ Cu[q] +\
-                            Cdu[p] @ Cdd[r] @ Cd[s] @ Cu[q] +\
-                            Cdd[p] @ Cdu[r] @ Cu[s] @ Cd[q] +
-                            Cdd[p] @ Cdd[r] @ Cd[s] @ Cd[q])
-                        # H += jordan_wigner_two_body(p, q, s, r, )
+#         # an inefficient implementation without consdiering any syemmetry
+#         # can be used to compute triplet states
 
-        # digonal elements for p = q, r = s
-        I = tensor(Is(L))
+#         nelec = self.nelec
 
-        return H
+#         norb = h1e.shape[-1]
+#         nmo = L = norb # does not necesarrily have to MOs
 
-        # return H + (Na - nelec/2 * I) @ (Na - self.nelec/2 * I) + \
-        #     (Nb - self.nelec/2 * I) @ (Nb - self.nelec/2 * I)
+#         Cu = annihilate(norb, spin='up', forward=forward)
+#         Cd = annihilate(norb, spin='down', forward=forward)
+#         Cdu = create(norb, spin='up', forward=forward)
+#         Cdd = create(norb, spin='down', forward=forward)
 
 
-    def DMRG(self):
-        pass
+#         self.Cu = Cu
+#         self.Cd = Cd
+#         self.Cdu = Cdu
+#         self.Cdd = Cdd
 
-    def gen_mps(self, state='random'):
-        if state == 'hf':
-            # create a HF MPS
-            pass
+#         H = 0
+#         # for p in range(nmo):
+#         #     for q in range(p+1):
+#                 # H += jordan_wigner_one_body(q, p, hcore_mo[q, p], hc=True)
+#         for p in range(nmo):
+#             for q in range(nmo):
+#                 H += h1e[p, q] * (Cdu[p] @ Cu[q] + Cdd[p] @ Cd[q])
 
-    def spin_tot(self, psi):
-        pass
+#         # build total number operator
+#         # number_operator = 0
+#         Na = 0
+#         Nb = 0
+#         for p in range(L):
+#             Na += Cdu[p] @ Cu[p]
+#             Nb += Cdd[p] @ Cd[p]
 
-
-
-if __name__=='__main__':
-    from pyscf import gto, scf, dft, tddft, ao2mo
-    from pyqed.qchem import get_hcore_mo, get_eri_mo
-    # from pyqed.qchem.gto.rhf import RHF
-
-    mol = gto.Mole()
-    mol.atom = [
-        ['H' , (0. , 0. , .917)],
-        ['Li' , (0. , 0. , 0.)], ]
-    mol.basis = 'sto3g'
-    mol.build()
-
+#         self.Nu_tot = Na
+#         self.Nd_tot = Nb
 
 
-    mf = scf.RHF(mol).run()
+#         # poor man's implementation of JWT for 2e operators wihtout exploiting any symmetry
+#         for p in range(nmo):
+#             for q in range(nmo):
+#                 for r in range(nmo):
+#                     for s in range(nmo):
+#                         H += 0.5 * v[p, q, r, s] * (\
+#                             Cdu[p] @ Cdu[r] @ Cu[s] @ Cu[q] +\
+#                             Cdu[p] @ Cdd[r] @ Cd[s] @ Cu[q] +\
+#                             Cdd[p] @ Cdu[r] @ Cu[s] @ Cd[q] +
+#                             Cdd[p] @ Cdd[r] @ Cd[s] @ Cd[q])
+#                         # H += jordan_wigner_two_body(p, q, s, r, )
 
-    # e, fcivec = pyscf.fci.FCI(mf).kernel(verbose=4)
-    # print(e)
-    # Ca = mf.mo_coeff[0ArithmeticError
-    # n = Ca.shape[-1]
+#         # digonal elements for p = q, r = s
+#         self.H = H
 
-    # mo_coeff = mf.mo_coeff
-    # get the two-electron integrals as a numpy array
-    # eri = get_eri_mo(mol, mo_coeff)
+#         return H
 
-    # n = mol.nao
-    # Ca = mo_coeff
+#     def fix_nelec(self, nelec=None, s=1):
 
-    h1e = get_hcore_mo(mf)
-    eri = get_eri_mo(mf)
+#         if self.H is None:
+#             self.build()
 
-    E, X = SpinHalfFermionChain(h1e, eri, nelec=mol.nelectron).run()
+#         I = tensor(Is(self.L))
 
-    print(E + mol.energy_nuc())
+#         Na = self.Nu_tot
+#         Nb = self.Nd_tot
+
+#         if nelec is None:
+#             nelec = self.nelec
+
+#         self.H += s * (Na - nelec/2 * I) @ (Na - nelec/2 * I) + \
+#                 s * (Nb - self.nelec/2 * I) @ (Nb - self.nelec/2 * I)
+#         return
+
+#     def DMRG(self):
+#         # build the MPO of H and then apply the DMRG algorithm
+#         pass
+#         # return DMRG(H, D)
+
+#     def gen_mps(self, state='random'):
+#         if state == 'hf':
+#             # create a HF MPS
+#             pass
+
+#     def spin_tot(self, psi):
+#         pass
