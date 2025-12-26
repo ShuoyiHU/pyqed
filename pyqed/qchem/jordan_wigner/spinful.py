@@ -33,7 +33,8 @@ from scipy.special import erf
 import logging
 # import warnings
 
-from pyqed import discretize, sort, dag, tensor, SpinHalfFermionOperators
+from pyqed import discretize, sort, dag, tensor
+from pyqed.mps.mps import DMRG
 from pyqed.phys import eigh
 from pyqed.davidson import davidson
 from pyqed import au2ev, au2angstrom, obs
@@ -372,25 +373,25 @@ def jordan_wigner_two_body(i, j, k, l, coeff, hc=True):
 #         L = h1e.shape[-1]
 #         self.L = self.nsites = L
 
-        self.h1e = h1e
-        self.eri = eri
-        self.d = 4 # local dimension of each site
-        # self.filling = filling
-        self.nelec = nelec
+#         self.h1e = h1e
+#         self.eri = eri
+#         self.d = 4 # local dimension of each site
+#         # self.filling = filling
+#         self.nelec = nelec
 
-        self.H = None
-        self.Cu = None
-        self.Cd = None
-        self.Cdd = None
-        self.Cdu = None # C^\dag_\uparrow
-        self.Nu_tot = None
-        self.Nd_tot = None
+#         self.H = None
+#         self.Cu = None
+#         self.Cd = None
+#         self.Cdd = None
+#         self.Cdu = None # C^\dag_\uparrow
+#         self.Nu_tot = None
+#         self.Nd_tot = None
 
-    def run(self, nstates=1):
+#     def run(self, nstates=1):
 
-        # # single electron part
-        # Ca = mf.mo_coeff[:, :self.ncas]
-        # hcore_mo = contract('ia, ij, jb -> ab', Ca.conj(), mf.hcore, Ca)
+#         # # single electron part
+#         # Ca = mf.mo_coeff[:, :self.ncas]
+#         # hcore_mo = contract('ia, ij, jb -> ab', Ca.conj(), mf.hcore, Ca)
 
 
 #         # eri = self.mf.eri
@@ -400,26 +401,26 @@ def jordan_wigner_two_body(i, j, k, l, coeff, hc=True):
 
 #         # self.hcore_mo = hcore_mo
 
-        # H = self.jordan_wigner()
-        # self.H = H
-        E, X = eigh(self.H, k=nstates, which='SA')
+#         # H = self.jordan_wigner()
+#         # self.H = H
+#         E, X = eigh(self.H, k=nstates, which='SA')
 
-        # Nu = np.diag(dag(X) @ self.Nu_tot @ X)
-        # Nd = np.diag(dag(X) @ self.Nd_tot @ X)
+#         # Nu = np.diag(dag(X) @ self.Nu_tot @ X)
+#         # Nd = np.diag(dag(X) @ self.Nd_tot @ X)
 
-        # print('Energy  Nu     Nd')
-        # for i in range(nstates):
-        #     print(E[i], Nu[i], Nd[i])
+#         # print('Energy  Nu     Nd')
+#         # for i in range(nstates):
+#         #     print(E[i], Nu[i], Nd[i])
 
-        return E, X
+#         return E, X
 
 
-    def build(self):
-        self.jordan_wigner()
+#     def build(self):
+#         self.jordan_wigner()
 
-    def jordan_wigner(self, forward=True, aosym='8'):
-        """
-        MOs based on Restricted HF calculations
+#     def jordan_wigner(self, forward=True, aosym='8'):
+#         """
+#         MOs based on Restricted HF calculations
 
 #         Returns
 #         -------
@@ -440,16 +441,10 @@ def jordan_wigner_two_body(i, j, k, l, coeff, hc=True):
 #         norb = h1e.shape[-1]
 #         nmo = L = norb # does not necesarrily have to MOs
 
-        Cu = annihilate(norb, spin='up', forward=forward)
-        Cd = annihilate(norb, spin='down', forward=forward)
-        Cdu = create(norb, spin='up', forward=forward)
-        Cdd = create(norb, spin='down', forward=forward)
-
-
-        self.Cu = Cu
-        self.Cd = Cd
-        self.Cdu = Cdu
-        self.Cdd = Cdd
+#         Cu = annihilate(norb, spin='up', forward=forward)
+#         Cd = annihilate(norb, spin='down', forward=forward)
+#         Cdu = create(norb, spin='up', forward=forward)
+#         Cdd = create(norb, spin='down', forward=forward)
 
 
 #         self.Cu = Cu
@@ -473,88 +468,53 @@ def jordan_wigner_two_body(i, j, k, l, coeff, hc=True):
 #             Na += Cdu[p] @ Cu[p]
 #             Nb += Cdd[p] @ Cd[p]
 
-        self.Nu_tot = Na
-        self.Nd_tot = Nb
+#         self.Nu_tot = Na
+#         self.Nd_tot = Nb
 
 
-        # poor man's implementation of JWT for 2e operators wihtout exploiting any symmetry
-        for p in range(nmo):
-            for q in range(nmo):
-                for r in range(nmo):
-                    for s in range(nmo):
-                        H += 0.5 * v[p, q, r, s] * (\
-                            Cdu[p] @ Cdu[r] @ Cu[s] @ Cu[q] +\
-                            Cdu[p] @ Cdd[r] @ Cd[s] @ Cu[q] +\
-                            Cdd[p] @ Cdu[r] @ Cu[s] @ Cd[q] +
-                            Cdd[p] @ Cdd[r] @ Cd[s] @ Cd[q])
-                        # H += jordan_wigner_two_body(p, q, s, r, )
+#         # poor man's implementation of JWT for 2e operators wihtout exploiting any symmetry
+#         for p in range(nmo):
+#             for q in range(nmo):
+#                 for r in range(nmo):
+#                     for s in range(nmo):
+#                         H += 0.5 * v[p, q, r, s] * (\
+#                             Cdu[p] @ Cdu[r] @ Cu[s] @ Cu[q] +\
+#                             Cdu[p] @ Cdd[r] @ Cd[s] @ Cu[q] +\
+#                             Cdd[p] @ Cdu[r] @ Cu[s] @ Cd[q] +
+#                             Cdd[p] @ Cdd[r] @ Cd[s] @ Cd[q])
+#                         # H += jordan_wigner_two_body(p, q, s, r, )
 
-        # digonal elements for p = q, r = s
-        self.H = H
+#         # digonal elements for p = q, r = s
+#         self.H = H
 
-        return H
+#         return H
 
-    def fix_nelec(self, nelec=None, s=1):
+#     def fix_nelec(self, nelec=None, s=1):
 
-        if self.H is None:
-            self.build()
+#         if self.H is None:
+#             self.build()
 
-        I = tensor(Is(self.L))
+#         I = tensor(Is(self.L))
 
-        Na = self.Nu_tot
-        Nb = self.Nd_tot
+#         Na = self.Nu_tot
+#         Nb = self.Nd_tot
 
-        if nelec is None:
-            nelec = self.nelec
+#         if nelec is None:
+#             nelec = self.nelec
 
-        self.H += s * (Na - nelec/2 * I) @ (Na - nelec/2 * I) + \
-                s * (Nb - self.nelec/2 * I) @ (Nb - self.nelec/2 * I)
-        return
+#         self.H += s * (Na - nelec/2 * I) @ (Na - nelec/2 * I) + \
+#                 s * (Nb - self.nelec/2 * I) @ (Nb - self.nelec/2 * I)
+#         return
 
-    def DMRG(self):
-        pass
+#     def DMRG(self):
+#         # build the MPO of H and then apply the DMRG algorithm
+#         pass
+#         # return DMRG(H, D)
 
-    def gen_mps(self, state='random'):
-        if state == 'hf':
-            # create a HF MPS
-            pass
+#     def gen_mps(self, state='random'):
+#         if state == 'hf':
+#             # create a HF MPS
+#             pass
 
-    def spin_tot(self, psi):
-        pass
-
-
-
-if __name__=='__main__':
-    from pyscf import gto, scf, dft, tddft, ao2mo
-    from pyqed.qchem import get_hcore_mo, get_eri_mo
-    # from pyqed.qchem.gto.rhf import RHF
-
-    mol = gto.Mole()
-    mol.atom = [
-        ['H' , (0. , 0. , .917)],
-        ['Li' , (0. , 0. , 0.)], ]
-    mol.basis = 'sto3g'
-    mol.build()
-
-
-
-    mf = scf.RHF(mol).run()
-
-    # e, fcivec = pyscf.fci.FCI(mf).kernel(verbose=4)
-    # print(e)
-    # Ca = mf.mo_coeff[0ArithmeticError
-    # n = Ca.shape[-1]
-
-    # mo_coeff = mf.mo_coeff
-    # get the two-electron integrals as a numpy array
-    # eri = get_eri_mo(mol, mo_coeff)
-
-    # n = mol.nao
-    # Ca = mo_coeff
-
-    h1e = get_hcore_mo(mf)
-    eri = get_eri_mo(mf)
-
-    E, X = SpinHalfFermionChain(h1e, eri, nelec=mol.nelectron).run()
-
-    print(E + mol.energy_nuc())
+#     def spin_tot(self, psi):
+#         pass
