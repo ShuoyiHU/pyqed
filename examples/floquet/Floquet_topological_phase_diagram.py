@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from  pyqed.floquet.floquet import TightBinding, FloquetBloch
+from  pyqed.floquet.Floquet import TightBinding, FloquetBloch
 import os
 from pyqed.floquet.utils import track_valence_band, berry_phase_winding, figure, track_valence_band_GL2013, save_data_to_hdf5, load_data_from_hdf5
 import matplotlib.colors as colors
