@@ -1,7 +1,7 @@
 
 # -*- coding: utf-8 -*-
 """
-@Author: Timothy Berkelbach
+
 Spin-orbital G0W0
 
 Created on Sat Jan  5 23:55:43 2019
@@ -10,6 +10,7 @@ Created on Sat Jan  5 23:55:43 2019
 @description:
     The theory for the code can be found in [Fabien Bruneval, J. Chem. Phys. 2012, 136, 194107]
 
+Based on the PySCF implementation
 """
 
 import numpy as np
@@ -22,11 +23,14 @@ import pyscf
 from pyscf import dft
 from functools import reduce
 
+from pyqed import is_positive_def
 
 class GW(object):
     def __init__(self, mf, ao2mofn=pyscf.ao2mo.outcore.general_iofree,
                  screening='TDH', eta=1e-2):
+        
         assert screening in ('TDH', 'TDHF', 'TDDFT')
+        
         self.mol = mf.mol
         self._scf = mf
         self.verbose = self.mol.verbose
@@ -157,6 +161,7 @@ def rpa_AB_matrices(gw, method='TDHF'):
                 for b in range(nocc,nso):
                     A[ia,jb] += 2.*gw.eri[a,i,b,j]
                     B[ia,jb] += 2.*gw.eri[i,a,j,b]
+                    
                     if method == 'TDHF':
                         A[ia,jb] -= gw.eri[a,b,i,j]
                         B[ia,jb] -= gw.eri[a,j,i,b]
@@ -203,10 +208,13 @@ def rpa(gw, using_tda=False, using_casida=True, method='TDHF'):
 
 
 def get_m_rpa(gw, e_rpa, t_rpa):
-    '''Get the (intermediate) M_{pq,L} tensor.
+    '''
+    Get the (intermediate) M_{pq,L} tensor.
     The M (or w) is needed to construct the screened Coulomb interaction W
-
-    M_{pq,L} = \sum_{ia} ( (eps_a-eps_i)/erpa_L )^{1/2} T_{ai,L} (ai|pq)
+    
+    .. math::
+        
+        M_{pq,L} = \sum_{ia} ( (eps_a-eps_i)/erpa_L )^{1/2} T_{ai,L} (ai|pq)
     '''
     nso = gw.nso
     nocc = gw.nocc
@@ -229,7 +237,10 @@ def get_m_rpa(gw, e_rpa, t_rpa):
 
 def sigma(gw, p, q, omegas, e_rpa, t_rpa, vir_sgn=1):
     '''
-    self energy sigma_{pq} = i [GW]_{pq}
+    self energy 
+    .. math::
+        
+        \Sigma_{pq} = i [GW]_{pq}
     '''
     if not isinstance(omegas, (list,tuple,np.ndarray)):
         single_point = True
@@ -452,12 +463,12 @@ def eig_asymm(h):
     return e, c
 
 
-def is_positive_def(A):
-    try:
-        np.linalg.cholesky(A)
-        return True
-    except np.linalg.LinAlgError:
-        return False
+# def is_positive_def(A):
+#     try:
+#         np.linalg.cholesky(A)
+#         return True
+#     except np.linalg.LinAlgError:
+#         return False
 
 
 
@@ -470,7 +481,7 @@ def pes():
     #mol.basis = {'Ne': '3-21G'}
     # This is from G2/97 i.e. MP2/6-31G*
 
-    R = np.linspace(1,8,10)
+    R = np.linspace(0.2, 4, 10)
     ex_energy = np.zeros(len(R))
 
     f = open('excite_energy.dat','w')
@@ -513,7 +524,7 @@ def pes():
 if __name__ == '__main__':
 
     from pyscf import scf, gto
-    from lime.units import au2ev
+    from pyqed import au2ev
 
     mol = gto.Mole()
     mol.verbose = 2
@@ -543,10 +554,25 @@ if __name__ == '__main__':
 #    else:
 #        raise NotImplementedError
 
-    mol.atom = [
-        [8 , (0. , 0.     , 0.)],
-        [1 , (0. , -0.757 , 0.587)],
-        [1 , (0. , 0.757  , 0.587)]]
+    # mol.atom = [
+    #     [8 , (0. , 0.     , 0.)],
+    #     [1 , (0. , -0.757 , 0.587)],
+    #     [1 , (0. , 0.757  , 0.587)]]
+    
+    #!/usr/bin/env python
+
+
+    mol = gto.M(
+        atom = 'H 0 0 0; F 0 0 1.1',
+        basis = '631g')
+    
+    nocc = mol.nelectron//2
+    
+    # By default, GW is done with analytic continuation
+    # gw = gw.GW(mf)
+    # same as gw = gw.GW(mf, freq_int='ac')
+    # gw.kernel(orbs=range(nocc-3,nocc+3))
+
     # mol.basis = 'cc-pvdz'
 #    mol.atom = '''
 #    H   0.000000   0.934473    -0.588078
@@ -554,14 +580,14 @@ if __name__ == '__main__':
 #    C   0.000000   0.000000    0.000000
 #    O   0.000000   0.000000    1.221104
 #    '''
-    mol.basis = 'sto3g'
+    # mol.basis = 'sto3g'
     mol.build()
 
     mf = scf.RHF(mol)
     #print(mf.scf())
     mf.kernel()
 
-    gw = GW(mf, screening='TDHF')
+    gw = GW(mf, screening='TDH')
     egw = gw.kernel()
     print('HF    vs.   GW ')
     for emf, eqp in zip(mf.mo_energy, egw):
@@ -575,18 +601,18 @@ if __name__ == '__main__':
 
 #
 #
-#    #print('GW  spacial orbital energies (eV) = ', gw.egw*27.211)
+    # print('GW  spacial orbital energies (eV) = ', gw.egw*27.211)
 
     #excite = bse(gw, using_tda=True, using_casida=False)
     #print("BSE Excitation energy =", excite[0] ) #* au2ev)
 
-    pes()
+    # pes()
 
     import matplotlib.pyplot as plt
 
     R,E, e_rpa = np.genfromtxt('excite_energy.dat', dtype=float, unpack=True)
     #print(R,E)
     #print(R, e_rpa)
-    R /= 0.529177
+    # R /= 0.529177
     plt.plot(R, E)
     # plt.plot(R, e_rpa)

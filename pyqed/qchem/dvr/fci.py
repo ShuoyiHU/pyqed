@@ -1,25 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Fri Jul 26 15:19:05 2024
-
-CISD
+Created on Wed Jun  5 14:29:59 2024
 
 @author: Bing Gu (gubing@westlake.edu.cn)
+
+From
+https://chemrxiv.org/engage/api-gateway/chemrxiv/assets/orp/resource/item/651592aca69febde9ed8d6a6/original/notes-on-generalized-configuration-interaction-in-python.pdf
 
 """
 import numpy as np
 
 from itertools import combinations
-from pyscf import ao2mo, gto, scf
+from pyscf import ao2mo
 from scipy.sparse.linalg import eigsh
 from functools import reduce
 from opt_einsum import contract
-
-from pyscf.ao2mo.outcore import general_iofree as ao2mofn
-
-from pyqed.qchem.hf.rhf import RHF
-from pyqed import dag
+# from pyscf.ao2mo.outcore import general_iofree as ao2mofn
 
 
 def givenΛgetB(ΛA, ΛB, N_mo):
@@ -44,7 +41,11 @@ def SpinOuterProduct(A, B, stack=False):
 
 def get_fci_combos(mf):
     # print(mf.mo_occ.shape)
-    O_sp = np.asarray(mf.mo_occ, dtype=np.int8)
+    if mf.mo_occ[0] == 2:
+        # RHF, transform to spin orbitals
+        mo_occ = [mf.mo_occ/2, ] * 2
+
+    O_sp = np.asarray(mo_occ, dtype=np.int8)
 
     # number of electrons for each spin
     N_s = np.einsum("sp -> s", O_sp)
@@ -78,16 +79,16 @@ def get_excitation_op(i, j, binary, sign, spin=0):
     a = -1*(Difference - 0.5).astype(np.int8)
 
     # print('a', a.shape)
-    if len(a) > 0:
-        if np.sum(a[0]) > 1: ### this is a double excitation
-            å_t = 1*a_t ## make copy
-            å_t[ np.arange(len(å_t)),(å_t!=0).argmax(axis=1) ] = 0 ## zero first 1
-            a_t = np.abs(å_t - a_t) ## absolute difference from orginal
-            a_t = np.asarray([sign[j, spin]*å_t,sign[j, spin]*a_t]) ## stack
-            å = 1*a ## make copy
-            å[ np.arange(len(å)),(å!=0).argmax(axis=1) ] = 0 ## zero first 1
-            a = np.abs(å - a) ## absolute difference from orginal
-            a = np.asarray([sign[i, spin]*å,sign[i, spin]*a]) ## stack
+    # if not a:
+    if np.sum(a[0]) > 1: ### this is a double excitation
+        å_t = 1*a_t ## make copy
+        å_t[ np.arange(len(å_t)),(å_t!=0).argmax(axis=1) ] = 0 ## zero first 1
+        a_t = np.abs(å_t - a_t) ## absolute difference from orginal
+        a_t = np.asarray([sign[j, spin]*å_t,sign[j, spin]*a_t]) ## stack
+        å = 1*a ## make copy
+        å[ np.arange(len(å)),(å!=0).argmax(axis=1) ] = 0 ## zero first 1
+        a = np.abs(å - a) ## absolute difference from orginal
+        a = np.asarray([sign[i, spin]*å,sign[i, spin]*a]) ## stack
 
     # print(a.shape, a_t.shape)
 
@@ -118,7 +119,6 @@ def SlaterCondon(Binary):
 
     ca = ((Binary[I_A,0,:] + Binary[J_A,0,:])/2).astype(np.int8)
     cb = ((Binary[I_B,1,:] + Binary[J_B,1,:])/2).astype(np.int8)
-
     # if len(I_AA) >0:
     aa_t, aa = get_excitation_op(I_AA, J_AA, Binary, sign, spin=0)
 
@@ -205,26 +205,10 @@ def get_SO_matrix(mf, SF=False, H1=None, H2=None):
     SF: bool
         spin-flip
     """
-    from pyscf import ao2mo
+    # from pyscf import ao2mo
 
     # molecular orbitals
-    if isinstance(mf, RHF):
-        
-        Ca, Cb = [mf.mo_coeff, ] * 2
-        
-        eri = mf.mol.eri
-
-        
-    elif isinstance(mf, scf.uhf.UHF):
-        Ca, Cb = mf.mo_coeff
-        
-        eri = mf.mol.intor('int2e', aosym='s8')
-
-    
-    else:
-        raise TypeError('mf type not supported.')
-
-
+    Ca, Cb = [mf.mo_coeff, ] * 2
 
     # S = (uhf_pyscf.mol).intor("int1e_ovlp")
     # eig, v = np.linalg.eigh(S)
@@ -234,45 +218,38 @@ def get_SO_matrix(mf, SF=False, H1=None, H2=None):
     H = mf.get_hcore()
     # H = dag(Ca) @ H @ Ca
 
-    n = nmo = Ca.shape[1] # n
-    
+    nmo = Ca.shape[1] # n
 
+    eri = mf.eri  # (pq||rs) 1^*12^*2
+    eri_aa = contract('ip, iq, ij, jr, js -> pqrs', Ca.conj(), Ca, eri, Ca.conj(), Ca)
 
-    # eri = mf.get_eri()
+    # physicts notation <pq|rs>
+    # eri_aa = contract('ip, jq, ij, ir, js -> pqrs', Ca.conj(), Ca.conj(), eri, Ca, Ca)
 
-    # eri_aa = eri  # (pq||rs) 1^*12^*2
-    # eri_aa -= eri_aa.swapaxes(1,3) # change to physicts notation 1* 2* 2 1
-
-
-
-    # # eri_ab = contract('ip, iq, ij, jr, js->pqrs', Ca.conj(), Ca, eri, Cb.conj(), Cb)
-    # # eri_ba = contract('ip, iq, ij, jr, js->pqrs', Cb.conj(), Cb, eri, Ca.conj(), Ca)
-    # eri_ab = eri.copy()
-    # eri_ba = eri.copy()
-
-    # if isinstance(mf, scf.uhf.UHF):
-
-    # eri = ao2mo.get_ao_eri(mf.mol, compact=False).reshape(nmo, nmo, nmo, nmo)
-    # print(eri.shape)
-
-    eri_aa = (ao2mo.general( eri , (Ca, Ca, Ca, Ca),
-                            compact=False)).reshape((n,n,n,n), order="C")
     eri_aa -= eri_aa.swapaxes(1,3)
 
+    eri_bb = eri_aa.copy()
 
-    eri_bb = (ao2mo.general( eri , (Cb, Cb, Cb, Cb),
-    compact=False)).reshape((n,n,n,n), order="C")
-    eri_bb -= eri_bb.swapaxes(1,3)
-
-    # eri_bb = eri_aa.copy()
+    eri_ab = contract('ip, iq, ij, jr, js->pqrs', Ca.conj(), Ca, eri, Cb.conj(), Cb)
+    eri_ba = contract('ip, iq, ij, jr, js->pqrs', Cb.conj(), Cb, eri, Ca.conj(), Ca)
 
 
-    eri_ab = (ao2mo.general( eri , (Ca, Ca, Cb, Cb),
-    compact=False)).reshape((n,n,n,n), order="C")
-    #eri_ba = (1.*eri_ab).swapaxes(0,3).swapaxes(1,2) ## !! caution depends on symmetry
 
-    eri_ba = (ao2mo.general( eri , (Cb, Cb, Ca, Ca),
-    compact=False)).reshape((n,n,n,n), order="C")
+
+    # eri_aa = (ao2mo.general( (uhf_pyscf)._eri , (Ca, Ca, Ca, Ca),
+    #                         compact=False)).reshape((n,n,n,n), order="C")
+    # eri_aa -= eri_aa.swapaxes(1,3)
+
+    # eri_bb = (ao2mo.general( (uhf_pyscf)._eri , (Cb, Cb, Cb, Cb),
+    # compact=False)).reshape((n,n,n,n), order="C")
+    # eri_bb -= eri_bb.swapaxes(1,3)
+
+    # eri_ab = (ao2mo.general( (uhf_pyscf)._eri , (Ca, Ca, Cb, Cb),
+    # compact=False)).reshape((n,n,n,n), order="C")
+    # #eri_ba = (1.*eri_ab).swapaxes(0,3).swapaxes(1,2) ## !! caution depends on symmetry
+
+    # eri_ba = (ao2mo.general( (uhf_pyscf)._eri , (Cb, Cb, Ca, Ca),
+    # compact=False)).reshape((n,n,n,n), order="C")
 
     H2 = np.stack(( np.stack((eri_aa, eri_ab)), np.stack((eri_ba, eri_bb)) ))
     H1 = np.asarray([np.einsum("AB, Ap, Bq -> pq", H, Ca, Ca), np.einsum("AB, Ap, Bq -> pq",
@@ -322,80 +299,87 @@ def CI_H(Binary, H1, H2, SC1, SC2):
     H_CI[I_B , J_B ] -= np.einsum("pqrr, Kp, Kq, Kr -> K", H2[1,0], b_t, b, Binary[I_B,0],
     optimize=True)
 
-    if len(I_AA) > 0:
     ## Rule 2
-        H_CI[I_AA, J_AA] = np.einsum("pqrs, Kp, Kq, Kr, Ks -> K", H2[0,0], aa_t[0], aa[0],
-        aa_t[1], aa[1], optimize=True)
-
-    if len(I_BB) > 0:
-        H_CI[I_BB, J_BB] = np.einsum("pqrs, Kp, Kq, Kr, Ks -> K", H2[1,1], bb_t[0], bb[0],
-        bb_t[1], bb[1], optimize=True)
-
+    H_CI[I_AA, J_AA] = np.einsum("pqrs, Kp, Kq, Kr, Ks -> K", H2[0,0], aa_t[0], aa[0],
+    aa_t[1], aa[1], optimize=True)
+    H_CI[I_BB, J_BB] = np.einsum("pqrs, Kp, Kq, Kr, Ks -> K", H2[1,1], bb_t[0], bb[0],
+    bb_t[1], bb[1], optimize=True)
     H_CI[I_AB, J_AB] = np.einsum("pqrs, Kp, Kq, Kr, Ks -> K", H2[0,1], ab_t, ab, ba_t, ba,
-        optimize=True)
+    optimize=True)
 
     return H_CI
 
+def fcisolver(mf, nstates=1):
+    """
+    Calculate the FCI of a PySCF Mean Field Object
 
-class CI:
-    def __init__(self, mf, frozen=None, max_cycle=50):
+    Parameters
+    ==========
+
+    mf: (PySCF Mean Field Object)
+
+    nstates: int
+        number of desired states. Default 1.
+
+    Returns
+    =======
+    E (Eigenvlues)
+    X (Eigenstates)
+    """
+
+    # create all determinants labeled by a 3D array (I, \sigma, p)
+    Binary = get_fci_combos(mf)
+
+    print('Number of determinants', Binary.shape[0])
+
+    H1, H2 = get_SO_matrix(mf)
+
+
+
+    SC1, SC2 = SlaterCondon(Binary)
+    H_CI = CI_H(Binary, H1, H2, SC1, SC2)
+
+
+
+    # E, X = np.linalg.eigh(H_CI)
+    E, X = eigsh(H_CI, k=nstates, which='SA')
+
+    return E, X
+
+
+class CIS:
+    pass
+
+class UCISD:
+    """
+
+    Refs:
+        C.D.  Sherrill, H.F. Schaefer III, Advances in Quantum Chemistry, Volume 34 , 1999, Pages 143-269
+    """
+    def __init__(self, mf, nstates=1, max_cycle=50):
 
 #        assert(isinstance(mf, (scf.rhf.RHF, RHF)))
 
         self.mf = mf
         self.mol = mf.mol
-        self.mo_energy = mf.mo_energy
-        self.mo_coeff = mf.mo_coeff
 
-        # self.nstates = nstates
+        self.nstates = nstates
 
         self.nao = mf.mol.nao
         self.nmo = self.nao
 
-        self.nocc = mf.mol.nelec//2
+        self.nocc = mf.mol.nelectron//2
 
         self.max_cycle = max_cycle
 
         self.nso = self.nmo * 2
 
-
         # self.mo_energy = np.zeros(self.nso)
         # self.mo_energy[0::2] = self.mo_energy[1::2] = mf.mo_energy
 
 
-        self.binary = None
+
         self.H = None
-
-
-class CISD(CI):
-    """
-    restricted CISD
-    """
-    def run(self):
-        pass
-
-    def vec_to_amplitudes(self, civec, copy=True):
-
-        nmo = self.nmo
-        nocc = self.nocc
-
-        nvir = nmo - nocc
-        c0 = civec[0]
-        cp = lambda x: (x.copy() if copy else x)
-        c1 = cp(civec[1:nocc*nvir+1].reshape(nocc,nvir))
-        c2 = cp(civec[nocc*nvir+1:].reshape(nocc,nocc,nvir,nvir))
-
-        return c0, c1, c2
-
-
-class UCISD(CI):
-    """
-    As all determinants have :math:`S_z = 0`, the degeneracy may arise
-    between the singlet and one of the triplets.
-
-    Refs:
-        C.D.  Sherrill, H.F. Schaefer III, Advances in Quantum Chemistry, Volume 34 , 1999, Pages 143-269
-    """
 
     def buildH(self):
         '''
@@ -426,6 +410,12 @@ class UCISD(CI):
         nocc = self.nocc
         nmo = self.nmo
         nvir = nmo - nocc
+
+        nso = nmo * 2
+
+        mo_energy = self.mf.mo_energy
+
+        nso = self.nso
 
         # # get ERI, spin alpha and beta are in alternating order [1a, 1b, 2a, 2b, ...]
         # b = np.zeros((nso//2, nso))
@@ -489,14 +479,9 @@ class UCISD(CI):
         # Binary = Binary.reshape(nsd, 2, nmo)
 
 
-        if isinstance(self.mf, (RHF,scf.rhf.RHF)):
-            # for I in range(nsd):
-            Binary[:] = [mf.mo_occ//2, ] * 2
-        else:
-            Binary[:] = mf.mo_occ
-
-
-        print(nocc, nmo)
+        # if isinstance(self.mf, RHF):
+        for I in range(nsd):
+            Binary[I] = mf.mo_occ
         # singles
         I = 1
         for i in range(nocc):
@@ -519,14 +504,14 @@ class UCISD(CI):
         for i in range(nocc):
             for j in range(i): # i > j
 
+                Binary[I, 0, i] -= 1
+                Binary[I, 0, j] -= 1
+
+                Binary[I+1, 1, i] -= 1
+                Binary[I+1, 1, j] -= 1
+
                 for a in range(nocc, nmo):
                     for b in range(nocc, a): # a > b
-
-                        Binary[I, 0, i] -= 1
-                        Binary[I, 0, j] -= 1
-
-                        Binary[I+1, 1, i] -= 1
-                        Binary[I+1, 1, j] -= 1
 
                         Binary[I, 0, b] += 1
                         Binary[I, 0, a] += 1
@@ -541,7 +526,6 @@ class UCISD(CI):
             for a in range(nocc, nmo):
                 for j in range(nocc):
                     for b in range(nocc, nmo):
-
                         Binary[I, 0, i] -= 1
                         Binary[I, 0, a] += 1
 
@@ -550,9 +534,6 @@ class UCISD(CI):
 
                         I += 1
 
-        self.binary = Binary
-
-        assert(I == nsd)
 
         H1, H2 = get_SO_matrix(self.mf)
 
@@ -563,14 +544,17 @@ class UCISD(CI):
 
         # self.mf.energy_elec()
 
-        # e_hf = self.mf.e_tot - self.mf.e_nuc
+        # e_hf = self.mf.e_tot - self.mf.energy_nuc()
 
 
-        # print(e_hf)
+        # print(H_CI)
 
         # E, X = np.linalg.eigh(H_CI)
-        # E, X = eigsh(H_CI, k=3, which='SA')
+        # E, X = eigsh(H_CI, k=nstates, which='SA')
 
+
+        # HCI[0, 0] = e_hf
+        # print(E + self.mf.energy_nuc())
 
         return H_CI
 
@@ -578,24 +562,14 @@ class UCISD(CI):
 
         H_CI = self.buildH()
 
-        print(H_CI)
-
         E, X = eigsh(H_CI, k=nstates, maxiter=self.max_cycle, \
                       which='SA', tol=tol)
 
         self.e_tot = E + self.mf.energy_nuc()
-
         self.ci = X
 
         for n in range(nstates):
             print('UCISD root {} E = {} '.format(n, self.e_tot[n]))
-
-        # TODO: total spin
-
-        return self
-
-    def spin(self):
-        pass
 
 
     def vec_to_amplitudes(self, civec, copy=True):
@@ -618,65 +592,15 @@ class UCISD(CI):
         pass
 
 
-def overlap(cibra, ciket, s=None):
-    """
-    CISD electronic overlap matrix
-        
-    Compute the overlap between Slater determinants first 
-    and contract with CI coefficients
-
-    Parameters
-    ----------
-    cibra : TYPE
-        DESCRIPTION.
-    binary1 : TYPE
-        DESCRIPTION.
-    ciket : TYPE
-        DESCRIPTION.
-    binary2 : TYPE
-        DESCRIPTION.
-    s : TYPE
-        AO overlap.
-
-    Returns
-    -------
-    None.
-
-    """
-    # nstates = len(cibra) + 1
-
-    # overlap matrix between MOs at different geometries
-    if s is None:
-        
-        from gbasis.integrals.overlap_asymm import overlap_integral_asymmetric
-
-        s = overlap_integral_asymmetric(mol._bas, mol2._bas)
-        s = reduce(np.dot, (cibra.mo_coeff.T, s, ciket.mo_coeff))
-
-    nsd = cibra.binary.shape[0]
-    S = np.zeros((nsd, nsd))
 
 
-    for I in range(nsd):
-        occidx1_a  = [i for i, char in enumerate(cibra.binary[I, 0]) if char == 1]
-        occidx1_b  = [i for i, char in enumerate(cibra.binary[I, 1]) if char == 1]
 
-        # print('a', occidx1_a, occidx1_b)
+class FCI:
+    def __init__(self, mf):
+        self.mf = mf
 
-        for J in range(nsd):
-            occidx2_a  = [i for i, char in enumerate(ciket.binary[J, 0]) if char == 1]
-            occidx2_b  = [i for i, char in enumerate(ciket.binary[J, 1]) if char == 1]
-
-            # print('b', occidx2_a, occidx2_b)
-            # print(ciket.binary[J])
-
-
-            S[I, J] = np.linalg.det(s[np.ix_(occidx1_a, occidx2_a)]) * \
-                      np.linalg.det(s[np.ix_(occidx1_b, occidx2_b)])
-
-
-    return contract('IB, IJ, JA', cibra.ci.conj(), S, ciket.ci)
-
+    def run(self, nstates=6):
+        return fcisolver(self.mf, nstates)
 
 
 
@@ -684,60 +608,38 @@ def overlap(cibra, ciket, s=None):
 if __name__=='__main__':
     from pyscf import gto, scf, dft, tddft, ao2mo, fci, ci
     import pyscf
-    from pyqed.qchem.mol import get_hcore_mo, get_eri_mo, Molecule
+    from pyqed.qchem.mol import get_hcore_mo, get_eri_mo
     from pyqed.qchem.jordan_wigner.spinful import SpinHalfFermionChain
-    from pyqed.qchem.hf.rhf import RHF
-    from pyqed.qchem.fci import FCI
+    from pyqed.qchem.hf import RHF
 
-    # mol = gto.Mole()
-    mol = Molecule(atom = [
+    mol = gto.Mole()
+    mol.atom = [
         ['H' , (0. , 0. , 0)],
-        ['Li' , (0. , 0. , 1)], ])
+        ['Li' , (0. , 0. , 1)], ]
     mol.basis = 'sto3g'
     mol.charge = 0
     # mol.unit = 'b'
     mol.build()
 
-    ### pyscf reference
-    # mf = scf.rhf.RHF(mol).run()
-    # myfci = fci.FCI(mf).run(nroots=4)
-    # print(myfci.e_tot)
-    # mf = scf.uhf.UHF(mol).run()
+
+    # # cisd = ci.cisd.CISD(mf).run()
+    mf = RHF(mol)
+
+    mf.run()
+
     # myci = ci.ucisd.UCISD(mf).run(nroots=5)
 
-
-
-    # cisd = ci.cisd.CISD(mf).run()
-    mf = RHF(mol).run()
-    myci = UCISD(mf).run(nstates=4)
-    # myfci = FCI(mf).run(4)
-
-
-
-    mol2 = Molecule(atom=[
-        ['H' , (0. , 0. , 0)],
-        ['Li' , (0. , 0. , 1.1)]])
-    mol2.basis = 'sto3g'
-    mol2.charge = 0
-    # mol.unit = 'b'
-    mol2.build()
-
-    mf2 = RHF(mol2).run()
-    ci2 = UCISD(mf2).run(nstates=4)
-    # for I in range(93):
-    #     print(myci.binary[I])
-
-
-    
-    A = overlap(myci, ci2)
-    print(A)
+    # print(mf._eri.shape)
 
 
 
 
-    # myci = fci.FCI(mf).run(nroots=5)
 
-    # print(myci.e_tot)
+    myci = UCISD(mf)
+    myci.run(nstates=5)
+
+    # E, X = FCI(mf).run()
+    # print(E)
 
 
 

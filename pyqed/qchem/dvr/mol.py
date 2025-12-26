@@ -438,6 +438,17 @@ from functools import reduce
 
 
 # from pyqed import eig_asymm, is_positive_def, dag
+<<<<<<<< HEAD:pyqed/qchem/mol.py
+# from lime.optics import Pulse
+
+
+def intertia_moment(mass, coords):
+    mass_center = np.einsum('i,ij->j', mass, coords)/mass.sum()
+    coords = coords - mass_center
+    im = np.einsum('i,ij,ik->jk', mass, coords, coords)
+    im = np.eye(3) * im.trace() - im
+    return im
+========
 
 
 def intertia_moment(mass, coords):
@@ -515,21 +526,120 @@ class Molecule(Molecule):
         self.dvr_type = dvr_type
 
 
+>>>>>>>> bg:pyqed/qchem/dvr/mol.py
 
+
+# class Molecule:
+#     def __init__(self, geometry):
+#         self.geometry = geometry
+
+#         self.ge = None
+#         self.ee = None
+#         self.edip = None
+#         self.mdip = None
+
+#     # def atom_symbol(self):
+#     #     return [mol.atom_symbol(i) for i in range(self.natoms)]
+#     def rhf(self):
+#         pass
+
+#     def rks(self):
+#         pass
+
+#     def tddft(self, nstates=1):
+#         pass
+
+#     def normal_modes(self):
+#         pass
+
+#     def absorption(self, ttype='electron'):
+#         # range, uv, ir, xray
+
+#         pass
+
+#     def photoelectron(self):
+#         pass
+
+#     def emission(self):
+#         pass
+
+
+# class Molecule(pyscf.gto.Mole):
+class Molecule:
+    def __init__(self, **kwargs):
+
+        mol = gto.M(**kwargs)
+
+        self.mol = mol
         # self.atom_coord = mol.atom_coord
+<<<<<<<< HEAD:pyqed/qchem/mol.py
+        self.atom_coords = (mol.atom_coords()) # shape 3, natoms
+        # print(self.atom_coords.shape)
+        self.natom = mol.natm
+        self.mass = mol.atom_mass_list()
+        self.atom_symbols = [mol.atom_symbol(i) for i in range(self.natom)]
+
+========
 
         # print(self.atom_coords.shape)
         self.natom = mol.natm
         self.mass = None # mol.atom_mass_list()
         self.atom_symbols = [self.atom_symbol(i) for i in range(self.natom)]
+>>>>>>>> bg:pyqed/qchem/dvr/mol.py
 
         self.distmat = None
         # self.e_nuc = None
 
+<<<<<<<< HEAD:pyqed/qchem/mol.py
+
+    def com(self):
+        '''
+        return center of mass
+
+        Returns
+        -------
+        TYPE
+            DESCRIPTION.
+
+        '''
+        mass = self.mass
+        return np.einsum('i,ij->j', mass, self.atom_coords)/mass.sum()
+
+    def inertia_moment(self):
+        mass = self.mass
+        coords = self.atom_coords
+        return intertia_moment(mass, coords)
+
+    def molecular_frame(self):
+        # transfrom to molecular frame
+        self.atom_coords -= self.com()
+        return self.atom_coords
+
+    def eckart_frame(self, ref):
+        """
+        transform to the Eckart frame relative to a reference geometry
+
+        Parameters
+        ----------
+        ref : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        None.
+
+        """
+        self.atom_coords = eckart(ref.T, self.atom_coords.T, self.mass)
+        return self.atom_coords
+
+    def principle_axes(self):
+        pass
+========
         # DVR basis set
         self.domain = None
         self.level = None
 
+>>>>>>>> bg:pyqed/qchem/dvr/mol.py
 
     def create_grid(self, domain, level):
         """
@@ -850,8 +960,191 @@ def scan_pes(method='dft'):
     plt.plot(x, ehf1, '-o', label='HF,0.7->4.0')
 
 
+    def tofile(self,fname):
+        pass
+
+
+def readxyz():
+    return
+
+def project_nac():
+    pass
+
+def G():
+    pass
+
+def quasi_angular_momentum(mass, reference, changed):
+    l = 0
+    natom = reference.shape[-1]
+    for k in range(natom):
+        l += mass[k] * np.cross(reference[:,k], changed[:,k])
+    return l
+
+def eckart(reference, changed, mass, option=None):
+    '''
+% Rotates 'changed' to satisfy both Eckart Conditions exactly with respect to 'reference'
+% Separate translational and rotational degrees of freedom from internal degrees of freedom
+%
+% reference: xyz coordinates as (3,NAtom)-matrix
+% changed: rotated xyz coordinates as (3,NAtom)-matrix
+% masses: 1D array of masses
+% option: shifts COM of the returned geometry to origin if it reads 'shiftCOM'
+%
+% xyz_rot: changed in orientation of reference as (3,NAtom)-matrix
+%
+%
+% Sorting of atoms has to be equal!
+
+    Refs:
+% The procedure is following: Dymarsky, Kudin, J. Chem. Phys. 122, 124103 (2005) and
+% especially Coutsias, et al., J. Comput. Chem. 25, 1849 (2004).
+% According to Kudin, Dymarsky, J. Chem. Phys. 122, 224105 (2005) satisfying Eckart and
+% minimizing the RMSD is the same problem!
+    '''
+
+    def com(mass, atom_coord):
+        '''
+        return center of mass
+
+        Params
+        ------
+        mass: 1d array
+            atomic mass
+        atom_coord: 2darray
+            cartesian coordinates [3, natom]
+
+        Returns
+        -------
+        TYPE
+            DESCRIPTION.
+
+        '''
+        return np.einsum('a,ja->j', mass, atom_coord)/mass.sum()
+
+
+    # Imaginary coordinates are nonsense
+    # if (isreal(reference) == 0) && (isreal(changed) == 0):
+    #     raise ValueError('Imaginary coordinates in the XYZ-Structures!')
+
+    natoms = len(mass)
+# % shift origin to the center of mass
+# % Eckart condition of translation (Eckart 1)
+    com_ref = com(mass, reference)
+    com_changed = com(mass, changed)
+
+    for i in range(natoms):
+        reference[:, i] -= com_ref
+        changed[:, i] -= com_changed
+
+
+# % if (abs(max(max(comref))) > 1e-4)
+# %     disp('Warning! Translational Eckart Condition for reference not satisfied!');
+# % end
+
+
+
+    # Quasi Angular Momentum
+    # Eckart Condition of rotation (Eckart 2)
+    # QAM = 0;
+    # for k=1:NAtom
+    #     QAM = QAM + masses(k)*cross(reference(:,k),changed(:,k));
+    # end
+
+
+
+    # Matrix A
+
+    A = np.einsum('a, ia, ja -> ij', mass, changed, reference)
+
+    F = np.zeros((4,4))
+
+    F[0,0] = A[0,0] + A[1,1] + A[2,2]
+    F[1,1] = A[0,0] - A[1,1] - A[2,2]
+    F[2,2] = -A[0,0] + A[1,1] - A[2,2]
+    F[3,3] = -A[0,0] - A[1,1] + A[2,2]
+
+    F[1,0] = A[1,2] - A[2,1]
+    F[0,1] = F[1,0]
+    F[2,0] = A[2,0] - A[0,2]
+    F[0,2] = F[2,0]
+    F[3,0] = A[0,1] - A[1,0]
+    F[0,3] = F[3,0]
+    F[2,1] = A[0,1] + A[1,0]
+    F[1,2] = F[2,1]
+    F[3,1] = A[0,2] + A[2,0]
+    F[1,3] = F[3,1]
+    F[3,2] = A[1,2] + A[2,1]
+    F[2,3] = F[3,2]
+
+
+    # The maximum eigenvalue [and its corresponding eigenvector]
+    # is the correct choice!!
+
+    # [V,D] = eigh(F)
+    # [D_, order] = sort(diag(D),'descend');
+    # V = V(:,order);
+    D_, V = np.linalg.eigh(F)
+    idx = np.argsort(-D_)
+    D_ = D_[idx]
+    V = V[:,idx]
+
+    # % [V,S,~] = svd(F);
+    # % [~, order] = sort(diag(S),'descend');
+    # % V = V(:,order);
+
+    if (-D_[3] > D_[0]):
+        q = V[:,3]
+    else:
+        q = V[:,0]
+
+
+    U = np.zeros((3,3))
+
+    U[0,0] = q[0]**2 + q[1]**2 - q[2]**2 - q[3]**2
+    U[1,1] = q[0]**2 + q[2]**2 - q[1]**2 - q[3]**2
+    U[2,2] = q[0]**2 + q[3]**2 - q[1]**2 - q[2]**2
+
+    U[1,0] = 2 * ( q[1] * q[2] + q[0] * q[3])
+    U[2,0] = 2 * ( q[1] * q[3] - q[0] * q[2])
+    U[0,1] = 2 * ( q[1] * q[2] - q[0] * q[3])
+    U[2,1] = 2 * ( q[2] * q[3] + q[0] * q[1])
+    U[0,2] = 2 * ( q[1] * q[3] + q[0] * q[2])
+    U[1,2] = 2 * ( q[2] * q[3] - q[0] * q[1])
+
+    if (-D_[3] > D_[0]):
+        U = -U
+
+
+    # Transform 'changed' with T to satisfy Eckart 2
+    xyz_rot = U @ changed;
+
+    # # Explicit test of Eckart 2
+    # QAM3 = 0;
+    # for k=1:NAtom
+    #     QAM3 = QAM3 + masses(k)*cross(reference(:,k),xyz_rot(:,k));
+    # end
+
+    # tmp = 0;
+    # for i=1:1:NAtom
+    #     tmp = tmp + (norm(xyz_rot(:,i) - reference(:,i)))^2;
+    # end
+    # RMSD = sqrt(tmp/NAtom);
+
+    # if (nargin < 4)
+    #     xyz_rot = xyz_rot + repmat(comref',1,NAtom);
+    # else
+    #     if ~(strcmp(option,'shiftCOM'))
+    #         xyz_rot = xyz_rot + repmat(comref',1,NAtom);
+
+    return xyz_rot
+
+
 if __name__ == '__main__':
+<<<<<<<< HEAD:pyqed/qchem/mol.py
+    from pyscf import scf, gto, tdscf
+========
     from pyscf import gto, tdscf
+>>>>>>>> bg:pyqed/qchem/dvr/mol.py
     # from lime.units import au2fs, au2ev
     import proplot as plt
 
@@ -868,7 +1161,26 @@ if __name__ == '__main__':
     print(mol.atom_charge(3))
 
 
+<<<<<<<< HEAD:pyqed/qchem/mol.py
 
+
+    mol.basis = 'STO-3G'
+    mol.build()
+
+    geometry2 = [['H' , (0.1,      0., 0.)],
+                ['H', (1.3, 0., 0.)]]
+    
+    mol2 = Molecule(atom=geometry2)
+
+    print(mol2.atom_coords)
+    print(mol2.com())
+    mol2.molecular_frame()
+    print(mol2.eckart_frame(mol.atom_coords()))
+
+    # print(mol.natm)
+========
+
+>>>>>>>> bg:pyqed/qchem/dvr/mol.py
 
     # mol.basis = 'STO-3G'
     # mol.build()
@@ -889,6 +1201,15 @@ if __name__ == '__main__':
     # mole = Molecule(mol)
     # mol.zmat(rvar=True)
     # mf = scf.RHF(mol).run()
+<<<<<<<< HEAD:pyqed/qchem/mol.py
+
+    # td = tdscf.TDRHF(mf)
+    # td.kernel()
+
+
+
+========
+>>>>>>>> bg:pyqed/qchem/dvr/mol.py
 
     # td = tdscf.TDRHF(mf)
     # td.kernel()
