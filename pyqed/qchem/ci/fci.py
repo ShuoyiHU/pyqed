@@ -587,42 +587,42 @@ def fcisolver(mf, nstates=1):
 
     return E, X
 
-def fcisolver(mo_occ, nstates=1):
-    """
-    Calculate the FCI of a Mean Field Object
+# def fcisolver(mo_occ, nstates=1):
+#     """
+#     Calculate the FCI of a Mean Field Object
 
-    Parameters
-    ==========
+#     Parameters
+#     ==========
 
-    mf: Mean Field Object
+#     mf: Mean Field Object
 
-    nstates: int
-        number of desired states. Default 1.
+#     nstates: int
+#         number of desired states. Default 1.
 
-    Returns
-    =======
-    E (Eigenvlues)
-    X (Eigenstates)
-    """
+#     Returns
+#     =======
+#     E (Eigenvlues)
+#     X (Eigenstates)
+#     """
 
-    # create all determinants labeled by a 3D array (I, \sigma, p)
-    Binary = get_fci_combos(mo_occ)
+#     # create all determinants labeled by a 3D array (I, \sigma, p)
+#     Binary = get_fci_combos(mo_occ)
 
-    print('Number of determinants', Binary.shape[0])
+#     print('Number of determinants', Binary.shape[0])
 
-    H1, H2 = get_SO_matrix(mf)
-
-
-    SC1, SC2 = SlaterCondon(Binary)
-    H_CI = CI_H(Binary, H1, H2, SC1, SC2)
+#     H1, H2 = get_SO_matrix(mf)
 
 
+#     SC1, SC2 = SlaterCondon(Binary)
+#     H_CI = CI_H(Binary, H1, H2, SC1, SC2)
 
 
-    # E, X = np.linalg.eigh(H_CI)
-    E, X = eigsh(H_CI, k=nstates, which='SA')
 
-    return E, X
+
+#     # E, X = np.linalg.eigh(H_CI)
+#     E, X = eigsh(H_CI, k=nstates, which='SA')
+
+#     return E, X
 
 
 

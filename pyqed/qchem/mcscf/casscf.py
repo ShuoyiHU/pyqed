@@ -7,8 +7,9 @@ Created on Sun Nov 16 22:07:30 2025
 """
 import numpy as np
 from scipy.linalg import eigh
-from pyqed.qchem.mcscf.casci import CASCI
+# from pyqed.qchem.mcscf.casci import CASCI
 from opt_einsum import contract
+from pyqed.qchem.mcscf.direct_ci import CASCI
 
 from pyqed.qchem.optimize import minimize
 
@@ -45,6 +46,7 @@ class CASSCF(CASCI):
         nmo = self.mf.nao
         ncas = self.ncas
         nelecas = self.nelecas
+        ncore = self.ncore
 
         mc = CASCI(mf, ncas=ncas, nelecas=nelecas)
         # spin
@@ -66,8 +68,8 @@ class CASSCF(CASCI):
         h1e = mf.get_hcore_mo()
         eri = mf.get_eri_mo()
 
-        U0 = np.zeros((nmo, ncas))
-        for i in range(ncas):
+        U0 = np.zeros((nmo, ncas+ncore))
+        for i in range(ncas+ncore):
             U0[i, i] = 1.
 
         if nstates == 1:
@@ -360,9 +362,9 @@ if __name__=='__main__':
 
     mf = mol.RHF().run()
 
-    mc = CASSCF(mf, ncas=4, nelecas=4)
+    mc = CASSCF(mf, ncas=3, nelecas=2)
 
-    nstates = 3
+    nstates = 2
     # mc.state_average(weights = np.ones(nstates)/nstates)
-    # mc.fix_spin(ss=0, shift=1)
+    # mc.fix_spin(ss=0, shift=0.2)
     mc.run()

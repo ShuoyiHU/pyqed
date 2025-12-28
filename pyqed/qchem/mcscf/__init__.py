@@ -1,1 +1,1 @@
-from .direct_ci import *
+#from .direct_ci import CASCI

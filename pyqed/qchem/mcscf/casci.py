@@ -29,8 +29,83 @@ from pyqed.qchem.jordan_wigner.spinful import jordan_wigner_one_body, annihilate
 
 from pyqed.qchem.hf.rhf import ao2mo
 
+# def ao2mo(mf, mo_coeff=None, spin_flip=False, H1=None, H2=None):
+#     """
+#     Given a rhf object get Spin-Orbit Matrices
+
+#     SF: bool
+#         spin-flip
+
+#     Returns
+#     -------
+#     H1: list of [h1e_a, h1e_b]
+#     H2: list of ERIs [[ERI_aa, ERI_ab], [ERI_ba, ERI_bb]]
+#     """
+#     # from pyscf import ao2mo
+
+#     # mf = self.mf
+
+#     if mo_coeff is None:
+#         mo_coeff = mf.mo_coeff
+
+#     # molecular orbitals
+#     Ca, Cb = mo_coeff
+
+#     H, energy_core = h1e_for_cas(mf, mo_coeff=mo_core)
+
+#     self.e_core = energy_core
+
+
+#     # S = (uhf_pyscf.mol).intor("int1e_ovlp")
+#     # eig, v = np.linalg.eigh(S)
+#     # A = (v) @ np.diag(eig**(-0.5)) @ np.linalg.inv(v)
+
+#     # H1e in AO
+#     # H = mf.get_hcore()
+#     # H = dag(Ca) @ H @ Ca
+
+#     # nmo = Ca.shape[1] # n
+
+#     eri = mf.eri  # (pq||rs) 1^* 1 2^* 2
+
+#     ### compute SO ERIs (MO)
+#     eri_aa = contract('ip, jq, ijkl, kr, ls -> pqrs', Ca.conj(), Ca, eri, Ca.conj(), Ca)
+
+#     # physicts notation <pq|rs>
+#     # eri_aa = contract('ip, jq, ij, ir, js -> pqrs', Ca.conj(), Ca.conj(), eri, Ca, Ca)
+
+#     eri_aa -= eri_aa.swapaxes(1,3)
+
+#     eri_bb = eri_aa.copy()
+
+#     eri_ab = contract('ip, jq, ijkl, kr, ls -> pqrs', Ca.conj(), Ca, eri, Cb.conj(), Cb)
+#     eri_ba = contract('ip, jq, ijkl, kr, ls -> pqrs', Cb.conj(), Cb, eri, Ca.conj(), Ca)
+
+
+#     H2 = np.stack(( np.stack((eri_aa, eri_ab)), np.stack((eri_ba, eri_bb)) ))
+
+#     # H1 = np.asarray([np.einsum("AB, Ap, Bq -> pq", H, Ca, Ca),
+#                      # np.einsum("AB, Ap, Bq -> pq", H, Cb, Cb)])
+#     H1 = [H, H]
+
+#     if spin_flip:
+#         raise NotImplementedError('Spin-flip matrix elements not implemented yet')
+#     #     eri_abab = (ao2mo.general( (uhf_pyscf)._eri , (Ca, Cb, Ca, Cb),
+#     #     compact=False)).reshape((n,n,n,n), order="C")
+#     #     eri_abba = (ao2mo.general( (uhf_pyscf)._eri , (Ca, Cb, Cb, Ca),
+#     #     compact=False)).reshape((n,n,n,n), order="C")
+#     #     eri_baab = (ao2mo.general( (uhf_pyscf)._eri , (Cb, Ca, Ca, Cb),
+#     #     compact=False)).reshape((n,n,n,n), order="C")
+#     #     eri_baba = (ao2mo.general( (uhf_pyscf)._eri , (Cb, Ca, Cb, Ca),
+#     #     compact=False)).reshape((n,n,n,n), order="C")
+#     #     H2_SF = np.stack(( np.stack((eri_abab, eri_abba)), np.stack((eri_baab, eri_baba)) ))
+#     #     return H1, H2, H2_SF
+#     # else:
+#     #     return H1, H2
+#     return H1, H2
+
 def h1e_for_cas(mf, ncas, ncore, mo_coeff=None):
-    '''CAS space one-electron hamiltonian
+    '''CAS space effective one-electron hamiltonian
 
     Args:
         casci : a RHF object
@@ -54,6 +129,7 @@ def h1e_for_cas(mf, ncas, ncore, mo_coeff=None):
         corevhf = get_veff(mf.mol, core_dm)
         energy_core += np.einsum('ij,ji', core_dm, hcore).real
         energy_core += np.einsum('ij,ji', core_dm, corevhf).real * .5
+
     h1eff = reduce(np.dot, (mo_cas.conj().T, hcore+corevhf, mo_cas))
     return h1eff, energy_core
 
@@ -117,10 +193,10 @@ class CASCI:
         if spin is None:
             spin = mf.mol.spin
         self.spin = spin
-        self.ss = None 
-        self.shift = None 
+        self.ss = None
+        self.shift = None
         self.spin_purification = False
-    
+
 
         self.mf = mf
         # self.chemical_potential = mu
@@ -399,7 +475,7 @@ class CASCI:
             # first-order spin penalty J. Phys. Chem. A 2022, 126, 12, 2050–2060
             # H' = H + J \hat{S}^2
             # norb = h1e[0].shape[0]
-            
+
             # ncas = self.ncas
 
             # h1e = [h + 3./4 * shift * np.eye(ncas) for h in h1e]
@@ -411,7 +487,7 @@ class CASCI:
 
             self.spin_purification = True
             self.ss = 0
-            self.shift = shift 
+            self.shift = shift
 
             return self
 
@@ -456,44 +532,42 @@ class CASCI:
 
         ncore = self.ncore
         ncas = self.ncas
-        
+
         # define the core and active space orbitals
         if mo_coeff is None:
             self.mo_coeff = self.mf.mo_coeff # use HF MOs
             # self.mo_core = self.mo_coeff[:, :ncore]
             # self.mo_cas = self.mo_coeff[:, ncore:ncore+ncas]
-            
+
         else:
             self.mo_coeff = mo_coeff
-            
+
         self.mo_core = self.mo_coeff[:, :ncore]
         self.mo_cas = self.mo_coeff[:, ncore:ncore+ncas]
 
-        # print('cas', ncore, ncas, self.mo_cas.shape)
-        
 
         if self.binary is None:
             mo_occ = [self.mf.mo_occ[ncore: ncore+ncas]//2, ] * 2
             binary = get_fci_combos(mo_occ = mo_occ)
             self.binary = binary
         else:
-            binary = self.binary 
+            binary = self.binary
 
         # print('Number of determinants', binary.shape[0])
-        
+
         # effective hamiltonian in the CAS
         h1e, h2e = self.get_SO_matrix()
-        
+
         # print('h1e shape', h1e[0].shape)
 
         if self.spin_purification:
-            
+
             logging.info('Purify spin by energy penalty')
 
             # if self.shift is not None:
             # H1, H2 = self.fix_spin(H1, H2, ss=ss, shift=shift)
-            shift = self.shift 
-            
+            shift = self.shift
+
             h1e = [h + 3./4 * shift * np.eye(ncas) for h in h1e]
 
             for p in range(ncas):
@@ -513,7 +587,6 @@ class CASCI:
 
 
         SC1, SC2 = SlaterCondon(binary)
-
         self.SC1 = SC1
         self.SC2 = SC2
 
@@ -1394,7 +1467,7 @@ if __name__ == "__main__":
     ncas, nelecas = (5,4)
     mc = CASCI(mf2, ncas, nelecas)
     mc.run(5)
-    
+
     print('core ', mc.ncore)
 
     # mc = CASCI(mf2, ncas, nelecas)
