@@ -13,7 +13,7 @@ from pyqed.qchem.mcscf.direct_ci import CASCI
 # from pyqed.qchem.mcscf.casci import CASCI
 
 
-from pyqed.qchem.optimize import minimize
+from pyqed.optimize import minimize
 
 class CASSCF(CASCI):
     """
@@ -74,7 +74,7 @@ class CASSCF(CASCI):
         for i in range(ncas+ncore):
             U0[i, i] = 1.
 
-        if nstates == 1: # ground state only 
+        if nstates == 1: # ground state only
             C, mc = kernel(mc, U0, nelecas, ncas, C0, h1e, eri, max_cycles=self.max_cycles)
 
         elif nstates > 1:
@@ -164,7 +164,7 @@ def kernel(mc, U0, nelecas, ncas, C0, h1e, eri, max_cycles=30, tol=1e-6, **kwarg
     """
 
     if mc.ncore > 0:
-        with_core = True 
+        with_core = True
     else:
         with_core = False
 
@@ -176,7 +176,7 @@ def kernel(mc, U0, nelecas, ncas, C0, h1e, eri, max_cycles=30, tol=1e-6, **kwarg
     # U0 = np.zeros((nmo, ncas))
     # for i in range(ncas):
     #     U0[i, i] = 1
-    
+
     U, E = minimize(energy, U0, args=(h1e, eri, dm1, dm2))
 
     k = 0
@@ -369,5 +369,5 @@ if __name__=='__main__':
     # mc.state_average(weights = np.ones(nstates)/nstates)
     mc.fix_spin(ss=0, shift=0.2)
     mc.run()
-    
+
     # correct result is E(CASSCF) = [-7.67160344]
