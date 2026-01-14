@@ -16,23 +16,35 @@ from __future__ import division
 import os
 import sys
 import numpy
-from numpy import sin, cos, pi
+from numpy import pi
 from numpy.linalg import norm
 import numpy as np
 
-from gbasis.parsers import parse_gbs, make_contractions
-from gbasis.integrals.overlap import overlap_integral
-from gbasis.integrals.kinetic_energy import kinetic_energy_integral
-from gbasis.integrals.nuclear_electron_attraction import \
-nuclear_electron_attraction_integral
-from gbasis.integrals.electron_repulsion import electron_repulsion_integral
+# from gbasis.parsers import parse_gbs, make_contractions
+# from gbasis.integrals.overlap import overlap_integral
+# from gbasis.integrals.kinetic_energy import kinetic_energy_integral
+# from gbasis.integrals.nuclear_electron_attraction import \
+# nuclear_electron_attraction_integral
+# from gbasis.integrals.electron_repulsion import electron_repulsion_integral
 
 
-from pyqed import dag
+from pyqed import dag, au2angstrom
 from pyqed.qchem.hf import RHF, UHF
 
 from periodictable import elements
-# from pyscf import dft, scf, gto, ao2mo
+from pyscf import dft, scf, gto, ao2mo
+
+
+# import scipy.linalg as linalg
+# from scipy.optimize import newton
+
+# from pyscf.lib import logger
+# import pyscf.ao2mo
+# import pyscf
+# from functools import reduce
+from pyqed.qchem.basis import build
+
+
 
 # try:
 #     from cclib.parser.data import ccData
@@ -41,7 +53,25 @@ from periodictable import elements
 #     print("Failed to load cclib!")
 #     raise
 
+def atomic_chain(natom, z, element='H', basis='631g', spin=0):
 
+    # ds = np.linspace(-4, 4, natom)
+
+    elements = [element, ] * natom
+
+    R = np.zeros((natom, 3))
+    R[:, 2] = z
+
+    atom = build_atom_from_coords(elements, R)
+
+    mol = Molecule(
+        atom = atom,
+        basis = basis,
+        unit = 'b',
+        spin = spin,
+        )
+
+    return mol
 
 # DISABLE_EVAL = getattr(__config__, 'DISABLE_EVAL', False)
 
@@ -157,7 +187,7 @@ def build_atom_from_coords(atom_symbol_list, coords):
 
 
 
-def format_atom(atoms):
+def format_atom(atoms, unit='b', origin=0, axes=None):
     # '''Convert the input :attr:`Mole.atom` to the internal data format.
     # Including, changing the nuclear charge to atom symbol, converting the
     # coordinates to AU, rotate and shift the molecule.
@@ -227,10 +257,12 @@ def format_atom(atoms):
                 fmt_atoms.append(dat)
 
 
-        # if len(fmt_atoms[0].split()) < 4:
-        #     fmt_atoms = from_zmatrix('\n'.join(fmt_atoms))
-        # else:
-        fmt_atoms = [str2atm(line) for line in fmt_atoms]
+        if len(fmt_atoms[0].split()) < 4:
+            # fmt_atoms = from_zmatrix('\n'.join(fmt_atoms))
+            # TODO: add zmat supporter
+            raise ValueError('Zmat not supported yet.')
+        else:
+            fmt_atoms = [str2atm(line) for line in fmt_atoms]
 
     else:
         fmt_atoms = []
@@ -240,16 +272,31 @@ def format_atom(atoms):
                     fmt_atoms.append(str2atm(atom.replace(',',' ')))
             else:
                 if isinstance(atom[1], (int, float)):
-                    fmt_atoms.append([(atom[0]), atom[1:4]])
+                    fmt_atoms.append([atom[0], atom[1:4]])
                 else:
-                    fmt_atoms.append([(atom[0]), atom[1]])
+                    fmt_atoms.append([atom[0], atom[1]])
+
+    if axes is None:
+        axes = np.eye(3)
+
+    if is_au(unit):
+        unit = 1
+    else:
+        unit = 1/au2angstrom
 
     c = numpy.array([a[1] for a in fmt_atoms], dtype=numpy.double)
-    # c = numpy.einsum('ix,kx->ki', axes * unit, c - origin)
+    c = numpy.einsum('ix,kx->ki', axes * unit, c - origin)
     z = [a[0] for a in fmt_atoms]
 
-    return list(zip(z, c.tolist()))
+    return list(map(list, zip(z, c.tolist())))
+    # return list(zip(z, c.tolist()))
 
+
+
+def is_au(unit):
+    '''Return whether the unit is recognized as A.U. or not
+    '''
+    return unit.upper().startswith(('B', 'AU'))
 
 # def fromfile(filename, format=None):
 #     '''Read molecular geometry from a file
@@ -697,16 +744,6 @@ def fromfile(filename, format=None):
 #         """
 
 
-import scipy.linalg as linalg
-from scipy.optimize import newton
-
-# from pyscf.lib import logger
-import pyscf.ao2mo
-import pyscf
-from functools import reduce
-from pyqed.qchem.basis import build
-
-
 # from pyqed import eig_asymm, is_positive_def, dag
 
 
@@ -815,35 +852,59 @@ def atom_mass_list(mol):
 
 
 class Molecule:
-    def __init__(self, atom, charge=0, spin=0, basis=None, **kwargs):
+    def __init__(self, atom, charge=0, spin=0, basis=None, unit='bohr', **kwargs):
 
-        # mol = super(Molecule, self).__init__(atom=atom, **kwargs)
+        if isinstance(atom, str):
+            # The input atom is a geometry file
+            if os.path.isfile(atom):
+                try:
+                    self._atom = fromfile(atom)
+                except ValueError:
+                    sys.stderr.write('\nFailed to parse geometry file  %s\n\n' % atom)
+                    raise
+            else:
+                self._atom = format_atom(atom)
+        else:
+            self._atom = format_atom(atom)
 
-        # mol = gto.M(atom, **kwargs)
-
-        self._atom = format_atom(atom)
+        self.natom = len(self._atom)
 
         # self.mol = mol
         # self.atom_coord = mol.atom_coord
 
-        # print(self.atom_coords.shape)
-        self.natom = len(self._atom)
+        # TODO: add unit support.
+        if unit.lower() in ['b', 'bohr']:
+            for a in range(self.natom):
+                self._atom[a][1] = list(np.array(self._atom[a][1]))
+
+        elif unit.lower() in ['a', 'angstrom']:
+            # raise ValueError('unit can only be Bohr.')
+            for a in range(self.natom):
+                self._atom[a][1] = list(np.array(self._atom[a][1])/au2angstrom)
+
         # self.mass = mol.atom_mass_list()
 
         self.spin = spin
         self.charge = charge
 
+        # self.atom = atom
+
         self.distmat = None
         self.basis = basis
+
         self._nelec = None
 
         ######## DO NOT CHANGE ####
+
         self.e_nuc = None
         self.overlap = None
         self.hcore = None
         self.eri = None
 
         self.nao = None
+        self.nmo = None
+        self.unit = unit
+        self._bas = None
 
 
     @property
@@ -876,18 +937,88 @@ class Molecule:
         return self._nelec
 
 
-    def build(self):
+    def build(self, driver='gbasis'):
         """
         build molecular integrals
+        
+        Parameters 
+        ----------
+        driver : str 
+            external driver for AO integrals. Supported are 'gbasis' and 'pyscf'.
 
         Returns
         -------
         None.
 
         """
+        driver = driver.lower()
+        
+        if driver is None: 
+            pass 
+        elif driver == 'gbasis':
+            build(self)
+            
+        elif driver == 'pyscf':
+            # extract AO integrals from PySCF 
+            
+            mol = self.topyscf()
+            mol.build()
+            
+            self.nao = mol.nao
+            
+            kin = mol.intor('int1e_kin')
+            vnuc = mol.intor('int1e_nuc')
+            self.hcore =  kin + vnuc
 
-        build(self)
+            self.overlap = mol.intor('int1e_ovlp')
+            self.eri = mol.intor('int2e')
 
+    def moment_integral(self, orders=None, center=np.array([0,0,0])):
+        """
+
+        Parameters
+        ----------
+        orders : np.ndarray(D, 3)
+            Orders of the moment for each dimension (x, y, z).
+            Note that a two dimensional array must be given, even if there is
+            only one set of orders of the moment. The default is None.
+        center : TYPE, optional
+            . The default is np.array([0,0,0]).
+
+        Returns
+        -------
+        TYPE
+            DESCRIPTION.
+
+        """
+
+        from gbasis.integrals.moment import moment_integral
+
+        # set the orders of the moment integrals
+        if orders is None:
+            orders = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+
+        return moment_integral(self._bas, moment_coord=center, moment_orders=orders)
+
+    def momentum_integral(self, orders=(1,0,0), center=(0,0,0)):
+
+        from gbasis.integrals.momentum import momentum_integral
+
+        return momentum_integral(self.basis)
+
+
+    def topyscf(self):
+        """
+        change to Pyscf Mol object
+
+        Returns
+        -------
+        TYPE
+            DESCRIPTION.
+
+        """
+        from pyscf import gto
+        return gto.M(atom=self.atom, basis=self.basis, unit=self.unit)
 
     def atom_mass_list(self):
         '''
@@ -922,7 +1053,39 @@ class Molecule:
 
     def molecular_frame(self):
         # transfrom to molecular frame
-        self.atom_coords -= self.com()
+
+        R0 = self.center_of_mass()
+
+        for i in range(self.natom):
+            R = np.array(self._atom[i][1])
+            R -= R0
+
+            self._atom[i][1] = list(R)
+
+
+        return self
+
+    def set_geom(self, R):
+        """
+        update the molecular geometry (rebuild the AO integrals)
+
+        Parameters
+        ----------
+        R : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        TYPE
+            DESCRIPTION.
+
+        """
+        # update coordinates
+        for i in range(self.natom):
+            self._atom[i][1] = R[i]
+
+        # self.build()
+
         return self
 
     def eckart_frame(self, ref):
@@ -939,8 +1102,12 @@ class Molecule:
         None.
 
         """
-        self.atom_coords = eckart(ref.T, self.atom_coords.T, self.mass)
-        return self.atom_coords
+
+        atom_coords = eckart(ref.T, self.atom_coords().T, \
+                             self.atom_mass_list())
+
+        self.set_geom(atom_coords)
+        return self
 
     def principle_axes(self):
         pass
@@ -949,7 +1116,7 @@ class Molecule:
         """Build distance matrix between all atoms
            TODO: calculate distances only as needed for efficiency"""
         coords = self.atom_coords()
-        natom = self.natm
+        natom = self.natom
 
         distancematrix = np.zeros((natom, natom))
 
@@ -1199,11 +1366,63 @@ def readxyz(fname):
     return build_atom_from_coords(atomic_symbols, atomic_coordinates)
 
 
+# def dihedral(r1, r2, r3, r4):
+#     """
+
+#        Calculate dihedral angle (in radians) between 4 atoms
+#        For more information, see:
+#            http://math.stackexchange.com/a/47084
+
+#     Parameters
+#     ----------
+#     r1 : 3D vector
+#         position of the first atom
+#     atom2 : TYPE
+#         DESCRIPTION.
+#     atom3 : TYPE
+#         DESCRIPTION.
+#     atom4 : TYPE
+#         DESCRIPTION.
+
+#     Returns
+#     -------
+#     dihedral : TYPE
+#         DESCRIPTION.
+
+#     """
+#     import jax.numpy as jnp
+
+#     # Vectors between 4 atoms
+#     b1 = r2 - r1
+#     b2 = r2 - r3
+#     b3 = r4 - r3
+
+#     # Normal vector of plane containing b1,b2
+#     n1 = jnp.cross(b1, b2)
+#     un1 = n1 / jnp.norm(n1)
+
+#     # Normal vector of plane containing b1,b2
+#     n2 = jnp.cross(b2, b3)
+#     un2 = n2 / jnp.norm(n2)
+
+#     # un1, ub2, and m1 form orthonormal frame
+#     ub2 = b2 / jnp.norm(b2)
+#     um1 = jnp.cross(un1, ub2)
+
+#     # dot(ub2, n2) is always zero
+#     x = jnp.dot(un1, un2)
+#     y = jnp.dot(um1, un2)
+
+#     dihedral = jnp.arctan2(y, x)*(180.0/pi)
+#     if dihedral < 0:
+#         dihedral = 360.0 + dihedral
+#     return dihedral
 
 def project_nac():
     pass
 
-def G():
+def metric():
+    # metric tensor of curvilinear coordinates
     pass
 
 def quasi_angular_momentum(mass, reference, changed):
@@ -1215,25 +1434,26 @@ def quasi_angular_momentum(mass, reference, changed):
 
 def eckart(reference, changed, mass, option=None):
     '''
-% Rotates 'changed' to satisfy both Eckart Conditions exactly with respect to 'reference'
-% Separate translational and rotational degrees of freedom from internal degrees of freedom
-%
-% reference: xyz coordinates as (3,NAtom)-matrix
-% changed: rotated xyz coordinates as (3,NAtom)-matrix
-% masses: 1D array of masses
-% option: shifts COM of the returned geometry to origin if it reads 'shiftCOM'
-%
-% xyz_rot: changed in orientation of reference as (3,NAtom)-matrix
-%
-%
-% Sorting of atoms has to be equal!
+    % Rotates 'changed' to satisfy both Eckart Conditions exactly with respect to 'reference'
+    % Separate translational and rotational degrees of freedom from internal degrees of freedom
+    %
+    % reference: xyz coordinates as (3,NAtom)-matrix
+    % changed: rotated xyz coordinates as (3,NAtom)-matrix
+    % masses: 1D array of masses
+    % option: shifts COM of the returned geometry to origin if it reads 'shiftCOM'
+    %
+    % xyz_rot: changed in orientation of reference as (3,NAtom)-matrix
+    %
+    %
+    % Sorting of atoms has to be equal!
 
-    Refs:
-% The procedure is following: Dymarsky, Kudin, J. Chem. Phys. 122, 124103 (2005) and
-% especially Coutsias, et al., J. Comput. Chem. 25, 1849 (2004).
-% According to Kudin, Dymarsky, J. Chem. Phys. 122, 224105 (2005) satisfying Eckart and
-% minimizing the RMSD is the same problem!
-    '''
+        Refs:
+    % The procedure is following: Dymarsky, Kudin, J. Chem. Phys. 122, 124103 (2005) and
+    % especially Coutsias, et al., J. Comput. Chem. 25, 1849 (2004).
+    % According to Kudin, Dymarsky, J. Chem. Phys. 122, 224105 (2005) satisfying Eckart and
+    % minimizing the RMSD is the same problem!
+        '''
+    assert reference.shape == changed.shape
 
     def com(mass, atom_coord):
         '''
@@ -1260,6 +1480,7 @@ def eckart(reference, changed, mass, option=None):
     #     raise ValueError('Imaginary coordinates in the XYZ-Structures!')
 
     natoms = len(mass)
+
 # % shift origin to the center of mass
 # % Eckart condition of translation (Eckart 1)
     com_ref = com(mass, reference)
@@ -1270,8 +1491,8 @@ def eckart(reference, changed, mass, option=None):
         changed[:, i] -= com_changed
 
 
-    if (abs(max(max(com_ref))) > 1e-4):
-         raise Warning('Warning! Translational Eckart Condition for reference not satisfied!')
+    # if (abs(max(max(com_ref))) > 1e-4):
+    #      raise Warning('Warning! Translational Eckart Condition for reference not satisfied!')
 
 
 
@@ -1590,10 +1811,15 @@ if __name__ == '__main__':
 
     # mol = gto.Mole()
     # mol.verbose = 3
-    atom = [['H' , (0,      0., 0.)],
-            ['H', (1.1, 0., 0.)]]
+    atom = [['F' , (0,      0., 0.)],
+            ['Li', (0, 0., 2)]]
+            # ['H', (1.5, 0, 0)]]
     #mol.basis = {'Ne': '6-31G'}
     mol = Molecule(atom)
+
+    # d = mol._build_distance_matrix()
+    # print(d)
+
     # This is from G2/97 i.e. MP2/6-31G*
     # mol.atom = [['H' , (0,      0., 0.)],
     #             ['H', (1.1, 0., 0.)]]
@@ -1602,8 +1828,9 @@ if __name__ == '__main__':
 
 
 
-    mol.basis = 'sto3G'
-    mol.build()
+    mol.basis = '631g'
+    mol.build(driver='pyscf')
+
     mol.RHF().run()
 
     # print(mol.atom_symbols())
@@ -1639,16 +1866,18 @@ if __name__ == '__main__':
 
 
     # geometry2 = [['H' , (0.1,      0., 0.)],
-    #             ['H', (1.3, 0., 0.)]]
+    #             ['H', (1.3, 0., 0.)],
+    #             ['H', (1.5, 0, 0)]]
 
     # mol2 = Molecule(atom=geometry2)
 
 
 
-    # print(mol2.atom_coords)
+    # print(mol2.atom_coords().shape)
     # print(mol2.com())
     # mol2.molecular_frame()
-    # print(mol2.eckart_frame(mol.atom_coords()))
+
+    # mol2.eckart_frame(mol.atom_coords())
 
     # print(mol.natm)
 

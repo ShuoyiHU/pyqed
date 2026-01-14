@@ -31,5 +31,12 @@ MacBook_local_data
 local_data
 dataset
 local_data_GL2013
+*.bib
+*.notes
+*.family_notes
+*.bat
+*.nbc
+*.nbi
+
 sh_file_for_HPC
 pyqed/HEOM/prony_test_radical_coulomb.py

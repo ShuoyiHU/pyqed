@@ -7,6 +7,7 @@ Created on Sun Dec  1 09:40:40 2024
 """
 
 import numpy as np
+# from logging import logg
 from pyqed.qchem.hf import RHF, get_veff
 
 class UHF:
@@ -15,6 +16,7 @@ class UHF:
 
     def run(self):
         pass
+
 
 
 def energy_elec(mf, dm=None, h1e=None, vhf=None):
@@ -41,5 +43,5 @@ def energy_elec(mf, dm=None, h1e=None, vhf=None):
     e_elec = (e1 + e_coul).real
     mf.scf_summary['e1'] = e1.real
     mf.scf_summary['e2'] = e_coul.real
-    logger.debug(mf, 'E1 = %s  Ecoul = %s', e1, e_coul.real)
+
     return e_elec, e_coul

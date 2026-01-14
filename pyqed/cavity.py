@@ -439,7 +439,8 @@ class Cavity():
         else:
             raise ValueError('The quality factor cannot be None.')
 
-        self.nonhermH = self.H - 1j * kappa * np.identity(ncav)
+        a = self.get_annihilate()
+        self.nonhermH = self.H - 0.5j * kappa * dag(a) @ a
         return self.nonhermH
 
     def get_nonhermH(self):

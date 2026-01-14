@@ -431,7 +431,7 @@ class DVR2(object):
         else:
             self._V = V
 
-    def t(self, boundary_conditions=['vanishing', 'vanishing'], coords='linear',\
+    def t(self, coords='linear',\
           inertia=None):
         """Return the kinetic energy matrix.
         Usage:
@@ -445,7 +445,7 @@ class DVR2(object):
         @returns T kinetic energy matrix
         """
 
-        bc_x, bc_y = boundary_conditions
+        # bc_x, bc_y = boundary_conditions
 
         if coords == 'linear':
 
@@ -454,6 +454,7 @@ class DVR2(object):
             
             idx = sp.identity(self.nx)
             idy = sp.identity(self.ny)
+            
             return sp.kron(idx, ty) + sp.kron(tx, idy)
 
         elif coords == 'jacobi':

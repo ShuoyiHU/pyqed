@@ -77,7 +77,7 @@ def fock_bin(n, k):
     Examples
     --------
     >>> import edrixs
-    >>> edrixs.fock_bin(4, 2)
+    >>> fock_bin(4, 2)
     [[1, 1, 0, 0],
      [1, 0, 1, 0],
      [1, 0, 0, 1],
@@ -101,4 +101,5 @@ def fock_bin(n, k):
 def basis(n, m):
     pass
 
-print(fock_bin(4, 2))
+if __name__=='__main__':
+    print(fock_bin(4, 2))

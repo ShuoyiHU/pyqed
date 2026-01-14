@@ -4,11 +4,12 @@
 Created on Sun Oct  6 16:41:46 2024
 
 #####################################################
-#  DMRG quantum chemistry using MPS/MPO representations    #
-# Ian McCulloch August 2017                         #
-#####################################################
+DMRG quantum chemistry using MPS/MPO representations
 
-@author: Bing Gu
+Refs: Ian McCulloch August 2017  
+
+@author: Bing Gu                      
+
 """
 
 

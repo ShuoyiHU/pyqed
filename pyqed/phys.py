@@ -1,5 +1,7 @@
 from __future__ import absolute_import
 
+# from pyqed import au2k
+
 import numpy as np
 from numpy import exp, pi, sqrt
 from scipy.sparse import csr_matrix, lil_matrix, identity, kron, linalg,\
@@ -13,6 +15,83 @@ import scipy as sp
 import sys
 import heapq
 from functools import reduce
+import math
+
+
+def discrete_cosine_transform_matrix(n):
+    """
+    transform the Cartesian coordinates to collective coordinates
+    (e.g. enter-of-mass and relative motion)
+
+    .. math::
+
+        y_k = 2 \sum_{n=0}^{N-1} x_n \cos( \frac{\pi k (2n + 1) }{2N} )
+
+
+    Parameters
+    ----------
+    n : TYPE
+        DESCRIPTION.
+    dtype : TYPE, optional
+        DESCRIPTION. The default is None.
+
+    Returns
+    -------
+    TYPE
+        DESCRIPTION.
+
+    """
+    from scipy.fft import dct
+
+    return dct(np.eye(n), type=2, axis=0, norm='ortho')
+
+
+def householder(a): 
+    """
+    
+    tridiagonalize a matrxi by Householder method 
+    
+    .. math::
+        T = P.T a P
+
+    Parameters
+    ----------
+    a : TYPE
+        DESCRIPTION.
+
+    Returns
+    -------
+    TYPE
+        DESCRIPTION.
+    TYPE
+        DESCRIPTION.
+    p : TYPE
+        DESCRIPTION.
+
+    """
+    n = len(a)
+    for k in range(n-2):
+        u = a[k+1:n,k]
+        uMag = math.sqrt(np.dot(u,u))
+        if u[0] < 0.0: uMag = -uMag
+        u[0] = u[0] + uMag
+        h = np.dot(u,u)/2.0
+        v = np.dot(a[k+1:n,k+1:n],u)/h
+        g = np.dot(u,v)/(2.0*h)
+        v = v - g*u
+        a[k+1:n,k+1:n] = a[k+1:n,k+1:n] - np.outer(v,u) \
+                         - np.outer(u,v)
+        a[k,k+1] = -uMag
+    
+    # transformation matrix
+    p = np.identity(n)*1.0
+    for k in range(n-2):
+        u = a[k+1:n,k]
+        h = np.dot(u,u)/2.0
+        v = np.dot(p[1:n,k+1:n],u)/h           
+        p[1:n,k+1:n] = p[1:n,k+1:n] - np.outer(v,u)    
+    
+    return np.diagonal(a),np.diagonal(a,1), p
 
 
 def eigh(a, k=None, **args):
@@ -95,10 +174,10 @@ def logarithmic_discretize(n, base=2):
     Returns
     -------
     TYPE
-        :math:`\Lambda^{-n}, n = 0, 1 ...` in descending order.
+        :math:`\Lambda^{-m}, m = 0, 1 ...n-1.` in descending order.
 
     """
-    return list(reversed(np.logspace(-n, 0, n+1, base=base, endpoint=True)))
+    return list(reversed(np.logspace(-(n-1), 0, n, base=base, endpoint=True)))
 
 
 def integrate(f, a, b, **args):
@@ -370,14 +449,18 @@ def spin_ops(m):
 def rotate(angle):
     return np.array()
 
-class HarmonicOscillator:
+class SHO:
     """
     basic class for harmonic oscillator
     """
-    def __init__(self, omega, mass=1, x0=0):
+    def __init__(self, omega, mass=1, x0=0, nmax=None, anharmonicity=None):
         self.mass = mass
         self.omega = omega
         self.x0 = 0
+        self.nmax = nmax # fock space truncation
+
+        self.H = None
+        self.anharmonicity = anharmonicity
 
     def eigenstate(self, x, n=0):
         x = x - self.x0
@@ -389,6 +472,66 @@ class HarmonicOscillator:
     def potential(self, x):
         return 1/2 * self.omega * (x-self.x0)**2
 
+    def buildH(self, n=None, ZPE=False):
+        """
+        Hamiltonian for harmonic oscilator
+
+        input:
+            freq: fundemental frequency in units of Energy
+            n : size of matrix
+            ZPE: boolean, if ZPE is included in the Hamiltonian
+        output:
+            h: hamiltonian of the harmonic oscilator
+        """
+        if n is None:
+            n = self.nmax
+
+        freq = self.omega
+
+        if ZPE:
+            h = lil_matrix((n,n))
+            h = h.setdiag((np.arange(n) + 0.5) * freq)
+        else:
+            h = lil_matrix((n, n)).setdiag(np.arange(n) * freq)
+
+        self.H = h
+        return h
+
+    def xn(self):
+        pass
+    
+    def msd_classical(self, T=300):
+        """
+        mean-squared displacement for Boltzman distribution 
+        
+        .. math::
+            
+            <x^2> = k_B T/(m \omega^2)
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        return T / au2k / self.mass /self.omega**2 
+    
+    def msd(self, T=300):
+        """
+        
+
+        Parameters
+        ----------
+        T : TYPE, optional
+            DESCRIPTION. The default is 300.
+
+        Returns
+        -------
+        None.
+
+        """
+
+        pass
 
 
 class Morse:
@@ -469,7 +612,7 @@ def morse(r, D, a, re):
     return D * (1. - exp(-a * (r - re)))**2
 
 
-def gwp2(x, y, sigma=np.identity(2), xc=[0, 0], kc=[0, 0]):
+def gwp2(x, y, sigma=np.eye(2), xc=[0, 0], kc=[0, 0]):
     """
     generate a 2D Gaussian wavepacket in grid
     :param x0: float, mean value of gaussian wavepacket along x
@@ -1129,10 +1272,10 @@ def transform(A, v):
     """
     if isinstance(A, np.ndarray):
         Anew = dag(v).dot(A.dot(v))
-        
+
     elif isinstance(A, list):
         Anew = [dag(v) @ a @ v for a in A]
-    
+
     #Anew = csr_matrix(A)
 
     return Anew

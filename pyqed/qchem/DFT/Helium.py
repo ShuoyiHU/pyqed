@@ -7,10 +7,10 @@ Created on Tue Apr  3 13:55:10 2018
 
 Grid representation Restricted DFT for Hydrogen atom
 
-Refs 
+Refs
     https://pubs.acs.org/doi/10.1021/ed5004788
-    
-    
+
+
 NOT FINISHED.
 """
 import numpy as np
@@ -26,8 +26,8 @@ from numba import vectorize
 @vectorize
 def regularized_coulomb(r, h):
     """
-    
-    Refs    
+
+    Refs
         TASK QUARTERLY vol. 21, No 2, 2017, pp. 177–184
 
     Parameters
@@ -49,46 +49,64 @@ def regularized_coulomb(r, h):
 
 
 
-def get_kinetic(method='dvr'):
-    
+def get_kinetic(npts=15, xlim=None, ylim=None, zlim=None, method='dvr'):
+    """
+    kinetic energy operator in DVR/Finite Difference
+
+    Parameters
+    ----------
+    npts : TYPE
+        DESCRIPTION.
+    method : TYPE, optional
+        DESCRIPTION. The default is 'dvr'.
+
+    Returns
+    -------
+    K : TYPE
+        DESCRIPTION.
+
+    """
+    g = npts
+
     if method == 'dvr':
-        dvr = SineDVR(-2, 2, npts=10)
+        dvr = SineDVR(-2, 2, npts=npts)
         t = dvr.t()
-        
-    elif method == 'fd':        
+
+    elif method == 'fd':
+
         # kinetic energy operator for 1D, with periodic finite difference
         t = -0.5 * spdiags([e, -2*e, e], diags, g, g).toarray()/h**2
-    
-    
+
+
     # outer product to construct matrix representation of the operator
     I = eye(g)
 
     K = kron(kron(t,I), I) + kron(kron(I,t), I) + kron(kron(I,I), t)
 
-    
+
     #print(spdiags(Vext, 0, g3, g3).toarray())
     return K
 
 
 def energy_elec(n, mo_coeff, Vh):
-    
 
+    # kinetic energy
     e_kin =  np.trace(dag(mo_coeff) @ K @ mo_coeff) * h**3
-    print('e_kin', e_kin)
-    
+
     Eext = np.dot(n, Vext) * h**3 # electron-nuclear Columb energy
-    print(Eext)
+
     Eh = 0.5 * np.dot(n, Vh) * h**3 # Hartree energy
-    
+
+    # exchange
     Ex = -(3./4.) * (3./pi)**(1./3.) * sum(n**(4/3)) * h**3
 
 
     Etot = e_kin + Eext + Ex + Eh
-    
-    return Etot 
-    
+
+    return Etot
+
 def get_density(mo_coeff):
-    
+
     # mo_coeff = mo_coeff/h**(3/2)
 
     # construct electron density
@@ -100,56 +118,67 @@ def get_density(mo_coeff):
 def get_exchange(n):
     Vx = -(3./pi)**(1/3)*n**(1/3) # LDA exchange potential
     return Vx
-            
-def rks_solver(max_cycle=30, init_guess='h1e', e_conv=1e-6):
-    
+
+def get_correlation(n):
+    pass
+
+def get_xc(n):
+    pass
+
+def rks_solver(npts, nelec=None, max_cycle=30, init_guess='h1e', e_conv=1e-6):
+
+    g3 = npts**3
+
+    K = get_kinetic(npts)
+
     h = K + spdiags(Vext, 0, g3, g3)
 
     E, mo_coeff = linalg.eigs(h, k=6, which='SR')
     n = get_density(mo_coeff)
-    
+
+
     print('charge', np.sum(n) * h**3)
 
-    Vh, info = linalg.cgs(L3, -4. * pi * n, maxiter = 400)
+    Vh, info = linalg.cgs(L3, -4. * np.pi * n, maxiter = 400)
 
     old_energy = energy_elec(n, mo_coeff, Vh)
-    
+
     # construct Hartree potential via Possion eq. L3 Vh = -4*pi*n
 
     Vx = get_exchange(n)
 
     # # update total potential
     # Vtot = Vx + Vh + Vext
-        
+
     for scf_iter in range(max_cycle):
-        
+
         # update total potential
         Vtot = Vx + Vh + Vext
         h = K + Vtot
-        print(isherm(h))
-    
+        # print(isherm(h))
+
         # compute eigvalues
         E, mo_coeff = linalg.eigsh(h, k=2, which='SA')
-        
-        print(mo_coeff.shape)
-        
+
+        # print(mo_coeff.shape)
+
         n = get_density(mo_coeff)
-        
+
         Vx = -(3./pi)**(1/3)*n**(1/3) # LDA exchange potential
+
         # construct Hartree potential via Possion eq. L3 Vh = -4*pi*n
-        
         Vh, info = linalg.cgs(L3, -4. * np.pi * n, maxiter = 400)
-        
+
         total_energy = energy_elec(n, mo_coeff[:, :nocc], Vh)
-        
+
         print("{:3} {:12.8f} {:12.4e} ".format(scf_iter, total_energy,\
                    total_energy - old_energy))
-        
+
         if abs(old_energy - total_energy) < e_conv:
             print('SCF Converged.')
             print('Total energy = ', total_energy)
             break
-        
+
         old_energy = total_energy
 
         # print('Eigenvalue', E)
@@ -159,6 +188,29 @@ def rks_solver(max_cycle=30, init_guess='h1e', e_conv=1e-6):
         # #print('Potential energy', Es)
         # print('Total energy for He ', total_energy)
 
+
+class RKS:
+    """
+    RKS on a 3D grid
+    """
+    def __init__(self, mol, npts, xc='lda'):
+        if isinstance(npts, (list, tuple)):
+            assert len(npts) == 3
+            self.nx, self.ny, self.nz = npts
+        else:
+            self.nx = self.ny = self.nz = npts
+
+        self.mol = mol
+
+        self.xc = xc
+
+        self.verbose = 0
+
+    def electron_nuclear_attraction(self):
+        pass
+
+    def run(self):
+        rks_solver(self.npts)
 
 g = 15
 g3 = g**3
@@ -177,7 +229,7 @@ h = p[1] - p[0]
 
 R = np.sqrt(X**2 + Y**2 + Z**2)
 
-Vext = - regularized_coulomb(R, h).flatten()
+Vext = - 2 * regularized_coulomb(R, h).flatten()
 #Vext = Vext.flatten('C')
 
 e = np.ones(g)
@@ -188,10 +240,10 @@ K = kron(kron(t,I), I) + kron(kron(I,t), I) + kron(kron(I,I), t)
 
 
 # Laplacian
-L3 = -2 * K 
+L3 = -2 * K
 
-nelec = 1
+nelec = 2
 nocc = nelec//2
 print('occ orbs', nocc)
-        
-rks_solver()
+
+rks_solver(g)

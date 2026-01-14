@@ -17,7 +17,11 @@ from gbasis.integrals.electron_repulsion import electron_repulsion_integral
 
 import os
 import pyqed
+import re
 
+from numba import njit, vectorize, jit, int64, float64
+
+@njit(float64(int64, int64, int64, float64, float64, float64), parallel=True)
 def E(i,j,t,Qx,a,b):
     '''
     Recursive definition of Hermite Gaussian coefficients.
@@ -52,6 +56,7 @@ def E(i,j,t,Qx,a,b):
         (q*Qx/b)*E(i,j-1,t,Qx,a,b) + \
         (t+1)*E(i,j-1,t+1,Qx,a,b)
 
+@njit
 def overlap(a,lmn1,A,b,lmn2,B):
     ''' Evaluates overlap integral between two Gaussians
     Returns a float.
@@ -89,6 +94,8 @@ def S(a,b):
 from scipy.special import factorial2
 from scipy.special import hyp1f1
 
+
+# @jit(int64(int64))
 def fact2(n: int):
     """
     double factorial n!!
@@ -117,12 +124,12 @@ def fact2(n: int):
         raise ValueError('Factorial2 is not defined for negative even number.')
 
 
-
+# @jit
 def boys(n,T):
     return hyp1f1(n+0.5,n+1.5,-T)/(2.0*n+1.0)
 
-class BasisFunction(object):
-    ''' A class that contains all our basis function data
+class ContractedGaussian(object):
+    ''' A class that contains all contracted Gaussian basis function data
     Attributes:
     origin: array/list containing the coordinates of the Gaussian origin
     shell: tuple of angular momentum
@@ -159,13 +166,14 @@ class BasisFunction(object):
             for ib in range(num_exps):
                 N += self.norm[ia]*self.norm[ib]*self.coefs[ia]*self.coefs[ib]/np.power(self.exps[ia] + self.exps[ib],L+1.5)
 
-        print(prefactor, N)
+        # print(prefactor, N)
 
         N = N * prefactor
         N = np.power(N,-0.5)
         for ia in range(num_exps):
             self.coefs[ia] *= N
 
+@njit
 def kinetic(a,lmn1,A,b,lmn2,B):
     ''' Evaluates kinetic energy integral between two Gaussians
     Returns a float.
@@ -206,7 +214,7 @@ def T(a,b):
             b.exps[ib],b.shell,b.origin)
     return t
 
-
+# @jit
 def R(t,u,v,n,p,PCx,PCy,PCz,RPC):
     ''' Returns the Coulomb auxiliary Hermite integrals
     Returns a float.
@@ -236,9 +244,10 @@ def R(t,u,v,n,p,PCx,PCy,PCz,RPC):
         val += PCx*R(t-1,u,v,n+1,p,PCx,PCy,PCz,RPC)
     return val
 
-
+@njit
 def gaussian_product_center(a,A,b,B):
     return (a*A+b*B)/(a+b)
+
 
 def nuclear_attraction(a,lmn1,A,b,lmn2,B,C):
     ''' Evaluates kinetic energy integral between two Gaussians
@@ -271,8 +280,11 @@ def nuclear_attraction(a,lmn1,A,b,lmn2,B,C):
 
 
 
-def V(a,b,C):
-    '''Evaluates overlap between two contracted Gaussians
+def point_charge(a,b,C):
+    '''Evaluates electron-nuclear attraction
+
+    $%overlap between two contracted Gaussians
+
     Returns float.
     Arguments:
     a: contracted Gaussian 'a', BasisFunction object
@@ -286,6 +298,7 @@ def V(a,b,C):
                 nuclear_attraction(a.exps[ia],a.shell,a.origin,
                 b.exps[ib],b.shell,b.origin,C)
     return v
+
 
 def electron_repulsion(a,lmn1,A,b,lmn2,B,c,lmn3,C,d,lmn4,D):
     ''' Evaluates kinetic energy integral between two Gaussians
@@ -348,6 +361,34 @@ def ERI(a,b,c,d):
                     d.exps[jd],d.shell,d.origin)
     return eri
 
+ALIAS = {
+    '631g'       : '6-31g.1.gbs',
+    'sto3g'      : "sto-3g.1.gbs",
+    'sto6g'      : 'sto-6g.1.gbs',
+    '631g**'     : "6-31g_st__st_.0.gbs",
+    '6311g**'    : "6-311g_st__st_.0.gbs",
+    '6311g'      : "6-311g.0.gbs",
+    '631g++'     : "/6-31g++.gbs",
+    'ccpvdz'     : 'cc-pvdz.0.gbs'    ,
+    'ccpvtz'     : 'cc-pvtz.dat'    ,
+    'ccpvqz'     : 'cc-pvqz.dat'    ,
+    'ccpv5z'     : 'cc-pv5z.dat'    ,
+    'ccpvdpdz'   : 'cc-pvdpdz.dat'  ,
+    'augccpvdz'  : 'aug-cc-pvdz.dat',
+    'augccpvtz'  : 'aug-cc-pvtz.dat',
+    'augccpvqz'  : 'aug-cc-pvqz.dat',
+    'augccpv5z'  : 'aug-cc-pv5z.dat',
+    'augccpvdpdz': 'aug-cc-pvdpdz.dat',
+    'ccpvdzdk'   : 'cc-pvdz-dk.dat' ,
+    'ccpvtzdk'   : 'cc-pvtz-dk.dat' ,
+    'ccpvqzdk'   : 'cc-pvqz-dk.dat' ,
+    'ccpv5zdk'   : 'cc-pv5z-dk.dat' ,
+    'ccpvdzdkh'  : 'cc-pvdz-dk.dat' ,
+    'ccpvtzdkh'  : 'cc-pvtz-dk.dat' ,
+    'ccpvqzdkh'  : 'cc-pvqz-dk.dat' ,
+    'ccpv5zdkh'  : 'cc-pv5z-dk.dat' ,
+}
+
 def build(mol):
     """
     build electronic integrals in AO using GBasis package
@@ -362,40 +403,42 @@ def build(mol):
     None.
 
     """
+    from gbasis.parsers import parse_gbs, make_contractions
+
     atoms = mol.atom_symbols()
     atcoords = mol.atom_coords()
     atnums = mol.atom_charges()
 
-    basis_dir = os.path.abspath(f'{pyqed.__file__}/../qchem/')
+    basis_dir = os.path.abspath(f'{pyqed.__file__}/../qchem/basis_set/')
 
     if isinstance(mol.basis, str):
 
-        if mol.basis.replace('-','').lower() == '631g':
-
-            # Obtain basis functions from the basis set files
-            basis_dict = parse_gbs(basis_dir + "/6-31g.1.gbs")
-        
-        elif mol.basis.replace('-','').lower() == 'sto3g':
-            
-            basis_dict = parse_gbs(basis_dir + "/sto-3g.1.gbs")
-            
-            
+        basis_dict = parse_gbs(basis_dir + '/' + ALIAS[mol.basis.replace('-','').lower()])
         basis = make_contractions(basis_dict, atoms, atcoords, coord_types="p")
     else:
 
         raise NotImplementedError('Customized basis not supported yet.')
 
-    total_ao = 0
-    for shell in basis:
-        total_ao += shell.angmom_components_cart.shape[0]
-    mol.nao = total_ao
-        
-    print("Number of generalized shells:", len(basis)) 
-    
-    # compute overlap integrals in AO and MO basis
+    ####
+    ###  The count of total_ao from https://gbasis.qcdevs.org/tutorial/JCP_paper.html# does not seem to work with ccpvdz.
+    ####
+    # # To obtain the total number of AOs we check for each shell its angular momentum and coordinate type
+    # total_ao = 0
+    # for shell in basis:
+    #     if shell.coord_type == "cartesian":
+    #         total_ao += shell.angmom_components_cart.shape[0]
+    #     elif shell.coord_type == "spherical":
+    #         total_ao += len(shell.angmom_components_sph)
+
+    # mol.nao = total_ao
+
+
+    # compute overlap integrals in AO basis
     mol.overlap = overlap_integral(basis)
 
+    mol.nao = mol.overlap.shape[0]
     
+    print("Number of AOs = ", mol.nao)
 
     # olp_mo = overlap_integral(basis, transform=mo_coeffs.T)
 
@@ -415,11 +458,196 @@ def build(mol):
     #Compute e-e repulsion integral in MO basis, shape=(#MO, #MO, #MO, #MO)
     int2e_mo = electron_repulsion_integral(basis, notation='chemist')
     mol.eri = int2e_mo
-    
-    mol._bas = basis
-    
-    return 
 
+    mol._bas = basis
+
+    return
+
+
+def parse_gbs(gbs_basis_file):
+    """Parse Gaussian94 basis set file.
+
+    Parameters
+    ----------
+    gbs_basis_file : str
+        Path to the Gaussian94 basis set file.
+
+    Returns
+    -------
+    basis_dict : dict of str to list of 3-tuple of (int, np.ndarray, np.ndarray)
+        Dictionary of the element to the list of angular momentum, exponents, and contraction
+        coefficients associated with each contraction at the given atom.
+
+    Notes
+    -----
+    Angular momentum symbol is hard-coded into this function. This means that if the selected basis
+    set has an angular momentum greater than "k", an error will be raised.
+
+    Since Gaussian94 basis format does not explicitly state which contractions are generalized, we
+    infer that subsequent contractions belong to the same generalized shell if they have the same
+    exponents and angular momentum. If two contractions are not one after another or if they are
+    associated with more than one angular momentum, they are treated to be segmented contractions.
+
+    """
+    # pylint: disable=R0914
+    with open(gbs_basis_file) as basis_fh:
+        gbs_basis = basis_fh.read()
+    # splits file into 'element', 'basis stuff', 'element',' basis stuff'
+    # e.g., ['H','stuff with exponents & coefficients\n', 'C', 'stuff with etc\n']
+    data = re.split(r"\n\s*(\w[\w]?)\s+\w+\s*\n", gbs_basis)
+    dict_angmom = {"s": 0, "p": 1, "d": 2, "f": 3, "g": 4, "h": 5, "i": 6, "k": 7}
+    # remove first part
+    if "\n" in data[0]:  # pragma: no branch
+        data = data[1:]
+    # atoms: stride of 2 get the ['H','C', etc]. basis: take strides of 2 to skip elements
+    atoms = data[::2]
+    basis = data[1::2]
+    # trim out headers at the end
+    output = {}
+    for atom, shells in zip(atoms, basis):
+        output.setdefault(atom, [])
+
+        shells = re.split(r"\n?\s*(\w+)\s+\w+\s+\w+\.\w+\s*\n", shells)
+        # remove the ends
+        atom_basis = shells[1:]
+        # get angular momentums
+        angmom_shells = atom_basis[::2]
+        # get exponents and coefficients
+        exps_coeffs_shells = atom_basis[1::2]
+
+        for angmom_seg, exp_coeffs in zip(angmom_shells, exps_coeffs_shells):
+            angmom_seg = [dict_angmom[i.lower()] for i in angmom_seg]
+            exps = []
+            coeffs_seg = []
+            exp_coeffs = exp_coeffs.split("\n")
+            for line in exp_coeffs:
+                test = re.search(
+                    r"^\s*([0-9\.DE\+\-]+)\s+((?:(?:[0-9\.DE\+\-]+)\s+)*(?:[0-9\.DE\+\-]+))\s*$",
+                    line,
+                )
+                try:
+                    exp, coeff_seg = test.groups()
+                    coeff_seg = re.split(r"\s+", coeff_seg)
+                except AttributeError:
+                    continue
+                # clean up
+                exp = float(exp.lower().replace("d", "e"))
+                coeff_seg = [float(i.lower().replace("d", "e")) for i in coeff_seg if i is not None]
+                exps.append(exp)
+                coeffs_seg.append(coeff_seg)
+            exps = np.array(exps)
+            coeffs_seg = np.array(coeffs_seg)
+            # if len(angmom_seg) == 1:
+            #     coeffs_seg = coeffs_seg[:, None]
+            for i, angmom in enumerate(angmom_seg):
+                # ensure previous and current exps are same length before using np.allclose()
+                if output[atom] and len(output[atom][-1][1]) == len(exps):
+                    # check if current exp's should be added to previous generalized contraction
+                    hstack = np.allclose(output[atom][-1][1], exps)
+                else:
+                    hstack = False
+                if output[atom] and output[atom][-1][0] == angmom and hstack:
+                    output[atom][-1] = (
+                        angmom,
+                        exps,
+                        np.hstack([output[atom][-1][2], coeffs_seg[:, i : i + 1]]),
+                    )
+                else:
+                    output[atom].append((angmom, exps, coeffs_seg[:, i : i + 1]))
+
+    return output
+
+
+def make_contractions(basis_dict, atoms, coords, coord_types):
+    """Return the contractions that correspond to the given atoms for the given basis.
+
+    Parameters
+    ----------
+    basis_dict : dict of str to list of 3-tuple of (int, np.ndarray, np.ndarray)
+        Output of the parsers from gbasis.parsers.
+    atoms : N-list/tuple of str
+        Atoms at which the contractions are centered.
+    coords : np.ndarray(N, 3)
+        Coordinates of each atom.
+    coord_types : {"cartesian"/"c", list/tuple of "cartesian"/"c" or "spherical"/"p", "spherical"/"p"}
+        Types of the coordinate system for the contractions.
+        If "cartesian" or "c", then all of the contractions are treated as Cartesian contractions.
+        If "spherical" or "p", then all of the contractions are treated as spherical contractions.
+        If list/tuple, then each entry must be a "cartesian" (or "c") or "spherical" (or "p") to specify the
+        coordinate type of each `GeneralizedContractionShell` instance.
+        Default value is "spherical".
+
+    Returns
+    -------
+    basis : tuple of GeneralizedContractionShell
+        Contractions for each atom.
+        Contractions are ordered in the same order as in the values of `basis_dict`.
+
+    Raises
+    ------
+    TypeError
+        If `atoms` is not a list or tuple of strings.
+        If `coords` is not a two-dimensional `numpy` array with 3 columns.
+        If `tol` is not a float.
+        If `ovr` is not boolean
+    ValueError
+        If the length of atoms is not equal to the number of rows of `coords`.
+
+    """
+    if not (isinstance(atoms, (list, tuple)) and all(isinstance(i, str) for i in atoms)):
+        raise TypeError("Atoms must be provided as a list or tuple.")
+    if not (isinstance(coords, np.ndarray) and coords.ndim == 2 and coords.shape[1] == 3):
+        raise TypeError(
+            "Coordinates must be provided as a two-dimensional `numpy` array with three columns."
+        )
+
+    if len(atoms) != coords.shape[0]:
+        raise ValueError("Number of atoms must be equal to the number of rows in the coordinates.")
+
+    basis = []
+    # expected number of coordinates
+    num_coord_types = sum([len(basis_dict[i]) for i in atoms])
+
+    # check and assign coord_types
+    if isinstance(coord_types, str):
+        if coord_types not in ["c", "cartesian", "p", "spherical"]:
+            raise ValueError(
+                f"If coord_types is a string, it must be either 'spherical'/'p' or 'cartesian'/'c'."
+                f"got {coord_types}"
+            )
+        coord_types = [coord_types] * num_coord_types
+
+    if len(coord_types) != num_coord_types:
+        raise ValueError(
+            f"If coord_types is a list, it must be the same length as the total number of contractions."
+            f"got {len(coord_types)}"
+        )
+
+    # make shells
+
+    for icenter, (atom, coord) in enumerate(zip(atoms, coords)):
+        for angmom, exps, coeffs in basis_dict[atom]:
+
+            for shell in _shell(angmom):
+
+                basis.append(
+                    # GeneralizedContractionShell(
+                    #     angmom,
+                    #     coord,
+                    #     coeffs,
+                    #     exps,
+                    #     coord_types.pop(0),
+                    #     icenter=icenter,
+                    ContractedGaussian(coord, shell, exps, coeffs)
+                    #)
+                )
+    return tuple(basis)
+
+def _shell(l):
+    if l == 0:
+        return [(0,0,0)]
+    elif l == 1:
+        return [(1,0,0), [0,1,0], [0,0,1]]
 
 
 
@@ -428,9 +656,19 @@ if __name__=='__main__':
     # kin_e = np.trace(dm.dot(k_int1e))
     # print("Kinetic energy (Hartree):", kin_e)
 
+    import time
+
     # Define atomic symbols and coordinates (i.e., basis function centers)
-    # atoms = ["H", "H"]
-    # atcoords = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    atoms = ["F", "F"]
+    atcoords = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    basis_dir = os.path.abspath(f'{pyqed.__file__}/../qchem/basis_set/')
+
+    basis_dict = parse_gbs(basis_dir+'/6-31g.1.gbs')
+    basis = make_contractions(basis_dict, atoms, atcoords, 'c')
+
+    # print([g.exps for g in basis])
+
+    print(len(basis))
 
     # # To obtain the total number of AOs we compute the cartesian components for each angular momentum
     # total_ao = 0
@@ -441,8 +679,75 @@ if __name__=='__main__':
     # print("Total number of AOs: ", total_ao) # output 10
 
 
-    myOrigin = [1.0, 2.0, 3.0]
-    myShell = (0,0,0) # p‐orbitals would be (1,0,0) or (0,1,0) or (0,0,1), etc.
-    myExps = [3.42525091, 0.62391373, 0.16885540]
-    myCoefs = [0.15432897, 0.53532814, 0.44463454]
-    a = BasisFunction(origin=myOrigin,shell=myShell,exps=myExps,coefs=myCoefs)
+    # myOrigin = [0.0, 0.0, 0.0]
+    # myShell = (0,0,0) # p‐orbitals would be (1,0,0) or (0,1,0) or (0,0,1), etc.
+    # myExps = [3.42525091, 0.62391373, 0.16885540]
+    # myCoefs = [0.15432897, 0.53532814, 0.44463454]
+    # a = ContractedGaussian(origin=myOrigin,shell=myShell,exps=myExps,coefs=myCoefs)
+
+
+    # H2 = [0.0, 0.0, 1.0]
+    # myShell = (0,0,0) # p‐orbitals would be (1,0,0) or (0,1,0) or (0,0,1), etc.
+    # myExps = [3.42525091, 0.62391373, 0.16885540]
+    # myCoefs = [0.15432897, 0.53532814, 0.44463454]
+    # b = ContractedGaussian(origin=H2,shell=myShell,exps=myExps,coefs=myCoefs)
+
+    # basis = [a, b]
+
+    def ao_ints(basis, coords):
+        nao = len(basis)
+        natom, _ = coords.shape
+
+        s = np.eye(nao)
+        for i in range(nao):
+            for j in range(i):
+                s[i,j] = S(basis[i], basis[j])
+                s[j,i] = s[i,j]
+
+        t = np.zeros((nao, nao))
+        for i in range(nao):
+            for j in range(i+1):
+                t[i,j] = T(basis[i], basis[j])
+                if i != j: t[j,i] = t[i,j]
+
+        v = np.zeros((nao,nao))
+        for i in range(nao):
+            for j in range(i+1):
+                for C in range(natom):
+                    v[i,j] -= point_charge(basis[i], basis[j], coords[C])
+                if i != j: v[j,i] = v[i,j]
+
+        eri = np.zeros((nao, nao, nao, nao))
+        for p in range(nao):
+            for q in range(p):
+                for r in range(nao):
+                    for s in range(r):
+                        eri[p,q,r,s] = ERI(basis[p], basis[q], basis[r], basis[s])
+
+        return s, t, v, eri
+
+    # print(basis[0].exps, basis[0].coefs)
+    print(atcoords[1])
+    print(point_charge(basis[0], basis[0], atcoords[1]))
+
+    start_time = time.time()
+    ao_ints(basis, atcoords)
+    end_time = time.time()
+
+    print(end_time-start_time)
+
+    # s,t, v, eri = ao_ints(basis, atcoords)
+    # print(t)
+    # point_charge(a, a, myOrigin))
+    # print(v)
+
+    # from pyqed.qchem import Molecule
+    # mol = Molecule(atom = [
+    # ['H' , (0. , 0. , 0)],
+    # ['H' , (0. , 0. , 1.)], ], basis='631g')
+    # mol.build()
+
+    # print(mol._bas[0].)
+
+    # mol.build()
+    # print(mol.eri)

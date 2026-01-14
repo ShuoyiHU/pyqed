@@ -137,7 +137,7 @@ def prony_decomposition(x, fft_ct, nexp):
 if __name__=='__main__':
     
     
-    from pyqed.dvr import SineDVR
+    from pyqed.dvr import SineDVR, SincDVR
     
 
     n = 100 # 2N + 1 points 

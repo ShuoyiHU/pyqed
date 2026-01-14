@@ -12,12 +12,16 @@ HF with matrix elements extracted from PySCF
 import logging
 import numpy as np
 from scipy.linalg import eigh
-from pyscf.scf import _vhf
-from pyscf import ao2mo
+# from pyscf.scf import _vhf
+# from pyscf import ao2mo
 import sys
 
 from pyqed import dagger, dag
 from opt_einsum import contract
+
+from functools import reduce
+import math
+
 
 class RHF:
     def __init__(self, mol, init_guess='h1e'):
@@ -27,9 +31,11 @@ class RHF:
 
         self.nocc = self.mol.nelec//2
 
-        self.nao = self.mol.nao
+        self.nao = self.nmo = mol.nao # number of MOs
+        self.nvir = self.nmo - self.nocc
 
         self.nso = None
+        self.nelec = mol.nelec
 
         self.mo_occ = None
         self.mo_coeff = None
@@ -48,7 +54,7 @@ class RHF:
         self.vhf = None
         self.dm = None
 
-        self.eri = None
+        self.eri = mol.eri
         # self.eri_so = None
 
         self.mo_energy = None
@@ -57,8 +63,9 @@ class RHF:
         self.e_tot, self.e_nuc, self.mo_energy, self.mo_coeff, self.mo_occ, self.hcore, \
             self.vhf, self.dm = hartree_fock(self.mol, **kwargs)
         return self
+    
 
-    def get_eri(self):
+    def get_eri(self, representation='mo'):
         """
         electron repulsion integral in MO
 
@@ -69,22 +76,29 @@ class RHF:
 
         """
 
-        nmo = len(self.mo_energy)
-        C = self.mo_coeff
+        # nmo = len(self.mo_energy)
 
-        eri = ao2mo.general(self.mol, (C,C,C,C),
-                      compact=False).reshape(nmo,nmo,nmo,nmo, order='C')
+        # eri = ao2mo.general(self.mol, (C,C,C,C),
+        #               compact=False).reshape(nmo,nmo,nmo,nmo, order='C')
 
-
-        self.eri = eri
-        return eri
+        if representation == 'ao':
+            return self.eri 
+        
+        elif representation == 'mo':
+            
+            C = self.mo_coeff            
+            eri = contract('abcd, ap, br, cs, dq -> pqrs', self.eri, C.conj(), C, C.conj(), C)
+                                    
+            return eri
 
     def get_eri_so(self):
         """
         get electron repulsion integral in spin orbitals
 
-        # Integrals are in "chemist's notation"
-        # eri[i,j,k,l] = (ij|kl) = \int i(1) j(1) 1/r12 k(r2) l(r2)
+        Integrals are in "chemist's notation"
+        .. math:: 
+            
+            eri[i,j,k,l] = (ij|kl) = \int i(1) j(1) 1/r12 k(r2) l(r2)
 
         Returns
         -------
@@ -119,16 +133,27 @@ class RHF:
         return make_rdm1(self.mo_coeff, self.mo_occ)
 
     def get_ovlp(self):
-        pass
+        return self.mol.overlap
 
-    def get_fock(self):
-        pass
+    def get_fock(self, dm=None):
+        
+        if dm is None:
+            dm = self.dm 
+            
+        hcore = self.get_hcore()
+        veff = self.get_veff(dm)
+        
+        return hcore + veff
 
-    def get_veff(self):
-        return get_veff(self.mol, self.dm)
+    def get_veff(self, dm):
+        return get_veff(self.mol, dm)
 
     def get_j(self):
         return get_jk(self.mol, self.dm, with_k=False)[0]
+    
+    def get_jk(self):
+
+        return get_jk(self.mol, self.dm, with_k=True)
 
     def get_hcore(self):
         """
@@ -143,7 +168,7 @@ class RHF:
         # return get_hcore(self.mol)
         return self.mol.hcore
 
-    def get_hcore_mo(self):
+    def get_hcore_mo(self, mo_coeff=None):
         """
         get core Hamiltonian in canonical molecular orbitals
 
@@ -152,11 +177,41 @@ class RHF:
         ndarray.
 
         """
-        C = self.mo_coeff
-        return C.conj() @ self.mol.hcore @ C
+        if mo_coeff is None:
+            C = self.mo_coeff
+        else:
+            C = mo_coeff
+            
+        return dag(C) @ self.mol.hcore @ C
 
-    def get_eri_mo(self):
-        pass
+    def get_eri_mo(self, mo_coeff=None, notation='chem'):
+        """
+        get electron repulsion integrals in MOs
+
+        Parameters
+        ----------
+        mo_coeff: MO coefficients. If None, use canonical MOs.
+
+        notation: Default: chem.
+
+        Returns
+        -------
+        eri_mo : TYPE
+            DESCRIPTION.
+
+        """
+        if mo_coeff is None:
+            C = self.mo_coeff
+        else:
+            C = mo_coeff
+
+        if notation == 'chem':
+            eri_mo = contract('ijkl, ip, jq, kr, ls -> pqrs', self.eri, C.conj(), C, C.conj(), C)
+
+        elif notation == 'phys':
+            eri_mo = contract('ijkl, ip, jq, kr, ls -> prqs', self.eri, C.conj(), C, C.conj(), C)
+
+        return eri_mo
 
     def to_uhf(self):
         # transform a RHF to UHF format with spin orbitals
@@ -171,6 +226,27 @@ class RHF:
 
     def energy_nuc(self):
         return self.e_nuc
+
+    def eri_asymm(self):
+        """
+        antisymmetrized electron-repulsion integral in physicists' notation
+
+        .. math::
+
+            \langle ij||kl \rangle =  \langle ij | kl \rangle - \langle ij | lk \rangle
+
+        Parameters
+        ----------
+        notation : TYPE, optional
+            DESCRIPTION. The default is 'phys'.
+
+        Returns
+        -------
+        None.
+
+        """
+        eri = self.get_eri_mo(notation='phys')
+        return eri - np.transpose(eri, (0,1,3,2))
 
 
 # def get_hcore(mol):
@@ -410,7 +486,6 @@ def make_rdm1(mo_coeff, mo_occ, **kwargs):
         One-particle density matrix, 2D ndarray
     '''
 
-
     mocc = mo_coeff[:,mo_occ>0]
 # DO NOT make tag_array for dm1 here because this DM array may be modified and
 # passed to functions like get_jk, get_vxc.  These functions may take the tags
@@ -421,7 +496,7 @@ def make_rdm1(mo_coeff, mo_occ, **kwargs):
 
 
 
-def hartree_fock(mol, max_cycle=50, tol=1e-8):
+def hartree_fock(mol, dm0=None, init_guess='hcore', max_cycle=50, tol=1e-8):
 
     #calculate the overlap matrix S
     #the matrix should be symmetric with diagonal entries equal to one
@@ -476,7 +551,8 @@ def hartree_fock(mol, max_cycle=50, tol=1e-8):
     #diagonalize overlap matrix to get transformation matrix X
     #print("diagonalizing overlap matrix")
     s, U = eigh(S)
-    #print("building transformation matrix")
+
+    # building transformation matrix S^{-1/2}
     X = U.dot(np.diagflat(s**(-0.5)).dot(dagger(U)))
 
 
@@ -517,7 +593,76 @@ def hartree_fock(mol, max_cycle=50, tol=1e-8):
         mo_energy, C = eigh(h)
         return make_rdm1(C, mo_occ)
 
-    dm = init_guess_by_h1e(hcore)
+    if dm0 is None:
+        dm = init_guess_by_h1e(hcore)
+
+        # dm = mf.get_init_guess(mol, mf.init_guess, s1e=s1e, **kwargs)
+    elif init_guess == 'hcore':
+        dm = dm0
+    else:
+        raise ValueError('Invalid init_guess.')
+
+
+    ### DIIS
+    nbas = mol.nao
+
+    # diis storage
+    maxdiis = 6
+    diis_error_convergence = 1.0e-5
+
+    diis_error_matrices = np.zeros((maxdiis, nbas, nbas))
+    diis_fock_matrices = np.zeros_like(diis_error_matrices)
+
+    def diis(fock, dens, overlap, orth, iter):
+        """
+        Extrapolate new fock matrix based on input fock matrix
+            and previous fock-matrices.
+
+        Arguments:
+            fock -- current fock matrix
+
+        Returns:
+            (fock, error) -- interpolated fock matrix and diis-error
+        """
+        diis_fock = np.zeros_like(fock)
+
+        if iter <= 1:
+            return fock, 0.0
+
+        # copy data down to lower storage
+        for k in reversed(range(1, min(iter, maxdiis))):
+
+            diis_error_matrices[k] = diis_error_matrices[k-1][:]
+            diis_fock_matrices[k] = diis_fock_matrices[k-1][:]
+
+        # calculate error matrix
+        error_mat = reduce(np.dot, (fock, dens, overlap))
+        error_mat -= error_mat.T
+
+        # put orthogonal error matrix in storage
+        # pulay use S^(-1/2) but here we choose whatever the user has defined
+        diis_error_matrices[0]  = reduce(np.dot, (orth.T, error_mat, orth))
+        diis_fock_matrices[0] = fock[:]
+        diis_error_index = np.abs(diis_error_matrices[0]).argmax()
+        diis_error = math.fabs(np.ravel(diis_error_matrices[0])[diis_error_index])
+
+        # calculate B-matrix and solve for coefficients that reduces error
+        bsize = min(iter, maxdiis)-1
+        bmat = -1.0 * np.ones((bsize+1,bsize+1))
+        rhs = np.zeros(bsize+1)
+        bmat[bsize, bsize] = 0
+        rhs[bsize] = -1
+        for b1 in range(bsize):
+            for b2 in range(bsize):
+                bmat[b1, b2] = np.trace(diis_error_matrices[b1].dot(diis_error_matrices[b2]))
+        C =  np.linalg.solve(bmat, rhs)
+
+        # form new interpolated diis fock matrix
+        for i, k in enumerate(C[:-1]):
+            diis_fock += k*diis_fock_matrices[i]
+
+        return diis_fock, diis_error
+
 
     # nuclear energy
     # nuclear_energy = 0.0
@@ -534,13 +679,17 @@ def hartree_fock(mol, max_cycle=50, tol=1e-8):
     conv = False
     for scf_iter in range(max_cycle):
 
-        # #calculate the two electron part of the Fock matrix
-
+        # calculate the two electron part of the Fock matrix
         vhf = get_veff(mol, dm)
         F = hcore + vhf
 
-        electronic_energy = energy_elec(dm, hcore, vhf)
+        # obtain better (interpolated) fock matrix through diis accelleration
 
+        # print('DIIS')
+        F, diis_error = diis(F, dm, S, X, scf_iter)
+
+
+        electronic_energy = energy_elec(dm, hcore, vhf)
 
         #print("E_elec = ", electronic_energy)
 
@@ -575,7 +724,7 @@ def hartree_fock(mol, max_cycle=50, tol=1e-8):
 
     if not conv: sys.exit('SCF not converged.')
 
-    print('HF energy = ', total_energy)
+    print('E(HF) = ', total_energy)
 
     # check if this hartree-fock calculation is for configuration interaction
     # or not, if yes, output the essential information
@@ -586,14 +735,35 @@ def hartree_fock(mol, max_cycle=50, tol=1e-8):
     # return C, Hcore, nuclear_energy, two_electron
 
 
+def ao2mo(op, C):
+    """
+    transform 1e operators from AO to MO representation
+
+    Parameters
+    ----------
+    op : TYPE
+        DESCRIPTION.
+    C : TYPE
+        DESCRIPTION.
+
+    Returns
+    -------
+    TYPE
+        DESCRIPTION.
+
+    """
+    return dag(C) @ op @ C
+
 if __name__ == '__main__':
-    from pyscf import gto, scf
-    mol = gto.M(atom='H 0 0 0; H 0 0 1.1', basis='cc-pvdz')
-    conv, e, mo_e, mo, mo_occ = scf.hf.kernel(scf.hf.SCF(mol), dm0=np.eye(mol.nao_nr()))
-    print('conv = %s, E(HF) = %.12f' % (conv, e))
+    # from pyscf import gto, scf
+    # mol = gto.M(atom='H 0 0 0; H 0 0 1.1', unit='b', basis='631g')
+    # conv, e, mo_e, mo, mo_occ = scf.hf.kernel(scf.hf.SCF(mol), dm0=np.eye(mol.nao_nr()))
+    # print('conv = %s, E(HF) = %.12f' % (conv, e))
     # conv = True, E(HF) = -1.081170784378
 
+    from pyqed import Molecule
+    mol = Molecule(atom='H 0 0 0; H 0 0 1.1', unit='a', basis='6311g**')
+    mol.build()
     # hartree_fock(mol)
-    # hf = RHF(mol).run()
-    # hf.run()
-    # print(hf.e_tot)
+    hf = RHF(mol)
+    hf.run()

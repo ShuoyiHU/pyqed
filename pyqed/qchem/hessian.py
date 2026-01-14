@@ -641,12 +641,6 @@ def create_displaced_geometries(mf, mode_id, npts=9, sampling='scan'):
         return Qx, Qy 
 
 
-# from pyqed import au2ev 
-
-# logging.basicConfig(level=logging.DEBUG)
-
-
-
 def scan(mol, mode_id, q=None):
 
     configurations = create_displaced_geometries(mol, mode_id=mode_id, method='dft')
@@ -705,6 +699,65 @@ def opt(mf):
     
     return 
 
+
+def coord_transform(Q, freq, atom_mass, t, R0):
+    """
+        
+    .. math::
+        Q = U^\text{T} \sqrt(m_i) (R_i - R_i^0) 
+        
+    The Hamiltonian expressed in terms of coordinates Q is 
+    
+    .. math::
+        H = -\omega/2 \pa_Q^2 + V(Q) 
+    
+    The effective mass for Q is 1/omega. 
+        
+    
+    Parameters
+    ----------
+    mf : TYPE
+        DESCRIPTION.
+    
+    mode_id : int or list 
+        which mode(s) to scan
+
+    Returns
+    -------
+    None.
+
+    """
+    
+
+        
+    
+    natom = len(atom_mass)
+    
+    mass = np.repeat(atom_mass, 3)
+
+    # if hessian is not None:
+        
+    #     Mhalf = 1/np.sqrt(np.outer(mass, mass))
+    #     weighted_h_GS = hessian * Mhalf
+        
+    #     force_consts, t = np.linalg.eigh(weighted_h_GS)
+
+
+    
+
+    q = Q/np.sqrt(freq) # mass-weighted coordinates
+
+    
+    # transform to Cartesian coordinates
+    displacement_vector = np.einsum('u, iu -> i', q, t) 
+    
+    scaled_displacement = displacement_vector / np.sqrt(mass)
+    
+    R = R0 + scaled_displacement.reshape(-1, 3)
+    
+    return R 
+    
+    
 if __name__=='__main__':
     
     # from pyscf.hessian import thermo

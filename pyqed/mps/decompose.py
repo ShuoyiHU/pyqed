@@ -239,7 +239,7 @@ def tt_to_tensor(factors):
 def compress(B_list, chi_max, renormalize=True, return_singular_values=False):
     """
     
-    Compress the MPS by reducing the bond dimension.
+    Compress MPS by reducing the bond dimension.
     
     States are renormalized to ensure norm.
 

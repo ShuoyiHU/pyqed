@@ -1,26 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Created on Fri Aug 11 15:47:49 2023
+# “”“
+# Created on Fri Aug 11 15:47:49 2023
 
-@author: bing
-"""
 
-#!/usr/bin/env python
-#
 # Author: Qiming Sun <osirpt.sun@gmail.com>
-#
 
-'''
-A simple example to run TDDFT calculation.
-'''
+# nuclear gradients from PySCF
+
+# A simple example to run TDDFT calculation.
+# ”“”
 
 from pyscf import gto, scf, dft, tddft
 
 # mol = gto.Mole()
 # mol.build(
-    
-#     atom = 'H 0 0 0; F 0 0 1.1',  
+
+#     atom = 'H 0 0 0; F 0 0 1.1',
 #     # in Angstrom
 #     basis = '631g',
 #     symmetry = True,

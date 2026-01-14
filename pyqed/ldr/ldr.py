@@ -34,7 +34,7 @@ import logging
 from copy import copy
 
 try:
-    import proplot as plt
+    import ultraplot as plt
 except:
     import matplotlib.pyplot as plt
 
@@ -329,7 +329,7 @@ class LDRN:
     This is extremely expansive, the maximum dimension should be < 4.
 
     """
-    def __init__(self, domains, levels, ndim=3, nstates=2, x0=None, mass=None, \
+    def __init__(self, domains, levels, ndim=2, nstates=2, x0=None, mass=None, \
                  dvr_type='sine'):
 
         assert(len(domains) == len(levels) == ndim)
@@ -388,20 +388,23 @@ class LDRN:
         self.ndim = ndim
 
         # all configurations in a vector
-        self.points = np.fliplr(cartesian_product(x))
-        self.ntot = len(self.points)
+        # self.points = np.fliplr(cartesian_product(x))
+        self.points = cartesian_product(x)
+        self.ntot = self.npts = len(self.points)
 
         ###
         self.H = None
         self.K = None
         # self._V = None
 
-        self._v = None
+        self._v = None # DPEM
+
         self.exp_K = None
         self.exp_V = None
         self.exp_T = None # KEO in LDR
         self.wf_overlap = self.A = None
         self.apes = None
+        self.dpem = None # diabatic potential energy matrix
 
 
     @property
@@ -412,8 +415,11 @@ class LDRN:
     def v(self, v):
         assert(v.shape == (*self.nx, self.nstates, self.nstates))
 
-        if abs(np.min(v)) > 0.1:
-            raise ValueError('The PES minimum is not 0. Shift the PES.')
+        # if abs(np.min(v)) > 0.1:
+        #     raise ValueError('The PES minimum is not 0. Shift the PES.')
+
+        # shift the energy so that the ground state energy minimum is 0
+        v = v - np.nanmin(v[:, :, 0])
 
         self._v = v
 
@@ -831,77 +837,77 @@ def gauss_hermite_quadrature(npts, xmax=None, x0=0.):
         k_max = None
         return x, w
 
-class GaussHermiteLDRN(LDRN):
+# class GaussHermiteLDRN(LDRN):
 
-    def __init__(self, x0, levels, ndim=3, nstates=2, mass=None):
+#     def __init__(self, x0, levels, ndim=3, nstates=2, mass=None):
 
-        assert(len(domains) == len(levels) == ndim)
+#         assert(len(domains) == len(levels) == ndim)
 
-        self.L = [domain[1] - domain[0] for domain in domains]
-
-
-        x = []
-        if dvr_type in ['sinc', 'sine']:
-
-            for d in range(ndim):
-                x.append(discretize(*domains[d], levels[d], endpoints=False))
-        # elif dvr_type == 'sine':
-        else:
-            raise ValueError('DVR {} is not supported. Please use sinc.')
+#         self.L = [domain[1] - domain[0] for domain in domains]
 
 
-        self.x = x
-        self.dx = [interval(_x) for _x in x]
-        self.nx = [len(_x) for _x in x]
+#         x = []
+#         if dvr_type in ['sinc', 'sine']:
 
-        self.dvr_type = dvr_type
-
-        if mass is None:
-            mass = [1, ] * ndim
-        self.mass = mass
-
-        self.nstates = nstates
-        self.ndim = ndim
-
-        # all configurations in a vector
-        self.points = np.fliplr(cartesian_product(x))
-        self.npts = len(self.points)
-
-        ###
-        self.H = None
-        self._K = None
-        # self._V = None
-
-        self._v = None
-        self.exp_K = None
-        self.exp_V = None
-        self.wf_overlap = self.A = None
-        self.apes = None
+#             for d in range(ndim):
+#                 x.append(discretize(*domains[d], levels[d], endpoints=False))
+#         # elif dvr_type == 'sine':
+#         else:
+#             raise ValueError('DVR {} is not supported. Please use sinc.')
 
 
+#         self.x = x
+#         self.dx = [interval(_x) for _x in x]
+#         self.nx = [len(_x) for _x in x]
 
-    def t(self, hc=1., mc2=1.):
-        """Return the kinetic energy matrix.
-        Usage:
-            T = self.t(V)
+#         self.dvr_type = dvr_type
 
-        @returns T kinetic energy matrix
-        """
-        _i = self.n[:, np.newaxis]
-        _j = self.n[np.newaxis, :]
-        _xi = self.x[:, np.newaxis]
-        _xj = self.x[np.newaxis, :]
+#         if mass is None:
+#             mass = [1, ] * ndim
+#         self.mass = mass
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            T = 2.*(-1.)**(_i-_j)/(_xi-_xj)**2.
+#         self.nstates = nstates
+#         self.ndim = ndim
 
-        T[self.n, self.n] = 0.
-        T += np.diag((2. * self.npts + 1.
-                      - np.square(self.x)) / 3.)
-        T *= self.gamma
-        T *= 0.5 * hc**2. / mc2   # (pc)^2 / (2 mc^2)
-        return T
+#         # all configurations in a vector
+#         self.points = np.fliplr(cartesian_product(x))
+#         self.npts = len(self.points)
+
+#         ###
+#         self.H = None
+#         self._K = None
+#         # self._V = None
+
+#         self._v = None
+#         self.exp_K = None
+#         self.exp_V = None
+#         self.wf_overlap = self.A = None
+#         self.apes = None
+
+
+
+#     def t(self, hc=1., mc2=1.):
+#         """Return the kinetic energy matrix.
+#         Usage:
+#             T = self.t(V)
+
+#         @returns T kinetic energy matrix
+#         """
+#         _i = self.n[:, np.newaxis]
+#         _j = self.n[np.newaxis, :]
+#         _xi = self.x[:, np.newaxis]
+#         _xj = self.x[np.newaxis, :]
+
+#         with warnings.catch_warnings():
+#             warnings.simplefilter("ignore")
+#             T = 2.*(-1.)**(_i-_j)/(_xi-_xj)**2.
+
+#         T[self.n, self.n] = 0.
+#         T += np.diag((2. * self.npts + 1.
+#                       - np.square(self.x)) / 3.)
+#         T *= self.gamma
+#         T *= 0.5 * hc**2. / mc2   # (pc)^2 / (2 mc^2)
+#         return T
 
 # class LDRN:
 #     """
@@ -1486,7 +1492,7 @@ class LDR2(WPD2):
         # K = self.buildK().reshape((N, N))
 
         # overlap of electronic states
-        A = np.zeros((nx, ny, nx, ny, nstates, nstates), dtype=dtype)
+        A = np.zeros((nx, ny, nx, ny, nstates, nstates), dtype=complex)
         # self._K = np.zeros((N, N, M, M), dtype=dtype)
 
 
@@ -2773,6 +2779,9 @@ class SincDVR_PBC(SincDVR2):
 
 if __name__ == '__main__':
 
+    ##################
+    # nonabelian model
+    ##################
 
     # from pyqed.models.pyrazine import DHO
     from pyqed import sigmaz, interval, sigmax, norm, gwp
@@ -2839,14 +2848,14 @@ if __name__ == '__main__':
     domains = [[-6,6], ]*2
     levels = [5, ] * 2
 
-    # solver = LDR2(x, y, nstates = nstates, \
-    #               mass = [1/omega, ] * 2, ndim=2) # mol.mass = [230.5405791702069, 367.62919827476884]
-
-    solver = LDRN(domains, levels, nstates = nstates, \
+    solver = LDR2(x, y, nstates = nstates, \
                   mass = [1/omega, ] * 2, ndim=2) # mol.mass = [230.5405791702069, 367.62919827476884]
 
+    # solver = LDRN(domains, levels, nstates = nstates, \
+    #               mass = [1/omega, ] * 2, ndim=2) # mol.mass = [230.5405791702069, 367.62919827476884]
+
     solver.v = v
-    # solver.build_apes()
+    solver.build_apes()
 
     psi0 = np.zeros((nx, ny, nstates), dtype=complex)
     for i in range(nx):
@@ -2856,7 +2865,7 @@ if __name__ == '__main__':
     # psi0 = np.reshape(psi0, (nx*ny*nstates,1))
 
     # transfrom the initial state to the adiabatic representation
-    # psi0 = np.einsum('ija, ijab -> ijb', psi0, solver.adiabatic_states)
+    psi0 = np.einsum('ija, ijab -> ijb', psi0, solver.adiabatic_states)
 
     dt = 0.2/au2fs
     nt = 100

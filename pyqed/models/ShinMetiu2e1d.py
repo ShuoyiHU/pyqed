@@ -24,6 +24,7 @@ from pyqed.davidson import davidson
 
 from pyqed import au2ev, au2angstrom, fine_structure, pauli
 from pyqed.dvr import SineDVR
+from pyqed.qchem import Molecule
 # from pyqed import scf
 # from pyqed.scf import make_rdm1, energy_elec
 # from pyqed.jordan_wigner import jordan_wigner_one_body, jordan_wigner_two_body
@@ -34,26 +35,47 @@ from pyqed.dvr import SineDVR
 # import sys
 # from opt_einsum import contract
 # from itertools import combinations
+import jax.numpy as jnp
+from jax.scipy.special import erf
+from jax import value_and_grad, hessian, grad, vmap
+
 
 # @vectorize([float64(float64, float64)])
 # @vectorize
 
 
 def soft_coulomb(r, R=1):
-    if np.isclose(r, 0):
-            # if r_R_distance == 0:
-        return 2 / (R * np.sqrt(np.pi))
-    else:
-        return erf(r / R) / r
+    # if jnp.isclose(r, 0):
+    #     return 2 / (R * np.sqrt(np.pi))
+    # else:
+    return erf(r / R) / r
 
-def force(r, R=1):
+soft_coulomb = jnp.vectorize(soft_coulomb)
 
-    if np.isclose(r, 0):
-        return 0
-    else:
-        return ((2 * np.exp(-r**2/R**2))/(np.sqrt(np.pi) * R) - erf(r/R))/r**2
+def electron_nuclear_attraction(r, R):
+    v = 0
+    for a in range(len(R)):
+        d = jnp.linalg.norm(r - R[a])
+        v += jnp.sum(-soft_coulomb(d))
 
-soft_coulomb = np.vectorize(soft_coulomb)
+    return v
+
+def nuclear_repulsion(R):
+    natom = len(R)
+    v = 0
+    for a in range(natom):
+        for b in range(a):
+            v += soft_coulomb(R[a]-R[b])
+    return v
+
+
+# def nuc_grad(r, R=1):
+
+#     if np.isclose(r, 0):
+#         return 0
+#     else:
+#         return ((2 * np.exp(-r**2/R**2))/(np.sqrt(np.pi) * R) - erf(r/R))/r**2
+
 
 
 
@@ -766,7 +788,8 @@ class AtomicChain(ShinMetiu1d):
     """
     1D chain of atoms
     """
-    def __init__(self, R, nstates=None, charge=0, dvr_type='sine', spin=0, Z=1, diag_method = 'scipy'):
+    def __init__(self, R, Rf=1, nstates=None, charge=0, dvr_type='sine', spin=0, Z=1, diag_method = 'scipy'):
+
 
         self.geometry = self.atom_coords = self.R = R
         self.nuc_charge = Z
@@ -779,19 +802,73 @@ class AtomicChain(ShinMetiu1d):
         super().__init__(method = diag_method, nstates=nstates, nelec=self.nelec, \
                        dvr_type=dvr_type, spin=spin)
 
+        self.Rf = Rf
 
-    def v_en(self, r):
+        #############
+        self.T = None
+        self.domain = None
+        self.nx = None
+
+    def ghost_atom(self):
+        pass
+
+    def atom_mass(self):
+        from pyqed import proton_mass
+
+        return [proton_mass, ] * self.natom
+
+    def effective_mass(self, t, mass_scaled=True):
+        """
+        effective mass of the collective coordinates defined by the transformation matrix t
+
+
+        Parameters
+        ----------
+        t : TYPE
+            DESCRIPTION.
+        mass_scaled : TYPE, optional
+            DESCRIPTION. The default is True.
+
+        Returns
+        -------
+        None.
+
+        """
+        minv = np.diag(self.atom_mass())
+        pass
+
+        # assert t.shape[-1] == self.natom
+
+        # meff = t.T @ minv @ t # check
+
+        # return meff
+
+
+    def electron_nuclear_attraction(self, gradients=None):
         """
         Electron-nucleus interaction potential.
         """
+        R = self.atom_coords
 
-        v = 0
-        for a in range(self.natom):
-            d = np.linalg.norm(r - self.R[a])
-            v += -soft_coulomb(d, self.Rf)
-        return v  * self.nuc_charge
+        batch = vmap(electron_nuclear_attraction, in_axes=[0, None])
 
-    def get_hcore(self):
+        v = batch(self.x, R)
+
+        if gradients is None or gradients is False:
+            return jnp.array(v)
+        else:
+
+            dv = grad(electron_nuclear_attraction, argnums=1)
+
+            f = vmap(dv, in_axes=[0, None])(self.x, R)
+
+            ddv = hessian(electron_nuclear_attraction, argnums=1)
+            g = vmap(ddv, in_axes=[0, None])(self.x, R)
+
+            return v, f, g
+
+
+    def build(self):
         """
         single point calculations
 
@@ -840,13 +917,13 @@ class AtomicChain(ShinMetiu1d):
         # V_en
         # Ra = self.left
         # Rb = self.right
-        v = np.zeros((nx))
-        for i in range(nx):
-            r1 = np.array(x[i])
-            # Potential from all ions
-            v[i] = self.v_en(r1)
+        # v = np.zeros((nx))
+        # for i in range(nx):
+        #     r1 = np.array(x[i])
+        #     # Potential from all ions
+        #     v[i] = self.v_en(r1)
 
-        print("mol v", v)
+        v = self.electron_nuclear_attraction(gradients=False)
 
         V = np.diag(v)
 
@@ -862,14 +939,161 @@ class AtomicChain(ShinMetiu1d):
 
         return H
 
-    def energy_nuc(self):
+    def nuclear_repulsion(self, gradients=None):
         # Ra = self.left
         # Rb = self.right
-        v = 0
-        for a in range(self.natom):
-            for b in range(a):
-                v += self.V_nn(self.R[a], self.R[b])
-        return v
+
+        if gradients is None:
+
+            return nuclear_repulsion(self.R)
+
+        else:
+
+            R = self.R
+
+            v, dv = value_and_grad(nuclear_repulsion, argnums=0)(R)
+
+            ddv = hessian(nuclear_repulsion, argnums=0)(R)
+
+
+            return v, dv, ddv
+
+    def energy_nuc(self):
+        # FOR COMPATIBILITY Use nuclear_repulsion()
+        return nuclear_repulsion(self.R)
+
+
+
+    def nuc_grad(self, order=[1,2]):
+        return Gradient(self)
+
+
+class Gradient:
+    def __init__(self, mf_or_mol):
+        # if isinstance(mf_or_mol, Molecule):            
+        #     self.mol = mf_or_mol
+        # else:
+        #     self.mol = mf_or_mol.mol 
+        
+        self.mol = mf_or_mol
+            
+        self.atom_coords = mf_or_mol.atom_coords
+        self.x = self.mol.x
+
+    def electron_nuclear_attraction(self):
+
+
+        R = self.atom_coords
+
+        dv = grad(electron_nuclear_attraction, argnums=1)
+
+        f = vmap(dv, in_axes=[0, None])(self.x, R)
+
+        ddv = hessian(electron_nuclear_attraction, argnums=1)
+        g = vmap(ddv, in_axes=[0, None])(self.x, R)
+
+        return f, g
+
+    def nuclear_repulsion(self):
+        R = self.atom_coords
+
+        v, dv = value_and_grad(nuclear_repulsion, argnums=0)(R)
+
+        ddv = hessian(nuclear_repulsion, argnums=0)(R)
+
+        return dv, ddv
+
+
+
+
+
+def effective_mass(t, atom_mass=None, mass_scaled=True):
+    """
+    effective mass of the collective coordinates defined by the
+    transformation matrix t
+
+    .. math::
+
+        Q = U^\text{T} \sqrt(m_i) (R_i - R_i^0)
+
+        ## x'_\mu = t_\mu^\nu x_\nu
+
+    Parameters
+    ----------
+    t : TYPE
+        DESCRIPTION.
+    mass_scaled : TYPE, optional
+        DESCRIPTION. The default is True.
+
+    Returns
+    -------
+    None.
+
+    """
+    minv = np.diag(1/np.sqrt(atom_mass))
+
+    # assert t.shape[-1] ==
+
+    meff = t.T @ minv @ t # check
+
+    return meff
+
+# def coord_transform(Q, atom_mass, t, R0=None, freq=None):
+#     """
+
+#     .. math::
+#         Q = U^\text{T} \sqrt(m_i) (R_i - R_i^0)
+
+#     The Hamiltonian expressed in terms of coordinates Q is
+
+#     .. math::
+#         H = -\omega/2 \pa_Q^2 + V(Q)
+
+#     The effective mass for Q is 1/omega.
+
+
+#     Parameters
+#     ----------
+#     mf : TYPE
+#         DESCRIPTION.
+
+#     mode_id : int or list
+#         which mode(s) to scan
+
+#     Returns
+#     -------
+#     None.
+
+#     """
+
+
+
+
+#     natom = len(atom_mass)
+
+#     mass = np.repeat(atom_mass, 3)
+
+#     # if hessian is not None:
+
+#     #     Mhalf = 1/np.sqrt(np.outer(mass, mass))
+#     #     weighted_h_GS = hessian * Mhalf
+
+#     #     force_consts, t = np.linalg.eigh(weighted_h_GS)
+
+
+
+
+#     q = Q/np.sqrt(freq) # mass-weighted coordinates
+
+
+#     # transform to Cartesian coordinates
+#     displacement_vector = np.einsum('u, iu -> i', q, t)
+
+#     scaled_displacement = displacement_vector / np.sqrt(mass)
+
+#     R = R0 + scaled_displacement.reshape(-1, 3)
+
+#     return R
 
 def plot_mo(mo):
 
@@ -890,10 +1114,12 @@ def eri_svd(mf):
 
 if __name__=='__main__':
 
-    # import proplot as plt
+
     import matplotlib.pyplot as plt
     from pyqed.qchem.dvr.rhf import RHF1D
     from pyqed.qchem.dvr.casci import CASCI
+    from pyqed.qchem.hf.rhf import ao2mo
+    from opt_einsum import contract
 
     # r = np.linspace(0, 1)
     # # v = [soft_coulomb(_r, 1) for _r in r]
@@ -902,14 +1128,14 @@ if __name__=='__main__':
     # fig, ax = plt.subplots()
     # ax.plot(r, v)
 
-    L = 10/au2angstrom
+    L = 12
         # print(self.L)
         # self.mass = mass  # nuclear mass
     # z = np.array([-L/2, -L/4, L/4, L/2])
     z0 = np.linspace(-1, 1, 4) * L/2
     print(z0)
 
-    print('distance = ', (z0[1] - z0[0])*au2angstrom)
+    print('distance/bohr = ', (z0[1] - z0[0])*au2angstrom)
 
 
     mol = AtomicChain(z0, charge=0)
@@ -917,7 +1143,10 @@ if __name__=='__main__':
     ###############################################################################
     # mol = ShinMetiu1d(nstates=3, nelec=2)
     # # mol.spin = 0
-    # mol.create_grid([-15/au2angstrom, 15/au2angstrom], level=4)
+    mol.create_grid([-10, 10], level=5)
+    mol.build()
+
+    print('e_nuc', mol.nuclear_repulsion())
     # print(mol.get_hcore())
 
     # # exact
@@ -925,26 +1154,111 @@ if __name__=='__main__':
     # w, u = mol.single_point(R)
     # print(w)
 
-    # fig, ax = plt.subplots()
-    # ax.imshow(u[:, 1].reshape(mol.nx, mol.nx), origin='lower')
+    fig, ax = plt.subplots()
+    # ax.imshow(u[:, 1].reshape(mol.x, mol.nx), origin='lower')
+    ax.plot(mol.x, mol.electron_nuclear_attraction())
 
     # HF
     mf = RHF1D(mol)
-    mf.domain = [-15/au2angstrom, 15/au2angstrom]
-    mf.nx = 31
-    # mf.create_grid([-15/au2angstrom, 15/au2angstrom], level=4)
-
-    # print(mf.get_hcore())
-
-
     mf.run()
 
+    C = mf.mo_coeff
+
+    nuc_grad = mol.nuc_grad()
+
+    f, g = nuc_grad.electron_nuclear_attraction()
+
+    f_nuc, g_nuc = nuc_grad.nuclear_repulsion()
+
+    print(f.shape, g.shape)
+    # print(g_nuc)
+    # assert ncore == 0
 
 
-    cas = CASCI(mf, ncas=8, nelecas=4)
-    w, X = cas.run(1)
-    # e_cas = w
-    print("{:.15f}".format(w[0]))
+
+
+
+    # e, f1, g1 = mol.nuclear_repulsion()
+
+    # # print(v)
+    # print(jnp.array(g1))
+
+    # fig, ax = plt.subplots()
+    # ax.plot(mol.x, v)
+
+
+    # # dv = jnp.vectorize(dv)
+
+    # f = dv(r, R)
+    # print(f)
+
+    # ddv = hessian(electron_nuclear_attraction, argnums=1)
+    # g = ddv(r, R)
+    # print('ddv', g)
+
+    ###### CASCI ########
+    ncas=6
+    nstates = 3
+    # nelecas=4
+
+    mc = CASCI(mf, ncas)
+    mc.run(nstates)
+    
+    C = C[:, :ncas] # active space MOs
+    
+    
+    def vibronic_coupling(mc, mo_coeff):
+        """
+        first- and second-order vibronic couplings in the crude adiabatic representation
+        
+        .. math::
+            
+            F = \langle \Psi_\beta(R_0) | \nabla H(R_0) | \Psi_\alpha(R_0) \rangle 
+
+        Parameters
+        ----------
+        mc : TYPE
+            DESCRIPTION.
+        mo_coeff : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        F : TYPE
+            DESCRIPTION.
+        G : TYPE
+            DESCRIPTION.
+
+        """
+        # generalized density matrix
+        dm = np.zeros((nstates, nstates, ncas, ncas))
+    
+        for n in range(nstates):
+            dm[n,n] = mc.make_rdm1(state_id=n)
+            
+        for n in range(nstates):
+            for m in range(n):
+                dm[n, m] = mc.make_tdm1(n, m)
+
+        C = mo_coeff
+        f_mo = contract('ap, au, aq -> pqu', C, f, C)
+        g_mo = contract('ap, auv, aq -> pquv', C, g, C)
+        
+        F = contract('bapq, pqu -> bau', dm, f_mo)
+        G = contract('bapq, pquv -> bauv', dm, g_mo)
+        
+        # nuclear repulsion term 
+        for n in range(nstates):
+            F[n,n] += f_nuc 
+            G[n,n] += g_nuc 
+
+        return F, G
+        
+    F, G = vibronic_coupling(mc, C)
+
+
+    # # e_cas = w
+    # print("{:.15f}".format(w[0]))
 
 
     ### scan PEC

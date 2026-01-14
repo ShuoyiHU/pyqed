@@ -290,8 +290,11 @@ class ShinMetiu2:
     """
     2D Shin-Metiu model for PCET
     """
-    def __init__(self, method = 'scipy', nstates=3, dvr_type='sine'):
+    def __init__(self, method = 'scipy', nstate=3, dvr_type='sine'):
         """
+        
+        Electronic structure is solved with Sine DVR. 
+        
         Refs:
             [1] PRL ...
 
@@ -325,7 +328,7 @@ class ShinMetiu2:
         self.y = None
         self.nx = None
         self.ny = None 
-        self.domains = None 
+        self.domain = None 
         self.size = None
         
         self.u = None
@@ -334,50 +337,70 @@ class ShinMetiu2:
         
         self.method = method
         # self.nv = 4 # davision’s default number of feature vectors is 4
-        self.nstates = nstates
-        self.v0 = None # trial vectors for diagnalization
+        self.nstate = self.nstates = nstate
         
+        self.v0 = None # trial vectors for H diagnalization
+        self.T = None
         
         
         
     def create_grid(self, level, domain):
+        raise FutureWarning('Deprecated. Please call build().')
+
+    
+    def build(self, domain, npts):
+        """
+        build the electronic grid and kinetic energy operator
+
+        Returns
+        -------
+        None.
+
+        """
+        nx, ny = npts
         
-        x = discretize(*domain[0], level, endpoints=False)
-        y = discretize(*domain[1], level, endpoints=False)
+        # build the kinetic energy operator
+        
+        dvr_x = SineDVR(*domain[0], nx)
+        tx = dvr_x.t()
+        x = dvr_x.x 
+        idx = identity(nx)
+        
+        dvr_y = SineDVR(*domain[1], ny)
+        ty = dvr_y.t()
+        y = dvr_y.x 
+        idy = identity(ny)
+
+        T = kron(tx, idy) + kron(idx, ty)
         
         self.x = x 
         self.y = y
-        self.nx = len(x)
-        self.ny = len(y)
+        self.nx = nx
+        self.ny = ny
         self.size = self.nx * self.ny 
         self.lx = domain[0][1]-domain[0][0]
         self.ly = domain[1][1]-domain[1][0]
         self.dx = self.lx / (self.nx - 1)
         self.dy = self.ly / (self.ny - 1)
-        self.domains = domain
+        self.domain = domain
+        self.T = T
         
-    def single_point(self, R, calc_nac=False):
-        # if the matrix size 
+        return self
+    
+    def adiabatic_energy(self, R, return_grad=False):
         
-        # H(r; R)
+        e = self.single_point(R)
+        
+        if return_grad:
+            pass
+        else:
+            return e
+        
+    def single_point(self, R):
+        
+        nx, ny = self.nx, self.ny
         x, y = self.x, self.y 
-        nx, ny = self.nx, self.ny 
-        
-        # T 
-        # tx = kinetic_energy(self.lx, self.nx)
-        tx = kinetic(self.x, dvr=self.dvr_type)
-        
-        idx = np.eye(self.nx)
-        
-        # ty = kinetic_energy(self.ly, self.ny)
-        ty = kinetic(self.y, dvr=self.dvr_type)
-        idy = np.eye(self.ny)
-        
-        T = kron(tx, idy) + kron(idx, ty)
-
-        
-        # print(T.shape)
-        
+                
         # V
         v = np.zeros((nx, ny))
         for i in range(nx):
@@ -388,7 +411,8 @@ class ShinMetiu2:
         V = np.diag(v.ravel())
         # print(V.shape)
         
-        H = T + V 
+        H = self.T + V
+        
         # print(H)
         if self.method == 'exact':
             w, u = eigh(H)
@@ -404,13 +428,16 @@ class ShinMetiu2:
         else:
             raise ValueError("Invalid method specified")
     
-        if not calc_nac:      
-            return w[:self.nstates], u[:, :self.nstates] 
+        # if not return_grad:      
+        #     return w[:self.nstates], u[:, :self.nstates] 
         
-        else:
+        # else:
             
-            nac = self.nonadiabatic_coupling(w, u, R)
-            return w, u, nac
+        #     # nac = self.nonadiabatic_coupling(w, u, R)
+        return w[:self.nstates], u[:, :self.nstates] 
+
+            
+        #     return w, u, grad
         
         #     dv = np.zeros((nx, ny, 2))
         #     for i in range(nx):
@@ -455,7 +482,7 @@ class ShinMetiu2:
     
         return dh
         
-    def nonadiabatic_coupling(self, w, u, R):
+    def nonadiabatic_coupling(self, R, w=None, u=None):
         """
         Compute NACs  
         .. math::
@@ -478,19 +505,41 @@ class ShinMetiu2:
 
         """
         
+        # E
+        e, u = self.single_point(R)
+        
+        # NAC
         nx, ny = self.nx, self.ny
         x, y = self.x, self.y 
         
-        dv = np.zeros((nx, ny, 2))
+        # nuclear derivative of electron-nuclear Coulomb interaction
+        dv = np.zeros((nx, ny, self.ndim))
+        
         for i in range(nx):
             for j in range(ny):
                 r = np.array([x[i], y[j]])
                 dv[i, j, :] = self.dH(r, R)
-                
-        nac = contract('ij, ijn, ij -> n', u[:, 2].reshape(nx,ny).conj(),\
-                       dv, u[:,1].reshape(nx, ny))
+        
+        grad = np.zeros((self.nstate, self.ndim))
+        
+        for a in range(self.nstates):
+            grad[a] = contract('ij, ijn, ij -> n', u[:, a].reshape(nx,ny).conj(),\
+                       dv, u[:,a].reshape(nx, ny))
             
-        return nac/(w[1] - w[2])
+
+        nac = np.zeros((self.nstate, self.nstates, self.ndim))
+                
+        for a in range(self.nstates):
+            for b in range(a):
+                nac[a, b] = contract('ij, ijn, ij -> n', u[:, a].reshape(nx,ny).conj(),\
+                       dv, u[:,b].reshape(nx, ny))
+            
+                nac[a, b] /= (e[a] - e[b])
+                
+                nac[b, a] = - nac[a, b].conj()
+                
+        return e, grad, nac
+                
     
     def berry_curvature(self, state_id=0):
         """
@@ -950,8 +999,10 @@ class ShinMetiu2InElectricField(ShinMetiu2):
         # dipole self-energy
         DSE = 0
         
+        # kinetic energy operator + light-matter interaction
         self.hcore = T + kron(X, idy) * Ex + kron(idx, Y) * Ey + DSE 
         # self.hcore = T + kron(Px, idy) * Ex + kron(idx, Py) * Ey
+        
         return 
         
     def single_point(self, R):
@@ -1033,8 +1084,9 @@ class ShinMetiu2InElectricField(ShinMetiu2):
 
 
 
+# def discretized_loop()
 
-def circle(center=(0,0), radius=1, npts=10):
+def loop(center=(0,0), radius=1, npts=10):
     """
     generate a discretized loop
 
@@ -1101,8 +1153,6 @@ if __name__=='__main__':
     
     mol = ShinMetiu2InElectricField()
 
-    
-    
     mol.create_grid(5, domain=[[-6, 6], [-6, 6]])
 
     F = np.linspace(0, 1, 10)

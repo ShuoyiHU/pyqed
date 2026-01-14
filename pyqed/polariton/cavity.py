@@ -242,8 +242,8 @@ class Composite(Mol):
             self.eigenstates()
 
         # return basis_transform(a, self.eigvecs)
-        U = self.eigvecs 
-        
+        U = self.eigvecs
+
         return dag(U) @ a @ U
 
             # raise ValueError('Call eigenstates() to compute eigvecs first.')
@@ -432,29 +432,35 @@ class Cavity():
 
         # self.a = self.get_annihilate()
         self.H = self.getH()
-        
+
         # number of grid points to represent quadrature
         if x is not None:
             self.x = x
             self.nx = len(x)
-        
-        self.decay = decay 
+
+        self.decay = decay
         self.g = g
-    
+
     @property
     def g(self):
-        return self._g 
-    
+        return self._g
+
     @g.setter
     def g(self, value):
-        self._g = value 
-        
+        self._g = value
+
     def nonhermH(self):
-        
-        omegac = self.omega - 0.5j * self.decay
-        
-        return ham_ho(omegac, self.ncav) 
-        
+
+        # omegac = self.omega - 0.5j * self.decay
+
+        # nonhermH = self.H - 0.5j * self.decay * np.identity(self.ncav)
+
+        a = self.annihilate()
+        nonhermH = self.H - 0.5j * self.decay * dag(a) @ a
+        return nonhermH
+
+        # return ham_ho(omegac, self.ncav)
+
 #    @property
 #    def hamiltonian(self):
 #        return self._hamiltonian
@@ -473,7 +479,7 @@ class Cavity():
             return csr_matrix(vac)
         else:
             return vac
-    
+
     def vacuum(self, sparse=True):
         """
         get initial density matrix for cavity vacuum state
@@ -492,7 +498,7 @@ class Cavity():
         vac = np.zeros(self.n_cav)
         vac[0] = 1.
         return ket2dm(vac)
-    
+
     def getH(self, zpe=False):
         return ham_ho(self.freq, self.n_cav)
 
@@ -525,14 +531,14 @@ class Cavity():
         a = lil_matrix((ncav, ncav))
         a.setdiag(range(ncav), 0)
         return a.tocsr()
-    
+
     def num(self):
         return self.get_number_operator()
 
     def quadrature(self):
         """
         quadrature; corresponding to the displacement field D
-        
+
         .. math::
             D = \frac{1}{\sqrt{2}} (a + a^\dag)
 
@@ -548,7 +554,7 @@ class Cavity():
     def get_nonhermitianH(self):
         '''
         non-Hermitian Hamiltonian for the cavity mode
-        
+
         WRONG!
 
         Params:
@@ -575,11 +581,11 @@ class Cavity():
 
 
 class Polariton(Composite):
-    
+
     def __init__(self, mol, cav, g=None, gauge='length'):
 
         super(Polariton, self).__init__(mol, cav)
-        
+
         assert isinstance(mol, Mol)
 
         self.mol = mol
@@ -595,24 +601,24 @@ class Polariton(Composite):
 
         self._g = g
         self.H = None
-        
+
     @property
     def g(self):
-        return self._g 
-    
+        return self._g
+
     @g.setter
     def g(self, value):
         self._g = value
-        
-    
+
+
     def getH(self, RWA=False):
         """
-        The coupling strength is defined as 
-        
-        .. math:: 
+        The coupling strength is defined as
+
+        .. math::
             g \equiv \sqrt( \omega_c / 2 episilon_0 V) = \sqrt{2\pi\omega_c/V}
-            
-        The dipole self-energy 
+
+        The dipole self-energy
         .. math::
             DSE = \frac{1}{2\epsilon_0 V} (\bm \mu \cdot \bm \varepsilon)^2
 
@@ -620,9 +626,9 @@ class Polariton(Composite):
         Parameters
         ----------
         g : float
-            single photon electric field strength 
+            single photon electric field strength
 
-                
+
         RWA : TYPE, optional
             DESCRIPTION. The default is False.
 
@@ -635,44 +641,44 @@ class Polariton(Composite):
 
         mol = self.mol
         cav = self.cav
-        
+
         omegac = cav.omegac
 
         hmol = mol.getH()
         hcav = cav.getH()
 
         edip = mol.edip
-        
+
         Icav = cav.idm
         Imol = mol.idm
-        
+
         a = cav.annihilate()
         ad = dag(a)
         qc = a + ad
-        
+
         g = self._g
-        
+
         if self.gauge in ['length', 'dipole', 'dip']:
-            
+
             if RWA:
-    
+
                 hint = g * (kron(mol.raising, a) +
                             kron(mol.lowering, ad))
-    
+
             else:
-                
+
                 DSE = g**2/omegac * kron(edip @ edip, Icav)
-                
+
                 hint = 1j * g * kron(edip,  a - ad) + DSE
-        
+
         elif self.gauge in ['velocity']:
-            
+
             p = self.mol.get_p_from_r()
-            
+
             A = g/omegac * qc
-            
+
             hint =  np.kron(p, A) + 0.5 * kron(Imol, A @ A)
-            
+
         self.H = kron(hmol, Icav) + kron(Imol, hcav) + hint
 
         return self.H
@@ -769,11 +775,11 @@ class Polariton(Composite):
             evals, evecs = scipy.linalg.eigh(h)
             # number of photons in polariton states
             num_op = self.cav.num()
-            
+
             print(num_op.shape)
-            
+
             num_op = kron(self.mol.idm, num_op)
-            
+
             print(num_op.shape)
 
             n_ph = np.zeros(self.dim)
@@ -825,7 +831,7 @@ class Polariton(Composite):
         elif kind in ['cav', 'c']:
 
             return kron(self.mol.idm, a)
-        
+
     def rdm_photon(self):
         """
         return the reduced density matrix for the photons
@@ -876,7 +882,7 @@ class Polariton(Composite):
 #         self.dip = None
 #         self.cav_leak = None
 #         #self.dm = kron(mol.dm, cav.get_dm())
-        
+
 #         self.H = None
 
 #     def getH(self, g, RWA=True):
@@ -1001,32 +1007,32 @@ class VibronicPolariton:
             v += np.tile(g * kron(mol.edip, a + dag(a)).toarray(), (nx, 1, 1))
 
         elif mol.edip.shape == (nx, nel, nel):
-            
+
             for i in range(nx):
-                v[i, :, :] += g * kron(mol.edip[i], a + dag(a)).toarray() 
+                v[i, :, :] += g * kron(mol.edip[i], a + dag(a)).toarray()
 
         self.v = v
         return v
 
     def add_coupling(self, ops):
-        
+
         nel = self.mol.nstates
-        nx = self.nx 
-        
+        nx = self.nx
+
         for pair in ops:
-            
+
             mol_op, cav_op = pair
-            
+
             if mol_op.shape == (nel, nel):
                 # Condon approximation
                 self.v += np.tile( kron(mol_op, cav_op), (nx, 1, 1))
-    
-            elif mol_op.shape == (nx, nel, nel):
-                
-                for i in range(nx):
-                    self.v[i, :, :] += kron(mol_op[i], cav_op) 
 
-        return self.v        
+            elif mol_op.shape == (nx, nel, nel):
+
+                for i in range(nx):
+                    self.v[i, :, :] += kron(mol_op[i], cav_op)
+
+        return self.v
 
     def ppes(self):
         """
@@ -1039,7 +1045,7 @@ class VibronicPolariton:
 
         """
         E = np.zeros((self.nx, self.nstates))
-        
+
         for i in range(self.nx):
             V = self.v[i, :, :]
             w, u = sort(*np.linalg.eigh(V))
@@ -1105,7 +1111,7 @@ class VibronicPolariton:
             ax.plot(self.x, self.va[:, state_id])
         else:
             ax.plot(self.x, self.v[:, state_id, state_id])
-            
+
         return
 
 class VibronicPolariton2:
@@ -1130,17 +1136,17 @@ class VibronicPolariton2:
         self.va = None # adiabatic polaritonic PES
         self._transformation = None # diabatic to adiabatic transformation matrix
         self._ground_state = None
-        
+
         self.g = g
-    
+
     @property
     def g(self):
         return self._g
-    
-    @g.setter 
+
+    @g.setter
     def g(self, value):
-        self._g = value 
-    
+        self._g = value
+
 
     def ground_state(self, representation='adiabatic'):
         # if rwa:
@@ -1189,8 +1195,8 @@ class VibronicPolariton2:
         """
         mol = self.mol
         cav = self.cav
-        g = self.g 
-        
+        g = self.g
+
         if g is None:
             raise ValueError('The coupling constant is None. Set it.')
 
@@ -1204,7 +1210,7 @@ class VibronicPolariton2:
         nstates = self.nstates # polariton states
 
         v = np.zeros((nx, ny, nstates, nstates))
-        
+
         # build the global DPES
         if mol.v is None:
             mol.dpes_global()
@@ -1222,7 +1228,7 @@ class VibronicPolariton2:
         self.v = v
 
         return v
-    
+
     def dpes(self, x, y):
         """
         Compute the diabatic potential energy surfaces
@@ -1254,7 +1260,7 @@ class VibronicPolariton2:
         nstates = self.nstates # polariton states
 
         v = np.zeros((nx, ny, nstates, nstates))
-        
+
         # build the global DPES
         if mol.v is None:
             mol.dpes_global()
@@ -1344,7 +1350,7 @@ class VibronicPolariton2:
             plot_surface(self.x, self.y, self.va[:, :, state_id])
         else:
             plot_surface(self.x, self.y, self.v[:, :, state_id, state_id])
-            
+
         return
 
     def plot_wavepacket(self, psilist, **kwargs):
@@ -1401,11 +1407,11 @@ class VibronicPolariton2:
 
 
 # class VibronicPolaritonNonHermitian(VibronicPolariton2):
-    
+
 #     def dpes(self, g, rwa=False):
 #         """
 #         Compute the non-Hermitian diabatic potential energy surfaces
-        
+
 #         .. math::
 #             H = (\omega_\text{c} - \frac{\kappa}{2} ) a^\dag a
 
@@ -1424,10 +1430,10 @@ class VibronicPolariton2:
 #         """
 #         mol = self.mol
 #         cav = self.cav
-        
+
 #         if cav.decay is None:
 #             raise ValueError('Please set cavity decay rate.')
-            
+
 #         omegac = cav.omega - 0.5j * cav.decay
 
 #         nx, ny = self.nx, self.ny
@@ -1438,7 +1444,7 @@ class VibronicPolariton2:
 #         nstates = self.nstates # polariton states
 
 #         v = np.zeros((nx, ny, nstates, nstates), dtype=complex)
-        
+
 #         # build the global DPES
 #         if mol.v is None:
 #             # mol.dpes_global()
@@ -1456,8 +1462,8 @@ class VibronicPolariton2:
 
 #         self.v = v
 
-#         return v  
-    
+#         return v
+
 #     def ppes(self, return_transformation=True):
 #         """
 #         Compute the polaritonic potential energy surfaces by diagonalization
@@ -1471,15 +1477,15 @@ class VibronicPolariton2:
 #         -------
 #         E : array [nx, ny, nstates]
 #             eigenvalues
-        
+
 #         T : array [nx, ny, nstates, nstates]
 #             transformation matrix from diabatic states to polaritonic states
 
 #         """
-        
+
 #         if self.cav.decay is None:
 #             raise ValueError('Please set the cavity decay rate.')
-            
+
 #         nx = self.nx
 #         ny = self.ny
 #         N = self.nstates
@@ -1494,10 +1500,10 @@ class VibronicPolariton2:
 #                     w = np.linalg.eigvals(V)
 #                     # E, U = sort(E, U)
 #                     E[i, j, :] = w
-            
+
 #             self.va = E
 #             return E
-        
+
 #         else:
 
 #             T = np.zeros((nx, ny, N, N), dtype=complex)
@@ -1515,21 +1521,21 @@ class VibronicPolariton2:
 #             self.va = E
 
 #             return E, T
-    
+
 #     def cut(self, x=None, d=0):
-        
+
 #         if x is None:
-#             x = self.x 
-        
+#             x = self.x
+
 #         ny = self.ny
-        
+
 #         from pyqed import nlargest
-        
+
 #         # find the index closest to 0
 #         ix = nlargest(-np.abs(self.x), with_index=True)[0][1]
-              
+
 #         E = np.zeros((ny, self.nstates), dtype=complex)
-        
+
 #         for i in range(self.ny):
 #             V = self.v[ix, i, :, :]
 #             w, u = sort(*scipy.linalg.eig(V))
@@ -1538,11 +1544,11 @@ class VibronicPolariton2:
 
 #         self.va = E
 #         return E
-    
-        
+
+
 #     def ldr(self):
 #         pass
-        
+
 
 class DHO2:
     def __init__(self, x, y, nstates=2):
@@ -1585,37 +1591,36 @@ if __name__ == '__main__':
     pol.ppes()
 
     pol.draw_surfaces(n=4, representation='adiabatic')
-    
+
     # pol.product_state(0, 0, 0)
 
     def test_vp2():
         from pyqed.models.pyrazine import LVC2
-    
+
         mol = LVC2(x, y, mass=[1,1])
         mol.plot_apes()
-        
-        
+
+
         cav = Cavity(3/au2ev, 3)
-    
-        
+
+
         # mol.plot_surface()
-    
-        
+
+
         pol = VibronicPolariton2(mol, cav)
         pol.dpes(g=0.)
-        
+
         # pol.ppes()
         pol.plot_surface(3, representation='diabatic')
-    
+
         psi0 = np.zeros((len(x), len(y), pol.nstates), dtype=complex)
         psi0[:, :, 4] = pol.ground_state()[1]
-        
+
         pol.plot_ground_state()
-        
+
         r = pol.run(psi0=psi0, dt=0.05, Nt=20, nout=2)
-    
+
         # r.plot_wavepacket(r.psilist, 4)
 
 
 # the diabatic potential energy surface
-

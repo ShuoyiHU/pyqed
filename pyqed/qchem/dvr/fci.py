@@ -133,6 +133,9 @@ def SlaterCondon(Binary):
 
     return SC1, SC2
 
+
+
+
 # def get_SO_matrix(mf, SF=False, H1=None, H2=None):
 #     """
 #     Given a PySCF uhf object get Spin-Orbit Matrices
@@ -603,6 +606,67 @@ class FCI:
         return fcisolver(self.mf, nstates)
 
 
+
+
+def generalized_slater_condon(binary1, binary2, mo_coeff1, mo_coeff2):
+    """
+    Generalized Slater-Condon rules for non-orthogonal Slater determinants
+
+    .. math::
+
+        SC1 = \langle \Phi^X q^\dagger p | \Phi^Y \rangle
+
+    Parameters
+    ----------
+    binary1 : TYPE
+        binary list of bra configurations
+    binary2 : TYPE
+        DESCRIPTION.
+    s : TYPE
+        atomic orbital overlap.
+
+    Returns
+    -------
+    SC1 : TYPE
+        DESCRIPTION.
+    SC2 : TYPE
+        DESCRIPTION.
+
+    """
+    sign = determinantsign(Binary)
+    SpinDifference = np.sum( np.abs(Binary[:, None, :, :] - Binary[None, :, :, :]), axis=3)//2
+
+    ## indices for 1-difference
+    I_A, J_A = np.where( np.all(SpinDifference==np.array([1,0], dtype=np.int8), axis=2) )
+    I_B, J_B = np.where( np.all(SpinDifference==np.array([0,1], dtype=np.int8), axis=2) )
+
+    ## indices for 2-differences
+    I_AA, J_AA = np.where( np.all(SpinDifference==np.array([2,0], dtype=np.int8), axis=2) )
+    I_BB, J_BB = np.where( np.all(SpinDifference==np.array([0,2], dtype=np.int8), axis=2) )
+    I_AB, J_AB = np.where( np.all(SpinDifference==np.array([1,1], dtype=np.int8), axis=2) )
+
+
+    ### get excitation operators
+
+    a_t , a = get_excitation_op(I_A , J_A , Binary, sign, spin=0)
+    b_t , b = get_excitation_op(I_B , J_B , Binary, sign, spin=1)
+
+
+    ca = ((Binary[I_A,0,:] + Binary[J_A,0,:])/2).astype(np.int8)
+    cb = ((Binary[I_B,1,:] + Binary[J_B,1,:])/2).astype(np.int8)
+    # if len(I_AA) >0:
+    aa_t, aa = get_excitation_op(I_AA, J_AA, Binary, sign, spin=0)
+
+    # if len(I_BB) > 0:
+    bb_t, bb = get_excitation_op(I_BB, J_BB, Binary, sign, spin=1)
+
+    ab_t, ab = get_excitation_op(I_AB, J_AB, Binary, sign, spin=0)
+    ba_t, ba = get_excitation_op(I_AB, J_AB, Binary, sign, spin=1)
+
+    SC1 = [I_A, J_A, a_t , a, I_B, J_B, b_t , b, ca, cb]
+    SC2 = [I_AA, J_AA, aa_t, aa, I_BB, J_BB, bb_t, bb, I_AB, J_AB, ab_t, ab, ba_t, ba]
+
+    return SC1, SC2
 
 
 if __name__=='__main__':

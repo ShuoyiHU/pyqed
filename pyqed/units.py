@@ -1,4 +1,9 @@
 
+import scipy.constants as const
+
+# proton mass in au
+proton_mass =const.physical_constants["proton-electron mass ratio"][0] 
+
 au2fs = 2.41888432651e-2 # femtoseconds
 
 au2as = 24.1888432651 # attoseconds

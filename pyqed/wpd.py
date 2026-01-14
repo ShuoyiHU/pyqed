@@ -14,7 +14,7 @@ For curvilinear coordinates, use RK4 method
 
 import numpy as np
 
-try:    
+try:
     import proplot as plt
 except:
     import matplotlib.pyplot as plt
@@ -38,7 +38,7 @@ from pyqed.nonherm import eig
 def plot_wavepacket(x, y, psilist, **kwargs):
 
     if not isinstance(psilist, list): psilist = [psilist]
-    
+
     X, Y = np.meshgrid(x, y)
 
     for i, psi in enumerate(psilist):
@@ -83,24 +83,24 @@ class ResultSPO2(Result):
             return ax0
 
         else:
-            
+
             nstates = self.psi0.shape[-1]
 
             for i, psi in enumerate(psilist):
 
                 fig, axes = plt.subplots(nrows=nstates, sharey=True, sharex=True,\
                                          figsize=(3.5,4))
-                
+
                 for n in range(nstates):
                     axes[n].contourf(X, Y, np.abs(psi[:,:, n])**2)
-                    
+
                 # ax1.contour(X, Y, np.abs(psi[:, :,0])**2)
                     # axes[n].format(**kwargs)
                 # ax1.format(**kwargs)
                 fig.savefig('psi'+str(i)+'.pdf')
 
             return axes
-        
+
     def get_population(self, fname=None, plot=False):
         dx = interval(self.x)
         dy = interval(self.y)
@@ -108,57 +108,57 @@ class ResultSPO2(Result):
         for n in range(self.nstates):
             p[:, n] = [norm2(psi[:, :, n]).real * dx * dy for psi in self.psilist]
         # p1 = [norm2(psi[:, :, 1]) * dx * dy for psi in self.psilist]
-        
+
 
             # ax.plot(self.times, p1)
-        
+
         self.population = p
         if fname is not None:
             # fname = 'population'
             np.savez(fname, p)
-            
+
         if plot:
             fig, ax = plt.subplots()
             for n in range(self.nstates):
                 ax.plot(self.times, p[:,n])
             return fig, ax
-        
-        else:   
+
+        else:
             return p
-    
+
     def plot_population(self, p):
-        
+
         fig, ax = plt.subplots()
         for n in range(self.nstates):
             ax.plot(self.times, p[:,n])
-            
+
         return fig, ax
-        
-    
-    def position(self, plot=False, fname=None):        
+
+
+    def position(self, plot=False, fname=None):
         # X, Y = np.meshgrid(self.x, self.y)
-        x = self.x 
+        x = self.x
         y = self.y
         dx = interval(x)
         dy = interval(y)
-        
+
         xAve = [np.einsum('ijn, i, ijn', psi.conj(), x, psi) * dx*dy for psi in self.psilist]
         yAve = [np.einsum('ijn, j, ijn', psi.conj(), y, psi) * dx*dy for psi in self.psilist]
-        
+
         xAve = np.real_if_close(xAve)
         yAve = np.real_if_close(yAve)
-        
+
         if plot:
             fig, ax = plt.subplots()
             ax.plot(self.times, xAve)
             ax.plot(self.times, yAve)
-        
+
         self.xAve = [xAve, yAve]
         np.savez('xAve', xAve, yAve)
-        
+
         return xAve, yAve
-        
-        
+
+
     def dump(self, fname):
         """
         save results to disk
@@ -176,8 +176,8 @@ class ResultSPO2(Result):
         import pickle
         with open(fname, 'wb') as f:
             pickle.dump(self, f)
-            
-            
+
+
 class Solver():
     def __init__(self):
         self.obs_ops = None
@@ -190,7 +190,7 @@ class Solver():
 
 class SPO:
     """
-    Time-dependent Schrodinger Equation for wavepackets on a single PES 
+    Time-dependent Schrodinger Equation for wavepackets on a single PES
     with 1D nuclear coordinate
     """
     def __init__(self, x, mass=1, nstates=1):
@@ -402,7 +402,7 @@ class SPO2:
         self.mass = self.masses = mass
         self.kx = None
         self.ky = None
-        
+
         self.apes = None
         self.dim = 2
         self.exp_V = None
@@ -413,10 +413,10 @@ class SPO2:
         self.nstates = self.ns = nstates
         self.coords =  coords
         self.abc = abc
-        
+
         self.d2a = None # diabatic to adiabatic transformation
         self.a2d = None # adiabatic to diabatic transformation
-        
+
         # results
         self.psilist = None
 
@@ -436,9 +436,9 @@ class SPO2:
     def set_DPES(self, surfaces, diabatic_couplings, eta=None):
         """
         set the potential energy operatpr from the diabatic PES and vibronic couplings
-        
-        To be deprecated. 
-        
+
+        To be deprecated.
+
         Parameters
         ----------
         surfaces : TYPE
@@ -459,7 +459,7 @@ class SPO2:
 
         # nx = len(x)
         # ny = len(y)
-        nx = self.nx 
+        nx = self.nx
         ny = self.ny
         ns = self.ns
 
@@ -472,7 +472,7 @@ class SPO2:
 
         for dc in diabatic_couplings:
             a, b = dc[0][:]
-            v[:, :, a, b] = dc[1] 
+            v[:, :, a, b] = dc[1]
             v[:, :, b, a] = v[:, :, a, b].conj()
 
 
@@ -482,15 +482,15 @@ class SPO2:
 
         self.v = v
         return v
-    
+
     def set_dpes(self, v):
         self.V = self.v = v
         return self
-    
+
     # def set_DPEM(self, v):
     #     self.V = self.v = v
-    #     return 
-        
+    #     return
+
 
 
     def build(self, dt, inertia=None):
@@ -573,53 +573,53 @@ class SPO2:
         self.exp_V = np.zeros(v.shape, dtype=complex)
         self.exp_V_half = np.zeros(v.shape, dtype=complex)
         # self.apes = np.zeros((nx, ny))
-        
+
         # if self.abc:
         #     eig = scipy.linalg.eig
         # else:
         #     eig = scipy.linalg.eigh
-        
-        
+
+
         if np.iscomplexobj(v): # complex Hermitian H
-            
+
             self.d2a = np.zeros((nx, ny, nstates, nstates), dtype=complex)
 
             # complex potential
             for i in range(nx):
                 for j in range(ny):
-                    
+
                     _v = v[i, j]
-                    
+
                     # w, ul, ur = scipy.linalg.eig(_v, left=True, right=True)
                     w, u = sort(*scipy.linalg.eigh(_v))
-    
+
                     V = np.diagflat(np.exp(- 1j * w * dt))
                     V2 = np.diagflat(np.exp(- 1j * w * dt2))
-    
+
                     self.exp_V[i, j, :,:] = u.dot(V.dot(dagger(u)))
                     self.exp_V_half[i, j, :,:] = u.dot(V2.dot(dagger(u)))
-                    
+
                     self.d2a[i, j] = u
-                    
-        else: 
-            
+
+        else:
+
             self.d2a = np.zeros((nx, ny, nstates, nstates))
             self.apes = np.zeros((nx, ny, nstates))
-            
+
             for i in range(nx):
                 for j in range(ny):
-    
+
                     w, u = sort(*scipy.linalg.eigh(v[i, j, :, :]))
-    
+
                     #print(np.dot(U.conj().T, Vmat.dot(U)))
-                    self.apes[i, j] = w 
-                    
+                    self.apes[i, j] = w
+
                     V = np.diagflat(np.exp(- 1j * w * dt))
                     V2 = np.diagflat(np.exp(- 1j * w * dt2))
-    
+
                     self.exp_V[i, j, :,:] = u.dot(V.dot(dagger(u)))
                     self.exp_V_half[i, j, :,:] = u.dot(V2.dot(dagger(u)))
-                    
+
                     self.d2a[i, j] = u
 
         return
@@ -639,53 +639,53 @@ class SPO2:
 
         """
         if representation == 'diabatic':
-            
+
             if isinstance(psi, np.ndarray):
                 P = np.zeros(self.ns)
                 for j in range(self.ns):
                     P[j] = np.linalg.norm(psi[:, :, j])**2 * self.dx * self.dy
-    
+
                 assert(np.close(np.sum(P), 1))
-    
+
             elif isinstance(psi, list):
-    
+
                 N = len(psi)
                 P = np.zeros((N, self.nstates))
                 for k in range(N):
                     P[k, :] = [np.linalg.norm(psi[k][:, :, j])**2 * self.dx * self.dy \
                                for j in range(self.nstates)]
-        
+
         elif representation == 'adiabatic':
-            
+
             assert(self.d2a is not None)
-            
+
             if isinstance(psi, np.ndarray):
-                
+
                 psi = np.einsum('ijab, ijb -> ija', self.d2a, psi)
-                
+
                 P = np.zeros(self.ns)
                 for j in range(self.ns):
                     P[j] = np.linalg.norm(psi[:, :, j])**2 * self.dx * self.dy
-    
+
                 assert(np.close(np.sum(P), 1))
-    
+
             elif isinstance(psi, list):
-                
+
                 psi = [np.einsum('ijab, ijb -> ija', self.d2a, phi) \
                        for phi in psi]
-    
+
                 N = len(psi)
                 P = np.zeros((N, self.nstates))
                 for k in range(N):
                     P[k, :] = [np.linalg.norm(psi[k][:, :, j])**2 * self.dx * self.dy \
                                for j in range(self.nstates)]
-            
-        
+
+
         else:
             raise ValueError('Representation = {}, which can only be \
                              diabatic or adiabatic'.format(representation))
-    
-        
+
+
         return P
 
 
@@ -702,10 +702,10 @@ class SPO2:
             return np.einsum('ijab, ijb -> ija', self.exp_V_half, psi) # evolve V half step
 
         r = ResultSPO2(dt=dt, psi0=psi0, Nt=nt, t0=t0, nout=nout)
-        
+
         r.x = self.x
         r.y = self.y
-        
+
         psilist = [psi0]
 
         t = t0
@@ -756,7 +756,7 @@ class SPO2:
 
         r.psilist = psilist
         return r
-    
+
     def rdm_el(self, psi):
         """
         Compute the reduced electronic density matrix
@@ -772,27 +772,27 @@ class SPO2:
             DESCRIPTION.
 
         """
-        nstates = self.nstates 
-        
+        nstates = self.nstates
+
         if isinstance(psi, np.ndarray):
-            
+
             rho = np.zeros((nstates, nstates), dtype=complex)
-            
+
             for i in range(self.nstates):
                 for j in range(i, self.nstates):
                     rho[i, j] = np.sum(np.multiply(np.conj(psi[:, :, i]), psi[:, :, j]))*self.dx*self.dy
                     if i != j:
                         rho[j, i] = rho[i, j].conj()
-                        
+
         elif isinstance(psi, list):
-             
+
             rho = []
             for p in psi:
                 tmp = np.einsum('ija, ijb -> ab', p.conj(), p) * self.dx * self.dy
                 rho.append(tmp.copy())
-             
+
         return rho
-    
+
     def current_density(self, psi, state_id=0):
         """
         Compute the velocity field of the vibrational flow
@@ -810,21 +810,21 @@ class SPO2:
 
         """
         x, y = self.x, self.y
-        
+
         chi  = psi[:, :, state_id]
         rx, ry = np.gradient(np.log(np.abs(chi)), self.dx, self.dy)
         px, py = np.gradient(np.angle(chi), self.dx, self.dy, edge_order=2)
-        
-        
+
+
         fig, ax = plt.subplots(ncols=1)
         ax.contourf(x, y, np.abs(chi))
         ax.quiver(self.x, self.y, rx, ry, transpose=True)
         # ax1.quiver(self.x, self.y, rx, ry)
-        
-        
+
+
         # divergence of current
         div = divergence([rx, ry], [self.dx, self.dy])
-        
+
         fig, ax = plt.subplots()
         ax.imshow(div)
         return [px, py], [rx, ry]
@@ -915,17 +915,17 @@ class SPO2:
             fig.savefig('psi'+str(i)+'.pdf')
         return ax0, ax1
 
-    
+
 
 
 class SPO2NH(SPO2):
-    
+
     def __init__(self, x, y, *args, **kwargs):
         self.right_eigenstates = None
         super().__init__(x, y, *args, **kwargs)
 
 
-    
+
     def build(self, dt):
         nx = self.nx
         ny = self.ny
@@ -936,11 +936,11 @@ class SPO2NH(SPO2):
 
         self.kx = 2. * np.pi * fftfreq(nx, dx)
         self.ky = 2. * np.pi * fftfreq(ny, dy)
-        
-        v = self.v 
-        
+
+        v = self.v
+
         dt2 = 0.5 * dt
-        
+
         if self.coords == 'linear':
 
             mx, my = self.masses
@@ -961,58 +961,58 @@ class SPO2NH(SPO2):
 
             self.exp_Ky = np.exp(-1j * np.outer(Iinv, ky**2/2.) * dt)
 
-        
+
         self.right_eigenstates = np.zeros((nx, ny, nstates, nstates), dtype=complex)
         self.ovlp_rr = np.zeros((nx, ny, nstates, nstates), dtype=complex)
-        
+
         self.exp_V = np.zeros(v.shape, dtype=complex)
         self.exp_V_half = np.zeros(v.shape, dtype=complex)
-        
+
         # complex potential
         for i in range(nx):
             for j in range(ny):
-                
+
                 _v = v[i, j]
-                
+
                 # w, ul, ur = scipy.linalg.eig(_v, left=True, right=True)
                 w, ur, ul = eig(_v)
-                
+
                 self.right_eigenstates[i,j] = ur
-                
+
                 self.ovlp_rr[i,j] = dag(ur) @ ur
-                
+
                 V = np.diagflat(np.exp(- 1j * w * dt))
                 V2 = np.diagflat(np.exp(- 1j * w * dt2))
 
                 self.exp_V[i, j, :,:] = ur @ V @ ul
                 self.exp_V_half[i, j, :,:] = ur @ V2 @ ul
-                
+
 
         return
-    
+
     def position(self, psilist, plot=False):
-        
-        x = self.x 
+
+        x = self.x
         y = self.y
         dx = interval(x)
         dy = interval(y)
-        
+
         S = self.ovlp_rr
-        
+
         xAve = [np.einsum('ijm, i, ijmn, ijn ->', psi.conj(), x, S, psi) * dx*dy for psi in psilist]
         yAve = [np.einsum('ijn, j, ijmn, ijn ->', psi.conj(), y, S, psi) * dx*dy for psi in psilist]
 
-        
+
         if plot:
             fig, ax = plt.subplots()
             ax.plot(xAve)
             ax.plot(yAve)
-        
+
         self.xAve = [xAve, yAve]
         np.savez('xAve', xAve, yAve)
-        
+
         return xAve, yAve
-    
+
     def run(self, psi0, e_ops=[], dt=0.01, nt=1, t0=0., nout=1, return_states=True):
 
         print('Building the propagators ...')
@@ -1026,7 +1026,7 @@ class SPO2NH(SPO2):
             return np.einsum('ijab, ijb -> ija', self.exp_V_half, psi) # evolve V half step
 
         r = ResultSPO2(dt=dt, psi0=psi0, Nt=nt, t0=t0, nout=nout)
-        
+
         r.x = self.x
         r.y = self.y
         r.psilist = [psi0]
@@ -1184,7 +1184,7 @@ class SPO3():
         """
 
         nx = self.nx
-        ny = self.ny 
+        ny = self.ny
         nz = self.nz
         ns = self.nstates
 
@@ -1208,7 +1208,7 @@ class SPO3():
         #     for n in range(self.ns):
         #         v[:, :, n, n] = -1j * eta * (self.X - 9.)**2
         pass
-    
+
     def build(self, dt, inertia=None):
         """
         Setup the propagators appearing in the split-operator method.
@@ -1259,8 +1259,8 @@ class SPO3():
             Kx, Ky, Kz = meshgrid(self.kx, self.ky, self.kz)
 
             self.exp_K = np.exp(-1j * (Kx**2/2./mx + Ky**2/2./my + Kz**2/2./mz) * dt)
-            
-            
+
+
         elif self.coords == 'jacobi':
 
             # self.exp_K = np.zeros((nx, ny, nx, ny))
@@ -1292,7 +1292,7 @@ class SPO3():
         self.exp_V = np.zeros(v.shape, dtype=complex)
         self.exp_V_half = np.zeros(v.shape, dtype=complex)
         # self.apes = np.zeros((nx, ny))
-        
+
         if self.abc:
             eig = scipy.linalg.eig
         else:
@@ -1303,10 +1303,10 @@ class SPO3():
                 for k in range(nz):
 
                     w, u = eig(v[i, j, k, :, :])
-        
+
                     V = np.diagflat(np.exp(- 1j * w * dt))
                     V2 = np.diagflat(np.exp(- 1j * w * dt2))
-    
+
                     self.exp_V[i, j, k, :,:] = u.dot(V.dot(dagger(u)))
                     self.exp_V_half[i, j, k, :,:] = u.dot(V2.dot(dagger(u)))
 
@@ -1389,7 +1389,7 @@ class SPO3():
 
             for i in range(nt//nout):
                 for n in range(nout):
-                    
+
                     t += dt
 
                     psi = KEO(psi)
@@ -1419,7 +1419,7 @@ class SPO3():
         # psik = np.zeros(psi.shape, dtype=complex)
         # for j in range(ns):
         #     psik[:,:,j] = fft2(psi[:,:,j])
-        
+
         psik = np.fft.fftn(psi, axes=(0,1, 2))
 
         kpsi = np.einsum('ijk, ijka -> ijka', self.exp_K, psik)
@@ -1428,7 +1428,7 @@ class SPO3():
         # for j in range(ns):
         #     out[:, :, j] = ifft2(kpsi[:, :, j])
         psi = np.fft.ifftn(kpsi, axes=(0,1, 2))
-        
+
         return psi
 
     def _KEO_jacobi(self, psi):
@@ -1489,9 +1489,9 @@ class SPO3():
         if not isinstance(psilist, list): psilist = [psilist]
 
         X, Y = np.meshgrid(self.x, self.y)
-        x, y = self.x, self.y 
-        
-        
+        x, y = self.x, self.y
+
+
         for i, psi in enumerate(psilist):
             fig, (ax0, ax1) = plt.subplots(nrows=2, sharey=True)
 
@@ -2009,20 +2009,20 @@ if __name__ == '__main__':
     ky = 2. * np.pi * fftfreq(ny, dy)
 
     def diabatic_potential_energy_matrix(x, y):
-        
+
         X, Y = np.meshgrid(x, y)
-        
+
         v = np.zeros((len(x), len(y), 2, 2))
-        
+
         v[:, :, 0, 0] = 0.5 * ((X+1)**2 + Y**2)
         v[:, :, 1, 1] = 0.5 * ((X-1)**2 + Y**2) + 1
         v[:, :, 0, 1] = Y * 0.1
         v[:, :, 1, 0] = Y * 0.1
-        
+
         return v
 
     v = diabatic_potential_energy_matrix(x, y)
-        
+
 
     # specify constants
     mass = [1.0, 1.0]  # particle mass
@@ -2061,7 +2061,7 @@ if __name__ == '__main__':
     # G = np.zeros((nx, ny, ndim, ndim))
     # G[:,:,0, 0] = G[:,:,1, 1] = 1.
 
-    
+
     # extent=[xmin, xmax, ymin, ymax]
 
     # psi1 = adiabatic_2d(x, y, psi0, v, dt=dt, Nt=num_steps, coords='curvilinear',G=G)
@@ -2070,7 +2070,7 @@ if __name__ == '__main__':
     sol.v = v
 
     r = sol.run(psi0=psi0, dt=0.5, nt=200)
-    
+
     # rho = np.zeros((nstates, nstates, len(r.times)))
 
     # sol.current_density(r.psilist[-1])
@@ -2078,11 +2078,11 @@ if __name__ == '__main__':
 
     # for i in range(len(r.times)):
     #     rho[:, :, i] = sol.rdm_el(r.psilist[i])
-    
+
     sol.rdm_el(r.psilist)
     P = sol.population(r.psilist, representation='diabatic')
 
-    
+
     # p0, p1 = r.get_population()
     fig, ax = plt.subplots()
     ax.plot(r.times, P[:, 0])
@@ -2090,16 +2090,16 @@ if __name__ == '__main__':
     ax.legend()
 
     # r.position()
-    
+
     # for j in range(4):
     #     ax.contourf(x, y, np.abs(r.psilist[j][:, :, 1]).T, cmap='viridis')
-        
+
     # for psi in r.psilist:
-    
-    
-    
-        
-    
+
+
+
+
+
 
 
     # psi2 = adiabatic_2d(x, y, psi0, v, mass=mass, dt=dt, Nt=num_steps)

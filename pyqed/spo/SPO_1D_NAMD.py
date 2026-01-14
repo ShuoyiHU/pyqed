@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-General Numerical Solver for 1D Non-adiabatic dynamics with N electronic states
+General Numerical Solver for 1D Non-adiabatic dynamics for diabatic representation
 
 Created on Tue Oct 10 11:14:55 2017
 
