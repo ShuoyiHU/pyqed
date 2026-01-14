@@ -5,7 +5,7 @@ Created on Sun Oct  6 16:41:46 2024
 
 #####################################################
 
-#  main DMRG module using MPS/MPO representations
+main DMRG module using MPS/MPO representations
 
 ground state optimization
 
@@ -301,8 +301,171 @@ class MPS:
 
     def compress(self, chi_max):
         return MPS(compress(self.factors, chi_max)[0])
+    
+    def calc_1site_rdm(self, idx=None):
+        """
+        Calculate 1-site reduced density matrix (Corrected for d, L, R layout)
+        """
+        import numpy as np
 
+        if idx is None:
+            idx = list(range(self.L))
+        elif isinstance(idx, int):
+            idx = [idx]
+        elif isinstance(idx, (list, tuple)):
+            idx = list(idx)
+        else:
+            raise ValueError("idx must be None, int, list, or tuple")
 
+        # 1. Build Left Environments (L_env[i] is contraction of 0...i-1)
+        # L_env[i] shape: (chi_bra, chi_ket)
+        L_env = [np.array([[1.0]])]
+        curr_L = L_env[0]
+        
+        for i in range(self.L - 1):
+            # B[i] shape: (d, chi_L, chi_R)
+            # Contract: L(bra, ket_L) * B(d, ket_L, ket_R) -> Temp(bra, d, ket_R)
+            # Axes: L.axis1 (ket_L) with B.axis1 (chi_L)
+            temp = np.tensordot(curr_L, self.Bs[i], axes=(1, 1))
+            
+            # Contract: Temp(bra_L, d, ket_R) * B*(d, bra_L, bra_R) -> L_next(ket_R, bra_R)
+            # Axes: Temp.axis0 (bra_L) with B*.axis1 (chi_L)
+            #       Temp.axis1 (d)     with B*.axis0 (d)
+            curr_L = np.tensordot(temp, self.Bs[i].conj(), axes=([0, 1], [1, 0]))
+            
+            # Transpose to maintain (bra, ket) -> (bra_R, ket_R)
+            curr_L = curr_L.T 
+            L_env.append(curr_L)
+
+        # 2. Build Right Environments (R_env[i] is contraction of i+1...L-1)
+        R_env = [None] * self.L
+        curr_R = np.array([[1.0]])
+        R_env[-1] = curr_R
+        
+        for i in range(self.L - 1, 0, -1):
+            # B[i] shape: (d, chi_L, chi_R)
+            # Contract: B(d, chi_L, ket_R) * R(bra_R, ket_R) -> Temp(d, chi_L, bra_R)
+            # Axes: B.axis2 (chi_R) with R.axis1 (ket_R)
+            temp = np.tensordot(self.Bs[i], curr_R, axes=(2, 1))
+            
+            # Contract: Temp(d, ket_L, bra_R) * B*(d, bra_L, bra_R) -> R_prev(ket_L, bra_L)
+            # Axes: Temp.axis0 (d)     with B*.axis0 (d)
+            #       Temp.axis2 (bra_R) with B*.axis2 (chi_R)
+            curr_R = np.tensordot(temp, self.Bs[i].conj(), axes=([0, 2], [0, 2]))
+            
+            # Transpose to maintain (bra, ket) -> (bra_L, ket_L)
+            curr_R = curr_R.T
+            R_env[i-1] = curr_R
+
+        # 3. Calculate RDM
+        rdm = {}
+        for i in idx:
+            # 1. L(bra_L, ket_L) * B(d, ket_L, ket_R) -> T1(bra_L, d, ket_R)
+            t1 = np.tensordot(L_env[i], self.Bs[i], axes=(1, 1))
+            
+            # 2. T1(bra_L, d, ket_R) * R(bra_R, ket_R) -> T2(bra_L, d, bra_R)
+            t2 = np.tensordot(t1, R_env[i], axes=(2, 1))
+            
+            # 3. T2(bra_L, p, bra_R) * B*(p', bra_L, bra_R) -> rho(p, p')
+            # Axes: T2.axis0 (bra_L) with B*.axis1 (chi_L)
+            #       T2.axis2 (bra_R) with B*.axis2 (chi_R)
+            rho = np.tensordot(t2, self.Bs[i].conj(), axes=([0, 2], [1, 2]))
+            
+            rdm[i] = rho
+
+        return rdm
+
+    def calc_2site_rdm(self, idx_pairs=None):
+        """ 
+        Calculate 2-site reduced density matrix (Corrected for d, L, R layout)
+        """
+        
+        # 1. Rebuild Environments
+        L_env = [np.array([[1.0]])]
+        curr_L = L_env[0]
+        for i in range(self.L - 1):
+            temp = np.tensordot(curr_L, self.Bs[i], axes=(1, 1))
+            curr_L = np.tensordot(temp, self.Bs[i].conj(), axes=([0, 1], [1, 0])).T
+            L_env.append(curr_L)
+            
+        R_env = [None] * self.L
+        curr_R = np.array([[1.0]])
+        R_env[-1] = curr_R
+        for i in range(self.L - 1, 0, -1):
+            temp = np.tensordot(self.Bs[i], curr_R, axes=(2, 1))
+            curr_R = np.tensordot(temp, self.Bs[i].conj(), axes=([0, 2], [0, 2])).T
+            R_env[i-1] = curr_R
+
+        # 2. Pre-calculate "Left Components" (Site i + Left Env)
+        # Component shape: (p, p', bra_R, ket_R)
+        L_components = []
+        for i in range(self.L):
+            # L(bra, ket) * B(p, ket, r_ket) -> T(bra, p, r_ket)
+            t = np.tensordot(L_env[i], self.Bs[i], axes=(1, 1))
+            
+            # T(bra, p, r_ket) * B*(p', bra, r_bra) -> Comp(p, r_ket, p', r_bra)
+            comp = np.tensordot(t, self.Bs[i].conj(), axes=(0, 1))
+            
+            # Reorder to (p, p', r_bra, r_ket)
+            # Current axes: 0:p, 1:r_ket, 2:p', 3:r_bra
+            comp = comp.transpose(0, 2, 3, 1) 
+            L_components.append(comp)
+
+        # 3. Pre-calculate "Right Components" (Site j + Right Env)
+        # Component shape: (p, p', bra_L, ket_L)
+        R_components = []
+        for i in range(self.L):
+            # B(p, l_ket, r_ket) * R(bra, r_ket) -> T(p, l_ket, bra)
+            t = np.tensordot(self.Bs[i], R_env[i], axes=(2, 1))
+            
+            # T(p, l_ket, bra) * B*(p', l_bra, bra) -> Comp(p, l_ket, p', l_bra)
+            comp = np.tensordot(t, self.Bs[i].conj(), axes=(2, 2))
+            
+            # Reorder to (p, p', l_bra, l_ket)
+            # Current axes: 0:p, 1:l_ket, 2:p', 3:l_bra
+            comp = comp.transpose(0, 2, 3, 1)
+            R_components.append(comp)
+
+        rdm = {}
+        
+        # 4. Sweep
+        for i in range(self.L):
+            tensor = L_components[i] # (p_i, p'_i, r_bra, r_ket)
+            
+            for j in range(i + 1, self.L):
+                if j > i + 1:
+                    k = j - 1
+                    # Propagate through k
+                    # Tensor: (..., l_bra, l_ket)
+                    # B[k]: (p, l_ket, r_ket)
+                    
+                    # Contract l_ket(3) with B_l_ket(1) -> (..., l_bra, p, r_ket)
+                    tensor = np.tensordot(tensor, self.Bs[k], axes=(3, 1))
+                    
+                    # Contract l_bra(2) with B*_l_bra(1) AND p(3) with B*_p(0)
+                    tensor = np.tensordot(tensor, self.Bs[k].conj(), axes=([2, 3], [1, 0]))
+                    
+                    # Output: (p_i, p'_i, r_ket, r_bra) -> Swap to (p_i, p'_i, r_bra, r_ket)
+                    tensor = tensor.transpose(0, 1, 3, 2)
+
+                # Contract with Right Component at j
+                # Tensor: (p_i, p'_i, l_bra, l_ket)
+                # R_comp: (p_j, p'_j, l_bra, l_ket)
+                right_part = R_components[j]
+                
+                # Contract l_bra(2)-l_bra(2) and l_ket(3)-l_ket(3)
+                rho_ij = np.tensordot(tensor, right_part, axes=([2, 3], [2, 3]))
+                
+                # Result: (p_i, p'_i, p_j, p'_j) -> (p_i, p_j, p'_i, p'_j)
+                rho_ij = rho_ij.transpose(0, 2, 1, 3)
+                
+                d_i = rho_ij.shape[0]
+                d_j = rho_ij.shape[1]
+                rho_flat = rho_ij.reshape(d_i*d_j, d_i*d_j)
+                
+                rdm[(i, j)] = rho_flat
+
+        return rdm
 
 
 class Site(object):
@@ -443,20 +606,20 @@ class Block(Site):
            [ 0.,  1.]])}
     """
     def __init__(self, dim):
-        	"""Creates an empty block of dimension dim.
+        """Creates an empty block of dimension dim.
 
-        	Raises
-        	------
-        	DMRGException
-        	     if `dim` < 1.
+        Raises
+        ------
+        DMRGException
+                if `dim` < 1.
 
-        	Notes
-        	-----
-        	Postcond : The identity operator (ones in the diagonal, zeros elsewhere)
-        	is added to the `self.operators` dictionary. A full of zeros block
-        	Hamiltonian operator is added to the list.
-        	"""
-        	super(Block, self).__init__(dim)
+        Notes
+        -----
+        Postcond : The identity operator (ones in the diagonal, zeros elsewhere)
+        is added to the `self.operators` dictionary. A full of zeros block
+        Hamiltonian operator is added to the list.
+        """
+        super(Block, self).__init__(dim)
 
 class PauliSite(Site):
     """
@@ -747,7 +910,7 @@ class MPO:
         pass
 
 
-# A @ B
+# apply_mpo_to_mps = apply_mpo
 
 def apply_mpo(w_list, B_list, chi_max):
     """
@@ -1091,7 +1254,7 @@ def coarse_grain_MPS(A,B):
     """
     # 2-1 coarse-graining of two-site MPS into one site
     #   |     |  |
-    #  -R- = -A--B-
+      -R- <= -A--B-
 
     Parameters
     ----------
@@ -1179,9 +1342,9 @@ class HamiltonianMultiply(sparse.linalg.LinearOperator):
         # so we split it into individual summations in the optimal order
         #R = np.einsum("aij,sik,abst,bkl->tjl",self.E,np.reshape(A, self.req_shape),
         #              self.W,self.F, optimize=True)
-        R = np.einsum("aij,sik->ajsk", self.E, np.reshape(A, self.req_shape))
-        R = np.einsum("ajsk,abst->bjtk", R, self.W)
-        R = np.einsum("bjtk,bkl->tjl", R, self.F)
+        R = np.einsum("aij,sik->ajsk", self.E, np.reshape(A, self.req_shape), optimize=True)
+        R = np.einsum("ajsk,abst->bjtk", R, self.W, optimize=True)
+        R = np.einsum("bjtk,bkl->tjl", R, self.F, optimize=True)
         return np.reshape(R, -1)
 
 ## optimize a single site given the MPO matrix W, and tensors E,F
@@ -1274,7 +1437,7 @@ def two_site_dmrg(MPS, MPO, m, sweeps=50, conv=1e-6):
     F = construct_F(MPS, MPO, MPS)
     F.pop()
 
-    Eold = expect(MPS, MPO, MPS)
+    Eold = expect_mps(MPS, MPO, MPS)
 
     converged = False
 
@@ -1395,6 +1558,7 @@ class DMRG:
         self.e_tot = None
 
         self.ground_state = None
+        self.ground_state_raw = None
 
 
     def run(self):
@@ -1407,7 +1571,8 @@ class DMRG:
             fDMRG_1site_GS_OBC(self.H, self.D, self.nsweeps)
 
         else:
-            self.e_tot, self.ground_state = two_site_dmrg(self.init_guess, self.H, self.D, self.nsweeps)
+            self.e_tot, self.ground_state_raw = two_site_dmrg(self.init_guess, self.H, self.D, self.nsweeps)
+            self.ground_state = MPS(self.ground_state_raw)
 
         return self
 
@@ -1431,12 +1596,32 @@ class DMRG:
 
         return [expect(psi, e_op) for e_op in e_ops]
 
-    def make_rdm(self):
-        # \gamma_{ij} = < 0| c_j^\dagger c_i | 0 >
-        pass
+    # def make_rdm(self):
+    #     # \gamma_{ij} = < 0| c_j^\dagger c_i | 0 >
+    #     pass
 
-    def make_rdm2(self):
-        pass
+    # def make_rdm2(self):
+    #     pass
+
+    def make_rdm(self, idx=None):
+        """
+        Calculate 1-site reduced density matrix of the ground state.
+        Wrapper for MPS.calc_1site_rdm
+        """
+        if self.ground_state is None:
+            raise ValueError("Run DMRG first to generate a ground state.")
+            
+        return self.ground_state.calc_1site_rdm(idx)
+
+    def make_rdm2(self, idx_pairs=None):
+        """
+        Calculate 2-site reduced density matrix of the ground state.
+        Wrapper for MPS.calc_2site_rdm
+        """
+        if self.ground_state is None:
+            raise ValueError("Run DMRG first to generate a ground state.")
+            
+        return self.ground_state.calc_2site_rdm(idx_pairs)
 
 def autoMPO(h1e, eri):
     """
@@ -1699,6 +1884,7 @@ if __name__ == '__main__':
     dmrg.init_guess = MPS
     dmrg.run()
 
+    
 
 
 

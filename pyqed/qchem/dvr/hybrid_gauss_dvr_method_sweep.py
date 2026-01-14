@@ -752,363 +752,370 @@ def sweep_optimize_driver(
             
     return d_current
 
-# if __name__ == "__main__":
-#     stime = time.time()
+if __name__ == "__main__":
+    stime = time.time()
 
-#     charges = np.array([1.0, 1.0, 1.0, 1.0], float)
-#     # charges = np.array([1.0, 2.0], float)
-#     coords  = np.array([
-#     #     [0.0, 0.0,  0.7316 ],
-#     #     [0.0, 0.0,  -0.7316],
-#         [0.0, 0.0,  3.6 ],
-#         [0.0, 0.0,  0.91],
-#         [0.0, 0.0, -3.6 ],
-#         [0.0, 0.0, -0.91],
-#     #     # [0.0, 0.7,  0.7 ],
-#     #     # [0.0, -0.7,  0.7],
-#     #     # [0.0, 0.7, -0.7 ],
-#     #     # [0.0, -0.7, -0.7],
-#     ], float)
-#     # coords = np.linspace(-49, 49, 20, dtype=float)
-#     # coords = np.linspace(-19, 19, 20, dtype=float)
-#     # charges = np.ones_like(coords, dtype=float)
-#     # coords = np.stack([np.zeros_like(coords), np.zeros_like(coords), coords], axis=1)
-#     mol = Molecule(charges, coords, nelec=4)
-#     NELEC = mol.nelec
-#     Enuc  = mol.nuclear_repulsion_energy()
-#     print("=== Newton Sweep test (s+p+d 2D basis) ===")
-#     print(f"nelec = {NELEC}")
-#     print(f"Enuc  = {Enuc:.10f} Eh")
-
-#     # STO-6G like exponents (H)
-#     s_exps = np.array([18.73113696, 2.825394365, 0.6401216923, 0.1612777588], float)
-#     p_exps = np.array([], float)  
-#     d_exps = np.array([], float) 
-
-#     # ------------------------
-#     #  DVR / slice parameters
-#     # ------------------------
-#     Nz = 511
-#     M  = 1
-#     LZ = 12.5
-
-#     # -------------------------
-#     #  Newton / SCF parameters
-#     # -------------------------
-#     ALT_CYCLES              = 20
-#     SWEEP_ITERATIONS = 10    
-#     TRUST_STEP       = 1.0    # Full Newton step
-#     NEWTON_RIDGE     = 0.5   # Small ridge for stability
-#     TRUST_RADIUS     = 2    # Allow larger steps!
-#     SCF_MONO_TOL            = 1e-8
-#     VERBOSE                 = True
-#     DVR_METHOD              = 'sine'
-
-#     batch_folder = f"results_sweep_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-#     if not os.path.exists(batch_folder):
-#         os.makedirs(batch_folder)
-
-#     # 1. Initial Build
-#     print(f"\n==== Sweep Strategy: Nz={Nz}, M={M}, Lz={LZ} ====")
-#     Hcore, z, dz, E_slices, C_list, _ERI_J0, _ERI_K0, shapes = build_method2(
-#         mol, Lz=LZ, Nz=Nz, M=M,
-#         s_exps=s_exps, p_exps=p_exps, d_exps=d_exps, 
-#         max_offset=None, auto_cut=False, verbose=VERBOSE, dvr_method=DVR_METHOD,
-#     )
-
-#     nuclei = mol.to_tuples()
-#     alphas, centers, labels = make_xy_spd_primitive_basis(
-#         nuclei, exps_s=s_exps, exps_p=p_exps, exps_d=d_exps,
-#     )
-#     S_prim = overlap_2d_cartesian(alphas, centers, labels)
-#     T_prim = kinetic_2d_cartesian(alphas, centers, labels)
-#     n_ao = len(alphas)
-    
-#     # DVR grid for helper
-#     z_chk, Kz, dz_chk = sine_dvr_1d(-LZ, LZ, Nz)
-
-#     # Precompute ERI kernels
-#     print("[Main] Precomputing ERI kernels...")
-#     K_h = []
-#     Kx_h = []
-#     for h in range(Nz):
-#         dz_val = h * dz
-#         eri_tensor = eri_2d_cartesian_with_p(alphas, centers, labels, delta_z=dz_val)
-#         K_mat = eri_tensor.reshape(n_ao * n_ao, n_ao * n_ao)
-#         K_h.append(K_mat)
-#         eri_perm = eri_tensor.transpose(0, 2, 1, 3)
-#         Kx_mat = eri_perm.reshape(n_ao * n_ao, n_ao * n_ao)
-#         Kx_h.append(Kx_mat)
-
-#     # Initial SCF
-#     ERI_J, ERI_K = eri_JK_from_kernels_M1(C_list, K_h, Kx_h)
-#     Etot, eps, Cmo, P, info = scf_rhf_method2(
-#         Hcore, ERI_J, ERI_K, Nz, M,
-#         nelec=NELEC, Enuc=Enuc,
-#         conv=1e-6, max_iter=100, verbose=VERBOSE,
-#     )
-#     print(f"[SCF 0] E = {Etot:.12f} Eh  (iters={info['iter']})")
-#     E_history = [Etot]
-
-#     # Setup Sweep Helper
-#     h1_nm = build_h1_nm(
-#         Kz, S_prim, T_prim, z,
-#         lambda zz: V_en_sp_total_at_z(alphas, centers, labels, nuclei, zz),
-#     )
-#     ERIop = CollocatedERIOp.from_kernels(N=S_prim.shape[0], Nz=Nz, dz=dz, K_h=K_h, Kx_h=Kx_h)
-#     nh_sweep = SweepNewtonHelper(h1_nm, S_prim, ERIop) # Use subclass
-    
-#     # Prepare stack
-#     d_stack = np.vstack([C_list[n][:, 0].copy() for n in range(Nz)])
-#     # Ensure normalization
-#     for n in range(Nz):
-#         dn = d_stack[n]
-#         d_stack[n] = dn / np.sqrt(float(dn.T @ (S_prim @ dn)))
-
-#     # Main Cycle Loop
-#     for cyc in range(1, ALT_CYCLES + 1):
-#         print(f"\n--- Alternation Cycle {cyc} ---")
-        
-#         # 1. Extract Density Slice
-#         P_slice = P.reshape(Nz, 1, Nz, 1)[:, 0, :, 0].copy()
-        
-#         # 2. Perform Sweep Optimization
-#         # This replaces the global active set selection and big KKT solve
-#         t_sweep = time.time()
-#         d_stack = sweep_optimize_driver(
-#             nh_sweep, d_stack, P_slice, S_prim,
-#             n_cycles=SWEEP_ITERATIONS,
-#             ridge=NEWTON_RIDGE,
-#             trust_step=TRUST_STEP,
-#             trust_radius=TRUST_RADIUS,
-#             verbose=VERBOSE
-#         )
-#         print(f"   Sweep finished in {time.time() - t_sweep:.4f}s")
-        
-#         # 3. Update Basis & Hamiltonian
-#         C_list = [d_stack[n].reshape(-1, 1) for n in range(Nz)]
-        
-#         # 4. Rebuild Integrals (O(Nz^2))
-#         Hcore = rebuild_Hcore_from_d(
-#             d_stack, z, Kz, S_prim, T_prim,
-#             alphas, centers, labels, nuclei,
-#         )
-#         ERI_J, ERI_K = eri_JK_from_kernels_M1(C_list, K_h, Kx_h)
-        
-#         # 5. SCF Re-optimization
-#         Etot, eps, Cmo, P, info = scf_rhf_method2(
-#             Hcore, ERI_J, ERI_K, Nz, M,
-#             nelec=NELEC, Enuc=Enuc,
-#             conv=1e-7, max_iter=100, verbose=False, # less verbose inside loop
-#         )
-        
-#         E_history.append(Etot)
-#         print(f"   [SCF] E = {Etot:.12f} Eh  ΔE={Etot - E_history[-2]:+.3e}")
-
-#         # Save snapshot
-#         save_scf_snapshot(
-#             run_folder=batch_folder, run_label="sweep",
-#             Nz=Nz, M=M, cycle=cyc,
-#             Etot=Etot, C_list=C_list, Cmo=Cmo, P=P, eps=eps, info=info,
-#             alphas=alphas, centers=centers, labels=labels, z_grid=z, Lz=LZ
-#         )
-        
-#         if abs(Etot - E_history[-2]) < 1e-7:
-#             print("Converged.")
-#             break
-
-#     print(f"\nFinal Energy: {E_history[-1]:.12f} Eh")
-#     print(f"Total time: {time.time() - stime:.2f}s")
-# =============================================================================
-#  SCALING TEST BENCHMARK (Replace main block with this)
-# =============================================================================
-class InstrumentedSweepHelper(SweepNewtonHelper):
-    """
-    A subclass that adds timers to the critical steps of the Newton Sweep.
-    """
-    def __init__(self, h1_nm, S_prim, eri_op):
-        super().__init__(h1_nm, S_prim, eri_op)
-        self.t_build = 0.0
-        self.t_solve = 0.0
-        self.calls = 0
-
-    def kkt_step_slice(self, n, d_stack, P_slice, S_prim, ridge=0.0):
-        t0 = time.time()
-        
-        # --- TIMING SECTION: BUILD ---
-        # 1. Exact Gradient (O(Nz))
-        g_n_vec = self.get_gradient_slice_onthefly(n, d_stack, P_slice)
-        g_n = g_n_vec.reshape(-1, 1)
-        
-        # 2. Exact Diagonal Hessian (O(Nz))
-        H_nn = self.get_diagonal_hessian_block_sparse(n, d_stack, P_slice)
-        
-        self.t_build += (time.time() - t0)
-        
-        t1 = time.time()
-        # --- TIMING SECTION: SOLVE ---
-        if ridge > 0.0:
-            H_nn += ridge * np.eye(H_nn.shape[0])
-            
-        dn = d_stack[n].reshape(-1, 1)
-        s_vec = S_prim @ dn
-        
-        N = H_nn.shape[0]
-        KKT = np.zeros((N + 1, N + 1), dtype=float)
-        KKT[:N, :N] = H_nn
-        KKT[:N, N]  = s_vec.flatten()
-        KKT[N, :N]  = s_vec.flatten()
-        
-        rhs = np.zeros((N + 1, 1), dtype=float)
-        rhs[:N] = -g_n
-        
-        try:
-            sol = la.solve(KKT, rhs)
-            delta_d = sol[:N].flatten()
-            lam = sol[N]
-        except la.LinAlgError:
-            delta_d = -0.1 * g_n.flatten()
-            lam = 0.0
-            
-        self.t_solve += (time.time() - t1)
-        self.calls += 1
-            
-        return delta_d, lam, g_n_vec
-# Add this import at the top of your test block
-import pyqed.qchem.dvr.hybrid_gauss_dvr_integrals_extrapolate as hg_int
-
-def run_benchmark_case(Nz, basis_config):
-    """
-    Runs one specific case of (Nz, N_AO) for a few sweep cycles.
-    """
-    # === FIX: CLEAR GLOBAL CACHES ===
-    # This forces the code to rebuild splines for the new basis set size
-    hg_int._VEN_SPLINES = {}
-    hg_int._ERI_SPLINES = None
-    # ================================
-
-    # 1. Setup Molecule (Dummy H2-like system)
+    # charges = np.array([1.0, 1.0, 1.0, 1.0], float)
     charges = np.array([1.0, 1.0], float)
-    coords  = np.array([[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]], float)
+    # charges = np.array([1.0, 2.0], float)
+    coords  = np.array([
+        [0.0, 0.0,  0.7 ],
+        [0.0, 0.0,  -0.7],
+        # [0.0, 0.0,  3.6 ],
+        # [0.0, 0.0,  0.91],
+        # [0.0, 0.0, -3.6 ],
+        # [0.0, 0.0, -0.91],
+    #     # [0.0, 0.7,  0.7 ],
+    #     # [0.0, -0.7,  0.7],
+    #     # [0.0, 0.7, -0.7 ],
+    #     # [0.0, -0.7, -0.7],
+    ], float)
+    # coords = np.linspace(-49, 49, 20, dtype=float)
+    # coords = np.linspace(-19, 19, 20, dtype=float)
+    # charges = np.ones_like(coords, dtype=float)
+    # coords = np.stack([np.zeros_like(coords), np.zeros_like(coords), coords], axis=1)
     mol = Molecule(charges, coords, nelec=2)
-    
-    # 2. Basis Config
-    s_exps = basis_config['s']
-    p_exps = basis_config['p']
-    d_exps = basis_config['d']
-    
-    # 3. Build Integrals (Measure Setup Time)
-    t_setup_start = time.time()
-    
-    # Suppress verbose output during benchmark
-    # Note: This will trigger the [Tabulation] prints again, which is correct/expected.
-    Hcore, z, dz, E_slices, C_list, ERI_J, ERI_K, shapes = build_method2(
-        mol, Lz=10.0, Nz=Nz, M=1,
+    NELEC = mol.nelec
+    Enuc  = mol.nuclear_repulsion_energy()
+    print("=== Newton Sweep test (s+p+d 2D basis) ===")
+    print(f"nelec = {NELEC}")
+    print(f"Enuc  = {Enuc:.10f} Eh")
+
+    # STO-6G like exponents (H)
+    s_exps = np.array([18.73113696, 2.825394365, 0.6401216923, 0.1612777588], float)
+    p_exps = np.array([], float)  
+    d_exps = np.array([], float) 
+
+    # ------------------------
+    #  DVR / slice parameters
+    # ------------------------
+    Nz = 63
+    M  = 1
+    LZ = 8
+    # Nz = 511
+    # M  = 1
+    # LZ = 12.5
+
+    # -------------------------
+    #  Newton / SCF parameters
+    # -------------------------
+    ALT_CYCLES              = 20
+    SWEEP_ITERATIONS = 10    
+    TRUST_STEP       = 1.0    # Full Newton step
+    NEWTON_RIDGE     = 0.5   # Small ridge for stability
+    TRUST_RADIUS     = 2    # Allow larger steps!
+    SCF_MONO_TOL            = 1e-8
+    VERBOSE                 = True
+    DVR_METHOD              = 'sine'
+
+    batch_folder = f"results_sweep_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    if not os.path.exists(batch_folder):
+        os.makedirs(batch_folder)
+
+    # 1. Initial Build
+    print(f"\n==== Sweep Strategy: Nz={Nz}, M={M}, Lz={LZ} ====")
+    Hcore, z, dz, E_slices, C_list, _ERI_J0, _ERI_K0, shapes = build_method2(
+        mol, Lz=LZ, Nz=Nz, M=M,
         s_exps=s_exps, p_exps=p_exps, d_exps=d_exps, 
-        verbose=False, dvr_method='sine'
+        max_offset=None, auto_cut=False, verbose=VERBOSE, dvr_method=DVR_METHOD,
     )
-    
+
     nuclei = mol.to_tuples()
-    alphas, centers, labels = make_xy_spd_primitive_basis(nuclei, s_exps, p_exps, d_exps)
+    alphas, centers, labels = make_xy_spd_primitive_basis(
+        nuclei, exps_s=s_exps, exps_p=p_exps, exps_d=d_exps,
+    )
     S_prim = overlap_2d_cartesian(alphas, centers, labels)
     T_prim = kinetic_2d_cartesian(alphas, centers, labels)
-    N_AO = len(alphas)
+    # print(T_prim)
+    # import sys
+    # sys.exit()
+    n_ao = len(alphas)
     
-    # Precompute Kernels
+    # DVR grid for helper
+    z_chk, Kz, dz_chk = sine_dvr_1d(-LZ, LZ, Nz)
+
+    # Precompute ERI kernels
+    print("[Main] Precomputing ERI kernels...")
     K_h = []
     Kx_h = []
     for h in range(Nz):
         dz_val = h * dz
         eri_tensor = eri_2d_cartesian_with_p(alphas, centers, labels, delta_z=dz_val)
-        K_h.append(eri_tensor.reshape(N_AO**2, N_AO**2))
-        Kx_h.append(eri_tensor.transpose(0, 2, 1, 3).reshape(N_AO**2, N_AO**2))
-        
-    t_setup = time.time() - t_setup_start
+        K_mat = eri_tensor.reshape(n_ao * n_ao, n_ao * n_ao)
+        K_h.append(K_mat)
+        eri_perm = eri_tensor.transpose(0, 2, 1, 3)
+        Kx_mat = eri_perm.reshape(n_ao * n_ao, n_ao * n_ao)
+        Kx_h.append(Kx_mat)
 
-    # 4. Initial Guess (Quick)
-    d_stack = np.vstack([C_list[n][:, 0].copy() for n in range(Nz)])
-    P_slice = np.zeros((Nz, Nz))
-    np.fill_diagonal(P_slice, 1.0) # Simple guess
-
-    # 5. Setup Helper
-    h1_nm = build_h1_nm(np.eye(Nz), S_prim, T_prim, z, lambda zz: V_en_sp_total_at_z(alphas, centers, labels, nuclei, zz))
-    ERIop = CollocatedERIOp.from_kernels(N=N_AO, Nz=Nz, dz=dz, K_h=K_h, Kx_h=Kx_h)
-    
-    # USE INSTRUMENTED HELPER
-    nh_bench = InstrumentedSweepHelper(h1_nm, S_prim, ERIop)
-    
-    # 6. Run 1 Full Sweep (Optimization)
-    t_sweep_start = time.time()
-    
-    # We run 1 cycle of 'sweep_optimize_driver'
-    sweep_optimize_driver(
-        nh_bench, d_stack, P_slice, S_prim,
-        n_cycles=1, ridge=1e-4, trust_step=1.0, trust_radius=2.0, verbose=False
+    # Initial SCF
+    ERI_J, ERI_K = eri_JK_from_kernels_M1(C_list, K_h, Kx_h)
+    Etot, eps, Cmo, P, info = scf_rhf_method2(
+        Hcore, ERI_J, ERI_K, Nz, M,
+        nelec=NELEC, Enuc=Enuc,
+        conv=1e-6, max_iter=100, verbose=VERBOSE,
     )
-    
-    t_sweep_total = time.time() - t_sweep_start
-    
-    return {
-        "Nz": Nz,
-        "N_AO": N_AO,
-        "T_Setup": t_setup,
-        "T_TotalSweep": t_sweep_total,
-        "T_Build": nh_bench.t_build,
-        "T_Solve": nh_bench.t_solve,
-        "Calls": nh_bench.calls
-    }
-if __name__ == "__main__":
-    print(f"{'='*80}")
-    print(f"{'STRESS TEST: N_AO SCALING':^80}")
-    print(f"{'='*80}")
-    
-    # 1. Define larger basis sets to overcome Python overhead
-    # Molecule has 2 atoms. 
-    # N_AO calculation: 2 * (sum of shells)
-    
-    # Small: 2s -> N=4
-    config_small = {'s': [1.0, 0.5], 'p': [], 'd': []}
-    
-    # Medium: 2s + 1p -> 2*(2 + 2) = 8
-    config_med   = {'s': [10, 5, 1.0, 0.5], 'p': [2, 1.0], 'd': []} 
-    
-    # Large: 3s + 2p -> 2*(3 + 4) = 14
-    config_large = {'s': [20,18,16,14,12,10,5, 3.0, 1.0], 'p': [2.0, 1.0], 'd': []}
-    
-    # XL: 3s + 2p + 1d -> 2*(3 + 4 + 3) = 20
-    # Note: d-shell adds 3 functions (dx2, dy2, dxy) in this 2D code
-    config_xl    = {'s': [10., 3.0, 1.0], 'p': [2.0, 1.0], 'd': []}
+    print(f"[SCF 0] E = {Etot:.12f} Eh  (iters={info['iter']})")
+    E_history = [Etot]
 
-    # Fix Nz to a moderate value to keep total time reasonable
-    FIXED_NZ = 50 
+    # Setup Sweep Helper
+    h1_nm = build_h1_nm(
+        Kz, S_prim, T_prim, z,
+        lambda zz: V_en_sp_total_at_z(alphas, centers, labels, nuclei, zz),
+    )
+    ERIop = CollocatedERIOp.from_kernels(N=S_prim.shape[0], Nz=Nz, dz=dz, K_h=K_h, Kx_h=Kx_h)
+    nh_sweep = SweepNewtonHelper(h1_nm, S_prim, ERIop) # Use subclass
     
-    print(f"{'Nz':<6} | {'N_AO':<6} | {'Build(s)':<10} | {'Math(est)':<10} | {'Ratio':<8}")
-    print("-" * 80)
+    # Prepare stack
+    d_stack = np.vstack([C_list[n][:, 0].copy() for n in range(Nz)])
+    # Ensure normalization
+    for n in range(Nz):
+        dn = d_stack[n]
+        d_stack[n] = dn / np.sqrt(float(dn.T @ (S_prim @ dn)))
 
-    # Capture base time for ratio
-    base_time = None
-
-    for cfg, label in [(config_small, "Small"), (config_med, "Medium"), 
-                       (config_large, "Large"), (config_xl, "XL")]:
+    # Main Cycle Loop
+    for cyc in range(1, ALT_CYCLES + 1):
+        print(f"\n--- Alternation Cycle {cyc} ---")
         
-        # Run benchmark (reusing your existing function)
-        res = run_benchmark_case(FIXED_NZ, cfg)
+        # 1. Extract Density Slice
+        P_slice = P.reshape(Nz, 1, Nz, 1)[:, 0, :, 0].copy()
         
-        t_build = res['T_Build']
-        n_ao = res['N_AO']
+        # 2. Perform Sweep Optimization
+        # This replaces the global active set selection and big KKT solve
+        t_sweep = time.time()
+        d_stack = sweep_optimize_driver(
+            nh_sweep, d_stack, P_slice, S_prim,
+            n_cycles=SWEEP_ITERATIONS,
+            ridge=NEWTON_RIDGE,
+            trust_step=TRUST_STEP,
+            trust_radius=TRUST_RADIUS,
+            verbose=VERBOSE
+        )
+        print(f"   Sweep finished in {time.time() - t_sweep:.4f}s")
         
-        # Theoretical N^4 scaling relative to N=4
-        math_scaling = (n_ao / 4.0)**4
+        # 3. Update Basis & Hamiltonian
+        C_list = [d_stack[n].reshape(-1, 1) for n in range(Nz)]
         
-        if base_time is None:
-            base_time = t_build
-            ratio = 1.0
-        else:
-            ratio = t_build / base_time
+        # 4. Rebuild Integrals (O(Nz^2))
+        Hcore = rebuild_Hcore_from_d(
+            d_stack, z, Kz, S_prim, T_prim,
+            alphas, centers, labels, nuclei,
+        )
+        ERI_J, ERI_K = eri_JK_from_kernels_M1(C_list, K_h, Kx_h)
+        
+        # 5. SCF Re-optimization
+        Etot, eps, Cmo, P, info = scf_rhf_method2(
+            Hcore, ERI_J, ERI_K, Nz, M,
+            nelec=NELEC, Enuc=Enuc,
+            conv=1e-7, max_iter=100, verbose=False, # less verbose inside loop
+        )
+        
+        E_history.append(Etot)
+        print(f"   [SCF] E = {Etot:.12f} Eh  ΔE={Etot - E_history[-2]:+.3e}")
 
-        print(f"{FIXED_NZ:<6} | {n_ao:<6} | {t_build:<10.4f} | {math_scaling:<10.1f} | {ratio:<8.2f}x")
+        # Save snapshot
+        save_scf_snapshot(
+            run_folder=batch_folder, run_label="sweep",
+            Nz=Nz, M=M, cycle=cyc,
+            Etot=Etot, C_list=C_list, Cmo=Cmo, P=P, eps=eps, info=info,
+            alphas=alphas, centers=centers, labels=labels, z_grid=z, Lz=LZ
+        )
+        
+        if abs(Etot - E_history[-2]) < 1e-7:
+            print("Converged.")
+            break
 
-    print("-" * 80)
-    print("Interpretation:")
-    print(" - For N_AO < 10, 'Ratio' will lag behind 'Math(est)' due to Python overhead.")
-    print(" - As N_AO increases (14 -> 20), 'Ratio' should start catching up to N^4.")
+    print(f"\nFinal Energy: {E_history[-1]:.12f} Eh")
+    print(f"Total time: {time.time() - stime:.2f}s")
+# =============================================================================
+# #  SCALING TEST BENCHMARK (Replace main block with this)
+# # =============================================================================
+# class InstrumentedSweepHelper(SweepNewtonHelper):
+#     """
+#     A subclass that adds timers to the critical steps of the Newton Sweep.
+#     """
+#     def __init__(self, h1_nm, S_prim, eri_op):
+#         super().__init__(h1_nm, S_prim, eri_op)
+#         self.t_build = 0.0
+#         self.t_solve = 0.0
+#         self.calls = 0
+
+#     def kkt_step_slice(self, n, d_stack, P_slice, S_prim, ridge=0.0):
+#         t0 = time.time()
+        
+#         # --- TIMING SECTION: BUILD ---
+#         # 1. Exact Gradient (O(Nz))
+#         g_n_vec = self.get_gradient_slice_onthefly(n, d_stack, P_slice)
+#         g_n = g_n_vec.reshape(-1, 1)
+        
+#         # 2. Exact Diagonal Hessian (O(Nz))
+#         H_nn = self.get_diagonal_hessian_block_sparse(n, d_stack, P_slice)
+        
+#         self.t_build += (time.time() - t0)
+        
+#         t1 = time.time()
+#         # --- TIMING SECTION: SOLVE ---
+#         if ridge > 0.0:
+#             H_nn += ridge * np.eye(H_nn.shape[0])
+            
+#         dn = d_stack[n].reshape(-1, 1)
+#         s_vec = S_prim @ dn
+        
+#         N = H_nn.shape[0]
+#         KKT = np.zeros((N + 1, N + 1), dtype=float)
+#         KKT[:N, :N] = H_nn
+#         KKT[:N, N]  = s_vec.flatten()
+#         KKT[N, :N]  = s_vec.flatten()
+        
+#         rhs = np.zeros((N + 1, 1), dtype=float)
+#         rhs[:N] = -g_n
+        
+#         try:
+#             sol = la.solve(KKT, rhs)
+#             delta_d = sol[:N].flatten()
+#             lam = sol[N]
+#         except la.LinAlgError:
+#             delta_d = -0.1 * g_n.flatten()
+#             lam = 0.0
+            
+#         self.t_solve += (time.time() - t1)
+#         self.calls += 1
+            
+#         return delta_d, lam, g_n_vec
+# # Add this import at the top of your test block
+# import pyqed.qchem.dvr.hybrid_gauss_dvr_integrals_extrapolate as hg_int
+
+# def run_benchmark_case(Nz, basis_config):
+#     """
+#     Runs one specific case of (Nz, N_AO) for a few sweep cycles.
+#     """
+#     # === FIX: CLEAR GLOBAL CACHES ===
+#     # This forces the code to rebuild splines for the new basis set size
+#     hg_int._VEN_SPLINES = {}
+#     hg_int._ERI_SPLINES = None
+#     # ================================
+
+#     # 1. Setup Molecule (Dummy H2-like system)
+#     charges = np.array([1.0, 1.0], float)
+#     coords  = np.array([[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]], float)
+#     mol = Molecule(charges, coords, nelec=2)
+    
+#     # 2. Basis Config
+#     s_exps = basis_config['s']
+#     p_exps = basis_config['p']
+#     d_exps = basis_config['d']
+    
+#     # 3. Build Integrals (Measure Setup Time)
+#     t_setup_start = time.time()
+    
+#     # Suppress verbose output during benchmark
+#     # Note: This will trigger the [Tabulation] prints again, which is correct/expected.
+#     Hcore, z, dz, E_slices, C_list, ERI_J, ERI_K, shapes = build_method2(
+#         mol, Lz=10.0, Nz=Nz, M=1,
+#         s_exps=s_exps, p_exps=p_exps, d_exps=d_exps, 
+#         verbose=False, dvr_method='sine'
+#     )
+    
+#     nuclei = mol.to_tuples()
+#     alphas, centers, labels = make_xy_spd_primitive_basis(nuclei, s_exps, p_exps, d_exps)
+#     S_prim = overlap_2d_cartesian(alphas, centers, labels)
+#     T_prim = kinetic_2d_cartesian(alphas, centers, labels)
+#     N_AO = len(alphas)
+    
+#     # Precompute Kernels
+#     K_h = []
+#     Kx_h = []
+#     for h in range(Nz):
+#         dz_val = h * dz
+#         eri_tensor = eri_2d_cartesian_with_p(alphas, centers, labels, delta_z=dz_val)
+#         K_h.append(eri_tensor.reshape(N_AO**2, N_AO**2))
+#         Kx_h.append(eri_tensor.transpose(0, 2, 1, 3).reshape(N_AO**2, N_AO**2))
+        
+#     t_setup = time.time() - t_setup_start
+
+#     # 4. Initial Guess (Quick)
+#     d_stack = np.vstack([C_list[n][:, 0].copy() for n in range(Nz)])
+#     P_slice = np.zeros((Nz, Nz))
+#     np.fill_diagonal(P_slice, 1.0) # Simple guess
+
+#     # 5. Setup Helper
+#     h1_nm = build_h1_nm(np.eye(Nz), S_prim, T_prim, z, lambda zz: V_en_sp_total_at_z(alphas, centers, labels, nuclei, zz))
+#     ERIop = CollocatedERIOp.from_kernels(N=N_AO, Nz=Nz, dz=dz, K_h=K_h, Kx_h=Kx_h)
+    
+#     # USE INSTRUMENTED HELPER
+#     nh_bench = InstrumentedSweepHelper(h1_nm, S_prim, ERIop)
+    
+#     # 6. Run 1 Full Sweep (Optimization)
+#     t_sweep_start = time.time()
+    
+#     # We run 1 cycle of 'sweep_optimize_driver'
+#     sweep_optimize_driver(
+#         nh_bench, d_stack, P_slice, S_prim,
+#         n_cycles=1, ridge=1e-4, trust_step=1.0, trust_radius=2.0, verbose=False
+#     )
+    
+#     t_sweep_total = time.time() - t_sweep_start
+    
+#     return {
+#         "Nz": Nz,
+#         "N_AO": N_AO,
+#         "T_Setup": t_setup,
+#         "T_TotalSweep": t_sweep_total,
+#         "T_Build": nh_bench.t_build,
+#         "T_Solve": nh_bench.t_solve,
+#         "Calls": nh_bench.calls
+#     }
+# if __name__ == "__main__":
+#     print(f"{'='*80}")
+#     print(f"{'STRESS TEST: N_AO SCALING':^80}")
+#     print(f"{'='*80}")
+    
+#     # 1. Define larger basis sets to overcome Python overhead
+#     # Molecule has 2 atoms. 
+#     # N_AO calculation: 2 * (sum of shells)
+    
+#     # Small: 2s -> N=4
+#     config_small = {'s': [1.0, 0.5], 'p': [], 'd': []}
+    
+#     # Medium: 2s + 1p -> 2*(2 + 2) = 8
+#     config_med   = {'s': [10, 5, 1.0, 0.5], 'p': [2, 1.0], 'd': []} 
+    
+#     # Large: 3s + 2p -> 2*(3 + 4) = 14
+#     config_large = {'s': [20,18,16,14,12,10,5, 3.0, 1.0], 'p': [2.0, 1.0], 'd': []}
+    
+#     # XL: 3s + 2p + 1d -> 2*(3 + 4 + 3) = 20
+#     # Note: d-shell adds 3 functions (dx2, dy2, dxy) in this 2D code
+#     config_xl    = {'s': [10., 3.0, 1.0], 'p': [2.0, 1.0], 'd': []}
+
+#     # Fix Nz to a moderate value to keep total time reasonable
+#     FIXED_NZ = 50 
+    
+#     print(f"{'Nz':<6} | {'N_AO':<6} | {'Build(s)':<10} | {'Math(est)':<10} | {'Ratio':<8}")
+#     print("-" * 80)
+
+#     # Capture base time for ratio
+#     base_time = None
+
+#     for cfg, label in [(config_small, "Small"), (config_med, "Medium"), 
+#                        (config_large, "Large"), (config_xl, "XL")]:
+        
+#         # Run benchmark (reusing your existing function)
+#         res = run_benchmark_case(FIXED_NZ, cfg)
+        
+#         t_build = res['T_Build']
+#         n_ao = res['N_AO']
+        
+#         # Theoretical N^4 scaling relative to N=4
+#         math_scaling = (n_ao / 4.0)**4
+        
+#         if base_time is None:
+#             base_time = t_build
+#             ratio = 1.0
+#         else:
+#             ratio = t_build / base_time
+
+#         print(f"{FIXED_NZ:<6} | {n_ao:<6} | {t_build:<10.4f} | {math_scaling:<10.1f} | {ratio:<8.2f}x")
+
+#     print("-" * 80)
+#     print("Interpretation:")
+#     print(" - For N_AO < 10, 'Ratio' will lag behind 'Math(est)' due to Python overhead.")
+#     print(" - As N_AO increases (14 -> 20), 'Ratio' should start catching up to N^4.")
