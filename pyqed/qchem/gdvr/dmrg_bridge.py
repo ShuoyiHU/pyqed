@@ -63,7 +63,7 @@ class DMRGInputGenerator:
             n2 = n_ao_2d * n_ao_2d
             # Standard
             K_h.append(eri_tensor.reshape(n2, n2))
-            # Transposed (as in your working code)
+            # Transposed
             eri_perm = eri_tensor.transpose(0, 2, 1, 3)
             Kx_h.append(eri_perm.reshape(n2, n2))
 
@@ -79,7 +79,7 @@ class DMRGInputGenerator:
         )
         print(f"  [Init SCF] E = {Etot:.8f} Ha")
 
-        # 4. Alternating Optimization Loop (The missing piece!)
+        # 4. Alternating Optimization Loop
         
         # Prepare Helper Data
         _, Kz_grid, _ = sine_dvr_1d(-self.Lz, self.Lz, self.Nz)
@@ -113,7 +113,7 @@ class DMRGInputGenerator:
             d_stack = sweep_optimize_driver(
                 nh, d_stack, P_slice, S_prim,
                 n_cycles=sweep_iter, 
-                ridge=0.5, trust_step=1.0, trust_radius=2.0, # Your params
+                ridge=0.5, trust_step=1.0, trust_radius=2.0, # params, larger give faster convergence speed, while might harm monotonic decrement. TODO: adaptive update of radius based on (E_new - E_previous)/(\Delta E_predicted)
                 verbose=False
             )
             
@@ -161,17 +161,6 @@ class DMRGInputGenerator:
         print(f"  => Difference:      {self.final_hf_energy - e_pyscf:.8f} Ha")
 
     def save_to_file(self, filename="dmrg_input.pt"):
-        # We need to compute C_spatial from the final C_list or Cmo
-        # Assuming self.C_list_opt contains the optimized coefficients [Nz, 1] for H2
-        # Or you can extract it from the final SCF 'Cmo' variable if you stored it.
-        
-        # If you didn't store Cmo in 'self', grabbing the D-stack (optimized dvr functions) is best.
-        # For Method2 sweep, self.C_list_opt is the list of d_n vectors. 
-        # But wait, SCF optimizes 'Cmo'. We need THAT one.
-        
-        # Hack: Rerun a quick SCF or ensure you saved 'Cmo' in optimize_aos
-        # Let's assume you add 'self.final_Cmo = Cmo' inside optimize_aos after the loop.
-        
         data = {
             "t_ij": torch.tensor(self.t_ij),
             "V_coulomb": torch.tensor(self.V_coulomb),
@@ -179,8 +168,6 @@ class DMRGInputGenerator:
             "nelec": self.mol.nelec,
             "Nz": self.Nz,
             "hf_energy": self.final_hf_energy,
-            # ADD THIS: Save the Molecular Orbital coefficients
-            # Shape should be (Nz, M_basis) or (Nz, Nz)
             "C_mo": torch.tensor(self.final_Cmo),
             "enuc": self.enuc
         }
