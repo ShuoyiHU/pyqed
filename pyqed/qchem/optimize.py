@@ -3,17 +3,21 @@
 """
 Created on Mon Dec  1 23:03:15 2025
 
+Optimization with Orthogonality Constraints
+
 @author: bingg
 """
 
 import numpy as np
 from opt_einsum import contract
 
-def minimize(f, X0, args=(), tau=2, taum=1e-15, tauM=1e15, eta=0.85, 
-             rho1=0.5, delta=0.2, epsilon=1e-5):
+def minimize(f, X0, args=(), tau=1, taum=1e-15, tauM=2, eta=0.85,
+             rho1=0.5, delta=0.2, epsilon=1e-5, algorithm='SD'):
     """
     Implicit Steepest Descent Method for Optimization
     with Orthogonality Constraints (Implicit–SD)
+    
+    Riemannian steepest descent method proposed by Manton
 
     Parameters
     ----------
@@ -38,7 +42,7 @@ def minimize(f, X0, args=(), tau=2, taum=1e-15, tauM=1e15, eta=0.85,
     References
     ----------
 
-    Optimization Lett. 2022, 16:1773
+    ISD: Optimization Lett. 2022, 16:1773
 
     """
 
@@ -59,11 +63,26 @@ def minimize(f, X0, args=(), tau=2, taum=1e-15, tauM=1e15, eta=0.85,
     # print('gradient', G)
 
     df = grad(X, G)
+    
+    if algorithm == 'CN':
+        theta = 0.5
+    elif algorithm == 'manton':
+        theta = 0 
+    elif algorithm == 'SD':
+        theta = 1
+    else:
+        raise ValueError("There is no such algorithm {} for constrained optimization.\
+                         Try 'CN', 'manton', 'SD'".format(algorithm))
+    
+    def update(A, X, theta, tau):
+        return np.linalg.solve(Id + tau * theta * A, X - tau * (1-theta) * A @ X)
 
     while norm(df) > epsilon:
 
         A = G @ X.T - X @ G.T
-        Y = project(np.linalg.inv(Id + tau * A) @ X)
+        
+        Y = update(A, X, theta, tau)
+        Y = project(Y)
 
         while f(Y, *args) > C + rho1 * tau * (-1/2 * norm(A)**2):
             tau = tau * delta
@@ -323,142 +342,161 @@ def kernel(mf, U0, max_steps=50, tol=1e-6):
     return mc
 
 
+def cayley_map(X):
+    """
+    Cayley transform
 
+    Parameters
+    ----------
+    X : TYPE
+        DESCRIPTION.
+
+    Returns
+    -------
+    TYPE
+        DESCRIPTION.
+
+    """
+    n = X.shape[0]
+        # Id = torch.eye(n, dtype=X.dtype, device=X.device)
+    Id = np.eye(n)
+    return np.linalg.solve(Id - X, Id + X)
 
 
 if __name__=='__main__':
 
 
     from pyqed import Molecule
-    from pyqed.qchem.mcscf import CASCI
+    from pyqed.qchem.mcscf.casscf import CASSCF
 
-    mol = Molecule(atom='Li 0 0 0; H 0 0 1.4', unit='b', basis='631g')
+    mol = Molecule(atom='Li 0 0 0; F 0 0 1.4', unit='b', basis='sto6g')
     mol.build()
 
     mf = mol.RHF().run()
     C = mf.mo_coeff
 
-    ncas=2
-    nelecas = 2
-    mc = CASCI(mf, ncas=ncas, nelecas=nelecas)
+    ncas=4
+    nelecas = 4
+    mc = CASSCF(mf, ncas=ncas, nelecas=nelecas)
     nstates = 3
-    mc.run(nstates)
-
-    weights = np.ones(nstates)/nstates
-    dm1 = 0
-    dm2 = 0
-    for n in range(nstates):
-        _dm1, _dm2 = mc.make_rdm12(n)
-        dm1 += _dm1 * weights[n]
-        dm2 += _dm2 * weights[n]
-        
-            
     
+    mc.run()
 
-    h1e = mf.get_hcore_mo()
-    eri = mf.get_eri_mo()
+    # weights = np.ones(nstates)/nstates
+    # dm1 = 0
+    # dm2 = 0
+    # for n in range(nstates):
+    #     _dm1, _dm2 = mc.make_rdm12(n)
+    #     dm1 += _dm1 * weights[n]
+    #     dm2 += _dm2 * weights[n]
 
-    # h1e_ = mc.hcore
-    # print(h1e_[0])
-    # print(h1e.shape)
 
-    # eri = mc.eri_so[0, 0] # for spin-restricted calculation
-    nmo = mol.nao
-    # print('# MO = ', nmo)
 
-    U0 = np.zeros((nmo, ncas))
-    for i in range(ncas):
-        U0[i, i] = 1
 
-    # print('E= ',energy(U0, h1e, eri, dm1, dm2))
+    # h1e = mf.get_hcore_mo()
+    # eri = mf.get_eri_mo()
 
-    U, E = minimize(energy, U0, args=(h1e, eri, dm1, dm2))
+    # # h1e_ = mc.hcore
+    # # print(h1e_[0])
+    # # print(h1e.shape)
 
-    k = 0
-    max_cycles = 20
-    e_old = sum(weights * mc.e_tot) 
-    tol = 1e-6
+    # # eri = mc.eri_so[0, 0] # for spin-restricted calculation
+    # nmo = mol.nao
+    # # print('# MO = ', nmo)
 
-    converged = False
-    while k < max_cycles:
+    # U0 = np.zeros((nmo, ncas))
+    # for i in range(ncas):
+    #     U0[i, i] = 1
 
-        mo_coeff = C @ U 
-        mc.run(nstates, mo_coeff=mo_coeff)
-        
-        eAve = sum(weights * mc.e_tot) 
+    # # print('E= ',energy(U0, h1e, eri, dm1, dm2))
 
-        if abs(eAve - e_old) < tol:
-            print('CASSCF converged at macroiteration {}'.format(k))
-            print("E(CASSCF) = {}".format(mc.e_tot))
-            converged = True
-            break
+    # U, E = minimize(energy, U0, args=(h1e, eri, dm1, dm2))
 
-        e_old = eAve
+    # k = 0
+    # max_cycles = 20
+    # e_old = sum(weights * mc.e_tot)
+    # tol = 1e-6
 
-        # dm1, dm2 = mc.make_rdm12(0)
-        dm1 = 0
-        dm2 = 0
-        for n in range(nstates):
-            _dm1, _dm2 = mc.make_rdm12(n)
-            dm1 += _dm1 * weights[n]
-            dm2 += _dm2 * weights[n]
-                
-        # U0 = orth(U + 0.1 * np.random.randn(nmo, ncas))
+    # converged = False
+    # while k < max_cycles:
 
-        U, E = minimize(energy, U0, args=(h1e, eri, dm1, dm2))
-        # print(E + mol.energy_nuc())
+    #     mo_coeff = C @ U
+    #     mc.run(nstates, mo_coeff=mo_coeff)
 
-        k += 1
+    #     eAve = sum(weights * mc.e_tot)
 
-    if not converged:
-        raise RuntimeError('Max macro steps reached. CASSCF not converged.')
-        
-        
+    #     if abs(eAve - e_old) < tol:
+    #         print('CASSCF converged at macroiteration {}'.format(k))
+    #         print("E(CASSCF) = {}".format(mc.e_tot))
+    #         converged = True
+    #         break
+
+    #     e_old = eAve
+
+    #     # dm1, dm2 = mc.make_rdm12(0)
+    #     dm1 = 0
+    #     dm2 = 0
+    #     for n in range(nstates):
+    #         _dm1, _dm2 = mc.make_rdm12(n)
+    #         dm1 += _dm1 * weights[n]
+    #         dm2 += _dm2 * weights[n]
+
+    #     # U0 = orth(U + 0.1 * np.random.randn(nmo, ncas))
+
+    #     U, E = minimize(energy, U0, args=(h1e, eri, dm1, dm2))
+    #     # print(E + mol.energy_nuc())
+
+    #     k += 1
+
+    # if not converged:
+    #     raise RuntimeError('Max macro steps reached. CASSCF not converged.')
+
+
     # # diis storage
     # maxdiis = 6
     # diis_error_convergence = 1.0e-5
-    
+
     # diis_error_matrices = np.zeros((maxdiis, nmo, ncas))
     # diis_fock_matrices = np.zeros_like(diis_error_matrices)
-    
+
     # def diis(fock, dens, overlap, orth, iter, diis_min=1):
     #     """
     #     Extrapolate new fock matrix based on input fock matrix
     #         and previous fock-matrices.
-    
+
     #     Arguments:
     #         fock -- current fock matrix
-    
+
     #     Returns:
     #         (fock, error) -- interpolated fock matrix and diis-error
     #     """
     #     diis_fock = np.zeros_like(fock)
-    
+
     #     if iter <= diis_min:
     #         return fock, 0.0
-    
+
     #     # copy data down to lower storage
     #     for k in reversed(range(1, min(iter, maxdiis))):
-    
+
     #         diis_error_matrices[k] = diis_error_matrices[k-1][:]
     #         diis_fock_matrices[k] = diis_fock_matrices[k-1][:]
-    
+
     #     # calculate error matrix
-        
+
     #     # error_mat = reduce(np.dot, (fock, dens, overlap))
     #     # error_mat -= error_mat.T
-    
+
     #     # # put orthogonal error matrix in storage
     #     # # pulay use S^(-1/2) but here we choose whatever the user has defined
-        
+
     #     # diis_error_matrices[0]  = reduce(np.dot, (orth.T, error_mat, orth))
-        
-    #     diis_error_matrices[0]  = fock - 
+
+    #     diis_error_matrices[0]  = fock -
 
     #     diis_fock_matrices[0] = fock[:]
     #     diis_error_index = np.abs(diis_error_matrices[0]).argmax()
     #     diis_error = math.fabs(np.ravel(diis_error_matrices[0])[diis_error_index])
-    
+
     #     # calculate B-matrix and solve for coefficients that reduces error
     #     bsize = min(iter, maxdiis)-1
     #     bmat = -1.0 * np.ones((bsize+1,bsize+1))
@@ -469,9 +507,9 @@ if __name__=='__main__':
     #         for b2 in range(bsize):
     #             bmat[b1, b2] = np.trace(diis_error_matrices[b1].dot(diis_error_matrices[b2]))
     #     C =  np.linalg.solve(bmat, rhs)
-    
+
     #     # form new interpolated diis fock matrix
     #     for i, k in enumerate(C[:-1]):
     #         diis_fock += k*diis_fock_matrices[i]
-    
+
     #     return diis_fock, diis_error

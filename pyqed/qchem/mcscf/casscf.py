@@ -9,8 +9,8 @@ import numpy as np
 from scipy.linalg import eigh
 # from pyqed.qchem.mcscf.casci import CASCI
 from opt_einsum import contract
-# from pyqed.qchem.mcscf.direct_ci import CASCI
-from pyqed.qchem.mcscf.casci import CASCI
+from pyqed.qchem.mcscf.direct_ci import CASCI
+# from pyqed.qchem.mcscf.casci import CASCI
 
 
 from pyqed.optimize import minimize
@@ -221,7 +221,7 @@ def kernel_state_average(mc, weights, U0, nelecas, ncas, C0, h1e, eri,
         with_core = True
     else:
         with_core = False
-        
+
     nstates = mc.nstates
 
     dm1 = 0
@@ -274,63 +274,63 @@ def kernel_state_average(mc, weights, U0, nelecas, ncas, C0, h1e, eri,
     return mo_coeff, mc
 
 
-def constrained_optimization(U, h1e, h2e, dm1, dm2, max_steps=50):
-    """
-    complete active space orbital optimization with orthonomality constraint
+# def constrained_optimization(U, h1e, h2e, dm1, dm2, max_steps=50):
+#     """
+#     complete active space orbital optimization with orthonomality constraint
 
-    .. math::
-        U^\top U = I_N
+#     .. math::
+#         U^\top U = I_N
 
-        E = \sum_{p,q=1}^N t_{pq} U_{pp'} U_{q q'} \gamma_{p'q'} +
-        1/2 v_{pqrs} \Gamma_{p'q'r's'} U_{pp'}U_{qq'}U_{rr'}U_{ss'}
+#         E = \sum_{p,q=1}^N t_{pq} U_{pp'} U_{q q'} \gamma_{p'q'} +
+#         1/2 v_{pqrs} \Gamma_{p'q'r's'} U_{pp'}U_{qq'}U_{rr'}U_{ss'}
 
-    where U is a M x N (M > N) matrix.
+#     where U is a M x N (M > N) matrix.
 
-    .. math::
-        U_{k+1} = orth(U_k - \tau_k G_k)
+#     .. math::
+#         U_{k+1} = orth(U_k - \tau_k G_k)
 
-    Parameters
-    ----------
-    h1e : TYPE
-        DESCRIPTION.
-    h2e : TYPE
-        ERI.
-    dm1 : TYPE
-        1RDM.
-    dm2 : TYPE
-        DESCRIPTION.
+#     Parameters
+#     ----------
+#     h1e : TYPE
+#         DESCRIPTION.
+#     h2e : TYPE
+#         ERI.
+#     dm1 : TYPE
+#         1RDM.
+#     dm2 : TYPE
+#         DESCRIPTION.
 
-    Returns
-    -------
-    None.
+#     Returns
+#     -------
+#     None.
 
-    """
+#     """
 
-    # orb opt
-    converged = False
-    k = 0
+#     # orb opt
+#     converged = False
+#     k = 0
 
-    # add random noise
-    U += 0.1 * np.random.randn(U.shape)
-    U = orth(U)
+#     # add random noise
+#     U += 0.1 * np.random.randn(U.shape)
+#     U = orth(U)
 
-    U_old = U.copy()
-    for k in range(max_steps):
+#     U_old = U.copy()
+#     for k in range(max_steps):
 
-        G = gradient(U, h1e, h2e, dm1, dm2)
-        U = orth(U - stepsize(k) * G)
+#         G = gradient(U, h1e, h2e, dm1, dm2)
+#         U = orth(U - stepsize(k) * G)
 
-        if 1 - abs(inner(U_old, U)) < 1e-3:
-            converged = True
-            break
+#         if 1 - abs(inner(U_old, U)) < 1e-3:
+#             converged = True
+#             break
 
-        U_old = U.copy()
-        k += 1
+#         U_old = U.copy()
+#         k += 1
 
-    if converged:
-        return U
-    else:
-        raise RuntimeError('Constrained optimization not converged.')
+#     if converged:
+#         return U
+#     else:
+#         raise RuntimeError('Constrained optimization not converged.')
 
 
 def gradient(U, h1e, h2e, dm1, dm2):
@@ -345,7 +345,7 @@ def gradient(U, h1e, h2e, dm1, dm2):
 
 class CASPT2(CASSCF):
     """
-    CASSCF 
+    CASSCF
     """
     pass
 
@@ -354,10 +354,7 @@ class CASPT2(CASSCF):
 
 # from expm32 import expm32, differential
 
-# def cayley_map(X):
-#     n = X.size(0)
-#     Id = torch.eye(n, dtype=X.dtype, device=X.device)
-#     return torch.solve(Id - X, Id + X)[0]
+
 
 
 if __name__=='__main__':
@@ -365,7 +362,7 @@ if __name__=='__main__':
     from pyqed import Molecule
     # from pyqed.qchem.mcscf.direct_ci import CASCI
 
-    mol = Molecule(atom='Li 0 0 0; F 0 0 1.4', unit='b', basis='sto6g')
+    mol = Molecule(atom='Li 0 0 0; F 0 0 1.4', unit='b', basis='6311g')
     mol.build(driver='pyscf')
 
     mf = mol.RHF().run()
@@ -374,7 +371,7 @@ if __name__=='__main__':
 
     nstates = 2
     mc.state_average(weights = np.ones(nstates)/nstates)
-    # mc.fix_spin(ss=0, shift=0.2)
+    mc.fix_spin(ss=0, shift=0.2)
     mc.run()
 
     # correct result is E(CASSCF) = [-7.67160344]

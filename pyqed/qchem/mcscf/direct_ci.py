@@ -673,32 +673,32 @@ class CASCI(mcscf.casci.CASCI):
             h1e, h2e = self.get_SO_matrix()
 
             if self.spin_purification:
-                
+
                 logging.info('Purify spin by energy penalty')
 
                 # if self.shift is not None:
                 # H1, H2 = self.fix_spin(H1, H2, ss=ss, shift=shift)
                 shift = self.shift
-    
+
                 norb = self.ncas
                 h1e = [h + 3./4 * shift * np.eye(norb) for h in h1e]
-    
+
                 for p in range(norb):
                     for q in range(norb):
                         h2e[:, :, p, q, q, p] -=  0.5 * shift * 2
                         # h2e[1, 1, p, q, q, p] -=  0.5 * shift
                         # h2e[0, 1, p, q, q, p] -=  0.5 * shift
                         # h2e[1, 0, p, q, q, p] -=  0.5 * shift
-    
+
                         # h2e[0, 0, p, p, q, q] -= 0.25 * shift
                         # h2e[1, 1, p, p, q, q] -= 0.25 * shift
-    
+
                         # h2e[0, 1, p, p, q, q] -= 0.25 * shift
                         # h2e[1, 0, p, p, q, q] -= 0.25 * shift
-    
-    
+
+
                         h2e[:, :, p, p, q, q] -= 0.25 * shift * 2
-    
+
             h2e[0,0] -= h2e[0,0].swapaxes(1,3)
             h2e[1,1] -= h2e[1,1].swapaxes(1,3)
 
@@ -749,8 +749,6 @@ class CASCI(mcscf.casci.CASCI):
                 SC2 = self.SC2
 
 
-            print('Number of determinants', binary.shape[0])
-
             h1e, h2e = self.get_SO_matrix()
 
             if self.spin_purification:
@@ -759,15 +757,15 @@ class CASCI(mcscf.casci.CASCI):
                 # if self.shift is not None:
                 # H1, H2 = self.fix_spin(H1, H2, ss=ss, shift=shift)
                 shift = self.shift
-    
+
                 norb = self.ncas
                 h1e = [h + 3./4 * shift * np.eye(norb) for h in h1e]
-    
+
                 for p in range(norb):
                     for q in range(norb):
-                        h2e[:, :, p, q, q, p] -=  0.5 * shift * 2   
+                        h2e[:, :, p, q, q, p] -=  0.5 * shift * 2
                         h2e[:, :, p, p, q, q] -= 0.25 * shift * 2
-    
+
             h2e[0,0] -= h2e[0,0].swapaxes(1,3)
             h2e[1,1] -= h2e[1,1].swapaxes(1,3)
 
@@ -877,7 +875,9 @@ class CASCI(mcscf.casci.CASCI):
             norb = ncas + ncore
             D = np.zeros((norb, norb), dtype=float)
 
-            if ncore > 0: D[:ncore, :ncore] = 2
+            if ncore > 0:
+                for i in range(ncore):
+                    D[i, i] = 2
             D[ncore:ncore+ncas, ncore:ncore+ncas] = make_rdm1(ci, self.binary, self.SC1)
 
             return D
@@ -885,7 +885,9 @@ class CASCI(mcscf.casci.CASCI):
         if with_core and with_vir:
 
             D = np.zeros((nmo, nmo), dtype=float)
-            if ncore > 0: D[:ncore, :ncore] = 2
+            if ncore > 0:
+                for i in range(ncore):
+                    D[i, i] = 2
             D[ncore:ncore+ncas, ncore:ncore+ncas] = make_rdm1(ci, self.binary, self.SC1)
 
             return D
