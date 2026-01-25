@@ -37,3 +37,7 @@ local_data_GL2013
 *.bat
 *.nbc
 *.nbi
+
+
+sh_file_for_HPC
+Miniforge3-MacOSX-arm64.sh
