@@ -1,5 +1,5 @@
 import numpy as np
-from pyqed.mps.shuoyi_mpo_test.renormalizer_modified.Operator import Op
+from pyqed.mps.autompo.Operator import Op
 from typing import Union, List
 import scipy.linalg
 import scipy.special
@@ -1024,21 +1024,15 @@ class BasisSimpleElectron(BasisSet):
         if not isinstance(op, Op):
             op = Op(op, None)
         op_symbol, op_factor = op.symbol, op.factor
-
         mat = np.zeros((2, 2))
-
-        if op_symbol == r"a^\dagger":
-            mat[1, 0] = 1.
-        elif op_symbol == "a":
-            mat[0, 1] = 1.
-        elif op_symbol == r"a^\dagger a":
-            mat[1, 1] = 1.
-        elif op_symbol == "I":
-            mat = np.eye(2)
-        else:
-            raise ValueError(f"op_symbol:{op_symbol} is not supported")
-
+        if op_symbol == r"a^\dagger": mat[1, 0] = 1.
+        elif op_symbol == "a": mat[0, 1] = 1.
+        elif op_symbol == r"a^\dagger a" or op_symbol == "n": mat[1, 1] = 1.
+        elif op_symbol == "I": mat = np.eye(2)
+        elif op_symbol == "sigma_z": mat[0, 0] = 1.; mat[1, 1] = -1.
+        else: raise ValueError(f"op_symbol:{op_symbol} is not supported")
         return mat * op_factor
+
 
     def copy(self, new_dof):
         return self.__class__(new_dof)

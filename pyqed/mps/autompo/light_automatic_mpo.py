@@ -2,7 +2,7 @@ import logging
 from typing import List, Union
 import numpy as np
 
-from pyqed.mps.shuoyi_mpo_test.renormalizer_modified.backend import (
+from pyqed.mps.autompo.backend import (
     backend, 
     npseed, 
     randomseed, 
@@ -11,10 +11,10 @@ from pyqed.mps.shuoyi_mpo_test.renormalizer_modified.backend import (
     OE_BACKEND
 )
 
-from pyqed.mps.shuoyi_mpo_test.renormalizer_modified.automatic_mpo_helper import construct_symbolic_mpo, _terms_to_table, symbolic_mo_to_numeric_mo, swap_site
-from pyqed.mps.shuoyi_mpo_test.renormalizer_modified.model import Model, HolsteinModel
-from pyqed.mps.shuoyi_mpo_test.renormalizer_modified.utils import Quantity
-from pyqed.mps.shuoyi_mpo_test.renormalizer_modified.Operator import Op
+from pyqed.mps.autompo.automatic_mpo_helper import construct_symbolic_mpo, _terms_to_table, symbolic_mo_to_numeric_mo, swap_site
+from pyqed.mps.autompo.model import Model, HolsteinModel
+from pyqed.mps.autompo.utils import Quantity
+from pyqed.mps.autompo.Operator import Op
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,6 @@ logger = logging.getLogger(__name__)
 class Mpo:
     """
     A lightweight MPO wrapper compatible with your PyTorch script.
-    It generates matrices but removes all simulation logic.
     """
     
     # Static flag to ensure we only log the backend info once, 
@@ -33,7 +32,7 @@ class Mpo:
         
         # Use Backend Setup (Hardware & Random number Seeds & 32/64 bits. Default: cpu+fixed seed+ 64 bits)
         if not Mpo._backend_logged:
-            # select cpu/gpu. CuPy not avaivable in macOS so not tested
+            # select cpu/gpu. CuPy not avaivable in macOS so not tested yet
             if OE_BACKEND == "numpy":
                 logger.info("Use NumPy as backend")
                 logger.info(f"numpy random seed is {npseed}")

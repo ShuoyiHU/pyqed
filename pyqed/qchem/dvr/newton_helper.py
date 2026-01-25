@@ -112,7 +112,7 @@ class NewtonHelper:
         self.ERI   = ERI
         self.Nz, _, self.N, _ = self.h1_nm.shape
 
-    # ---- One-electron Ph(1)sym blocks ----
+    # One-electron Ph(1)sym blocks 
     @staticmethod
     def _Ph1sym(P_slice, h1_nm):
         Nz, N = P_slice.shape[0], h1_nm.shape[2]
@@ -123,7 +123,7 @@ class NewtonHelper:
                 Ph1s[n][m] = 0.5 * (P_slice[n, m] * h + P_slice[m, n] * h.T)
         return Ph1s
 
-    # ---- Strict F blocks (Eq: F = 2*Ph1sym + 2*P_sym[n,m] * Σ_{k,l} P[k,l] * [(nm|kl) − 1/2 (nl|km)]) ----
+    # Strict F blocks (Eq: F = 2*Ph1sym + 2*P_sym[n,m] * Σ_{k,l} P[k,l] * [(nm|kl) − 1/2 (nl|km)]) 
     def _F_blocks(self, d_stack, P_slice, h1_nm):
         Nz, N = d_stack.shape
         P_sym = 0.5 * (P_slice + P_slice.T)
@@ -211,7 +211,7 @@ class NewtonHelper:
 
         return H
 
-    # ---- KKT solve for Δd on the active set ----
+    #  KKT solve for Δd on the active set
     def kkt_step(self, d_stack, P_slice, S_prim, active, ridge=0.0):
         Nz, N = d_stack.shape
         Na = len(active)
@@ -251,7 +251,7 @@ class NewtonHelper:
         info = {"dim": int(K.shape[0])}
         return out, lam, info
 
-    # ---- In-place update with S-normalization (dict OR flat vector) ----
+    # In-place update with S-normalization 
     @staticmethod
     def update_inplace(d_stack, delta_sub, S_prim, active, step=1.0):
         Nz, N = d_stack.shape

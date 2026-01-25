@@ -8,9 +8,9 @@ import numpy as np
 import scipy
 import scipy.sparse
 
-from pyqed.mps.shuoyi_mpo_test.renormalizer_modified.model import Model
-from pyqed.mps.shuoyi_mpo_test.renormalizer_modified.basis import BasisSet
-from pyqed.mps.shuoyi_mpo_test.renormalizer_modified.Operator import Op
+from pyqed.mps.autompo.model import Model
+from pyqed.mps.autompo.basis import BasisSet
+from pyqed.mps.autompo.Operator import Op
 
 logger = logging.getLogger(__name__)
 

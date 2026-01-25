@@ -3,10 +3,10 @@ import numpy as np
 import logging
 from pyscf import lib
 
-from pyqed.mps.shuoyi_mpo_test.renormalizer_modified.model import Model
-from pyqed.mps.shuoyi_mpo_test.renormalizer_modified.Operator import Op
-from pyqed.mps.shuoyi_mpo_test.renormalizer_modified.basis import BasisSimpleElectron
-from pyqed.mps.shuoyi_mpo_test.renormalizer_modified.light_automatic_mpo import Mpo
+from pyqed.mps.autompo.model import Model
+from pyqed.mps.autompo.Operator import Op
+from pyqed.mps.autompo.basis import BasisSimpleElectron
+from pyqed.mps.autompo.light_automatic_mpo import Mpo
 
 import pyqed.mps.mps as mps_lib
 

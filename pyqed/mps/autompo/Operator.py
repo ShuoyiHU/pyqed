@@ -3,7 +3,7 @@ from collections import defaultdict
 from itertools import chain
 from typing import List, Union, Tuple, Dict
 import numpy as np
-from pyqed.mps.shuoyi_mpo_test.renormalizer_modified.utils import Quantity
+from pyqed.mps.autompo.utils import Quantity
 
 
 class Op:

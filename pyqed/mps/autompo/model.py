@@ -6,11 +6,11 @@ from typing import List, Union, Dict, Callable
 from collections import Counter, OrderedDict
 import numpy as np
 
-from pyqed.mps.shuoyi_mpo_test.renormalizer_modified.basis import BasisSet, BasisSimpleElectron, BasisMultiElectronVac, BasisHalfSpin, BasisSHO
+from pyqed.mps.autompo.basis import BasisSet, BasisSimpleElectron, BasisMultiElectronVac, BasisHalfSpin, BasisSHO
 
-from pyqed.mps.shuoyi_mpo_test.renormalizer_modified.Operator import Op, OpSum
+from pyqed.mps.autompo.Operator import Op, OpSum
 
-from pyqed.mps.shuoyi_mpo_test.renormalizer_modified.utils import Quantity, cached_property
+from pyqed.mps.autompo.utils import Quantity, cached_property
 from scipy.stats import binom
 
 
