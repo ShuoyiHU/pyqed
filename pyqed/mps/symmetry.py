@@ -1,7 +1,6 @@
 import numpy as np
 import itertools
 from collections import defaultdict
-import numpy as np
 import time
 
 
@@ -19,7 +18,7 @@ class BlockTensor:
     @property
     def shape(self):
         """Virtual dense shape (for debugging)."""
-        return tuple(sum(len(s) for s in q) for q in self.qns)
+        return tuple(len(q) for q in self.qns)
 
     def copy(self):
         new_data = {k: v.copy() for k, v in self.data.items()}
@@ -102,8 +101,10 @@ def tensordot(A, B, axes):
     """
     # 1. Setup indices
     a_ax, b_ax = axes
-    if isinstance(a_ax, int): a_ax = [a_ax]
-    if isinstance(b_ax, int): b_ax = [b_ax]
+    if isinstance(a_ax, int): 
+        a_ax = [a_ax] # prevent crashing axes input style with turple of ints
+    if isinstance(b_ax, int): 
+        b_ax = [b_ax] # prevent crashing axes input style with turple of ints
     
     free_A = [i for i in range(A.rank) if i not in a_ax]
     free_B = [i for i in range(B.rank) if i not in b_ax]

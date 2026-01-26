@@ -245,6 +245,114 @@ def get_entangled_guess(n_elec, n_spin):
         
     return mps
 
+def make_u1_random_block_init_guess(
+    L,
+    target_qn,
+    phys_qns=None,
+    max_bond_sectors=6,
+    seed=0,
+    complex_dtype=True,
+):
+    """
+    Build a random U(1) BlockTensor MPS with bond dimension > 1 (multiple charge sectors),
+    while enforcing total charge = target_qn on the *right boundary bond*.
+
+    Site tensor convention in your code: (LeftBond, RightBond, Phys)
+    Block key convention: (qL, qR, qP) with charge flow qR = qL + qP.
+
+    Default phys_qns:
+      - d=2 spin-orbital occupancy: [0,1]
+      - d=4 spatial orbital:        [0,1,1,2]
+    """
+    if not SYMMETRY_AVAILABLE:
+        raise ImportError("Symmetry module not found: cannot build BlockTensor init guess.")
+
+    import numpy as np
+    from collections import defaultdict
+
+    rng = np.random.default_rng(seed)
+
+    if phys_qns is None:
+        # default to spin-orbital (your current case looks like d=2)
+        phys_qns = [0, 1]
+    phys_qns = list(phys_qns)
+
+    # map charge -> list of physical basis indices (for degeneracy, e.g. charge 1 has 2 states in d=4)
+    idxs_by_q = defaultdict(list)
+    for i, q in enumerate(phys_qns):
+        idxs_by_q[q].append(i)
+
+    # choose bond charge sectors at each cut i (bond i is between sites i-1 and i) ----
+    # bond_qns[i] is the list of charges carried by that bond basis
+    bond_qns = [None] * (L + 1)
+    bond_qns[0] = [0]                 # left boundary fixed
+    bond_qns[L] = [int(target_qn)]    # right boundary fixed
+
+    for i in range(1, L):
+        # feasible charge range at cut i:
+        #   at least 0, at most target_qn
+        # also must be achievable with remaining sites (each site contributes <= max phys charge)
+        qmin = 0
+        qmax = int(target_qn)
+
+        # keep it simple: choose up to max_bond_sectors charges uniformly from [qmin,qmax]
+        # but always include something feasible; for better conditioning include neighbors too
+        candidates = list(range(qmin, qmax + 1))
+        if len(candidates) <= max_bond_sectors:
+            chosen = candidates
+        else:
+            chosen = sorted(rng.choice(candidates, size=max_bond_sectors, replace=False).tolist())
+
+        # this is important: make sure 0 is included early, and target_qn included late helps connectivity
+        if 0 not in chosen:
+            chosen[0] = 0
+            chosen = sorted(set(chosen))
+        bond_qns[i] = list(chosen)
+
+    # build site BlockTensors 
+    Bs = []
+    dtype = np.complex128 if complex_dtype else np.float64
+
+    for i in range(L):
+        left_qs  = bond_qns[i]
+        right_qs = bond_qns[i + 1]
+
+        # sector degeneracy: we take 1 basis state per charge sector (you can increase by repeating charges)
+        # so dim(q) = 1 for each q in the list.
+        data = {}
+
+        for qL in left_qs:
+            for qP, idxs in idxs_by_q.items():
+                qR = qL + qP
+                if qR not in right_qs:
+                    continue
+
+                # block shape: (dimL, dimR, dimPhysSector)
+                # here dimL=dimR=1; dimPhysSector=len(idxs)
+                blk = (rng.standard_normal((1, 1, len(idxs))) +
+                       1j * rng.standard_normal((1, 1, len(idxs)))).astype(dtype)
+                data[(qL, qR, qP)] = blk
+
+        # If connectivity is too sparse (possible for unlucky random sector choices), fail loudly
+        if len(data) == 0:
+            raise RuntimeError(
+                f"Site {i}: no allowed (qL,qR,qP) blocks. "
+                f"left_qs={left_qs}, right_qs={right_qs}, phys_qns={phys_qns}"
+            )
+
+        qns  = [list(left_qs), list(right_qs), list(phys_qns)]
+        dirs = [-1, 1, 1]  # your convention
+        B = BlockTensor(data, qns, dirs)
+
+        # normalize each tensor a bit so Davidson doesn't start with huge norm variations
+        nrm = B.norm()
+        if nrm != 0:
+            B = B * (1.0 / nrm)
+
+        Bs.append(B)
+
+    return Bs
+
 
 
 
@@ -286,7 +394,7 @@ class QCDMRG:
     ab initio DRMG quantum chemistry calculation
     """
     def __init__(self, mf, ncas, nelecas, D, init_guess='hf', m_warmup=None,\
-                 spin=None, tol=1e-6):
+                 spin=None, tol=1e-6, target_qn = None):
         """
         DMRG sweeping algorithm directly using DVR set (without SCF calculations)
 
@@ -310,7 +418,8 @@ class QCDMRG:
 
         self.mf = mf
 
-        self.d = 4 # local dimension for spacial orbital
+        self.d = 2 # local dimension for spin orbital
+        # self.d = 4 # local dimension for spacial orbital
 
         self.nsites = self.L = ncas
 
@@ -328,6 +437,12 @@ class QCDMRG:
 
         self.ncas = ncas # number of MOs in active space
         self.nelecas = nelecas
+
+        self.nelec = mf.nelec
+        if target_qn is None:
+            self.target_qn = self.nelec
+        else:
+            self.target_qn = target_qn
 
         ncore = mf.nelec//2 - self.nelecas//2 # core orbs
         assert(ncore >= 0)
@@ -610,7 +725,12 @@ class QCDMRG:
             final_H = convert_mpo_symmetric(H_input)
             
             print("  Generating Entangled Guess to force Bond Dim > 1...")
-            mps0 = get_entangled_guess(self.nelecas, 2*self.ncas)
+            
+            if self.target_qn != self.nelec:
+              mps0 = make_u1_random_block_init_guess(2*self.ncas, target_qn=self.target_qn)  
+            else:
+                mps0 = get_entangled_guess(self.nelecas, 2*self.ncas)
+
         else:
             print("  Running Dense DMRG...")
             final_H = self.H 
@@ -623,14 +743,16 @@ class QCDMRG:
 
         # run dmrg!
         print(f"  Starting Sweeps (D={self.D})...")
-        dmrg = DMRG(final_H, D=self.D, nsweeps=N_SWEEPS, init_guess=mps0, U1=U1)
+        dmrg = DMRG(final_H, D=self.D, nsweeps=N_SWEEPS, init_guess=mps0, U1=U1, target_qn=self.target_qn)
+
+        
         dmrg.run()
 
         # 6. Report result
         e_dmrg_total = dmrg.e_tot + self.mf.energy_nuc()
 
         print('final number of electron is ',dmrg.nelec_dmrg())
-        print(f"  RHF Energy:         {mf.e_tot:.8f} Ha")
+        print(f"  RHF Energy:         {self.mf.e_tot:.8f} Ha")
         print(f"  E(DMRG) =  {e_dmrg_total:.8f} Ha")
         print(f"  Correlation Energy = {e_dmrg_total - mf.e_tot:.8f} Ha")
         print(f"  Time:               {time.time()-t0:.2f} s")
@@ -658,20 +780,29 @@ if __name__=='__main__':
     np.set_printoptions(precision=10, suppress=True, threshold=10000, linewidth=300)
 
 
+    # mol = Molecule(atom = [
+    #     ['H' , (0. , 0. , 0)],
+    #     ['Li' , (0. , 0. , 4)]])
     mol = Molecule(atom = [
         ['H' , (0. , 0. , 0)],
-        ['Li' , (0. , 0. , 4)]])
+        ['H' , (0. , 0. , 4)],
+        ['H' , (0. , 0. , 8)],
+        ['H' , (0. , 0. , 12)]])
+        # ['H' , (0. , 0. , 12)],
+        # ['H' , (0. , 0. , 16)],
+        # ['H' , (0. , 0. , 20)]])
     mol.basis = '631g'
     mol.build(driver='pyscf')
 
     mf = mol.RHF().run()
 
-    # mc = CASCI(mf, ncas=8, nelecas=4)
-    # mc.run()
 
-    dmrg = QCDMRG(mf, ncas=8, nelecas=4, D=20)
+    dmrg = QCDMRG(mf, ncas=8, nelecas=4, D=40, target_qn=None) #here we could assign number of electron wanted to be not equal to the number of electron in the HF state.
     dmrg.build().run(U1=True)
     
+    mc = CASCI(mf, ncas=8, nelecas=4)
+    mc.run()
+
     # conn refers to the connection operator, that is, the operator on the edge of
     # the block, on the interior of the chain.  We need to be able to represent S^z
     # and S^+ on that site in the current basis in order to grow the chain.
