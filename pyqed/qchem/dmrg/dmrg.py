@@ -3,7 +3,7 @@
 """
 Created on Fri Jan 23 09:48:18 2026
 
-Quantum Chemitry DMRG
+Quantum Chemitry DMRG with U(1) particle number Symmetry Support
 
 @author: Shuoyi Hu (hushuoyi@westlake.edu.cn)
 
@@ -42,7 +42,13 @@ from pyqed.mps.autompo.model import Model
 from pyqed.mps.autompo.Operator import Op
 from pyqed.mps.autompo.basis import BasisSimpleElectron
 from pyqed.mps.autompo.light_automatic_mpo import Mpo
-
+try:
+    import pyqed.mps.symmetry as sym_module
+    from pyqed.mps.symmetry import BlockTensor, tensordot
+    SYMMETRY_AVAILABLE = True
+except ImportError:
+    SYMMETRY_AVAILABLE = False
+    BlockTensor = None
 
 #  Fermionic Logic patch adding JW chain
 def get_jw_term_robust(op_str_list, indices, factor):
@@ -94,6 +100,66 @@ def get_jw_term_robust(op_str_list, indices, factor):
     final_op_string = " ".join(final_ops_str)
     return Op(final_op_string, final_indices, factor=factor * ((-1) ** swaps) * extra_sign)
 
+
+def convert_mpo_symmetric(dense_H_list):
+    """ Standard Mapping: 0=Emp, 1=Occ """
+    if not SYMMETRY_AVAILABLE: return dense_H_list
+    print("  Converting MPO to U(1) Blocks (Standard: 0=Emp, 1=Occ)...")
+    sym_H = []
+    phys_qns = {0: 0, 1: 1} # 0=Emp, 1=Occ
+
+    current_nodes = {(0, 0)}
+    for W in dense_H_list:
+        new_data = {}
+        next_nodes = set()
+        
+        valid_incoming = {}
+        for l, q in current_nodes:
+            if l not in valid_incoming: valid_incoming[l] = set()
+            valid_incoming[l].add(q)
+            
+        idxs = np.nonzero(np.abs(W) > 1e-14)
+        for i in range(len(idxs[0])):
+            l, r, out_s, in_s = idxs[0][i], idxs[1][i], idxs[2][i], idxs[3][i]
+            val = W[l, r, out_s, in_s]
+            if l not in valid_incoming: continue
+            
+            # Flux = Q_Out - Q_In
+            q_out = phys_qns[out_s]
+            q_in = phys_qns[in_s]
+            flux = q_out - q_in
+            
+            for q_l in valid_incoming[l]:
+                q_r = q_l - flux
+                next_nodes.add((r, q_r))
+                # Key: (Q_L, Q_R, Q_Phys_Out, Q_Phys_In)
+                key = (q_l, q_r, phys_qns[out_s], phys_qns[in_s])
+                if key not in new_data: new_data[key] = []
+                new_data[key].append( ((l, q_l), (r, q_r), val) )
+
+        l_map = {q: sorted([x for x in current_nodes if x[1]==q]) for q in set(x[1] for x in current_nodes)}
+        r_map = {q: sorted([x for x in next_nodes if x[1]==q]) for q in set(x[1] for x in next_nodes)}
+        
+        final_blocks = {}
+        for key, elems in new_data.items():
+            q_l, q_r, q_o, q_i = key
+            if q_l not in l_map or q_r not in r_map: continue
+            rows = l_map[q_l]; cols = r_map[q_r]
+            row_idx = {x: i for i, x in enumerate(rows)}
+            col_idx = {x: i for i, x in enumerate(cols)}
+            blk = np.zeros((len(rows), len(cols), 1, 1))
+            for (nl, nr, v) in elems:
+                blk[row_idx[nl], col_idx[nr], 0, 0] = v
+            final_blocks[key] = blk
+            
+        qns_L = sorted(list(l_map.keys())); qns_R = sorted(list(r_map.keys()))
+        bt = BlockTensor(final_blocks, [qns_L, qns_R, [], []], [-1, 1, 1, -1])
+        sym_H.append(bt)
+        current_nodes = next_nodes
+    return sym_H
+
+
+
 # initial guess from hf but with added noise to prevenr stuck in hf product state, it happens sometimes
 def get_noisy_hf_guess(n_elec, n_spin, noise=1e-3):
     """
@@ -117,6 +183,67 @@ def get_noisy_hf_guess(n_elec, n_spin, noise=1e-3):
         mps_guess.append(vec)
 
     return mps_guess
+
+
+
+# get initial guess to be |HF> + alpha*|Doubles>
+# this is a better guess for U(1) enabled case since that would preserve particle number in the guess
+def get_entangled_guess(n_elec, n_spin):
+    """
+    Constructs a superposition |HF> + alpha*|Doubles>.
+    This guarantees Schmidt Rank > 1, preventing 'States=1' collapse.
+    """
+    if not SYMMETRY_AVAILABLE: return []
+    mps = []
+    
+    # HF Config: First n_elec are Occ(1)
+    hf_config = [1]*n_elec + [0]*(n_spin - n_elec)
+    
+    # Double Excitation Config: Move 2e from HOMO to LUMO
+    dbl_config = hf_config.copy()
+    if n_spin >= 4 and n_elec >= 2:
+        dbl_config[n_elec-1] = 0 # Emp
+        dbl_config[n_elec-2] = 0 # Emp
+        dbl_config[n_elec]   = 1 # Occ
+        dbl_config[n_elec+1] = 1 # Occ
+        
+    print(f"  [Guess] HF: {hf_config}")
+    print(f"  [Guess] Dbl: {dbl_config}")
+    
+    curr_hf = 0; curr_dbl = 0
+    
+    for i in range(n_spin):
+        data = {}
+        
+        # Path 1: HF
+        q_l_hf = curr_hf
+        phys_hf = hf_config[i] # 1 or 0
+        q_r_hf = q_l_hf + phys_hf
+        
+        key_hf = (q_l_hf, q_r_hf, phys_hf)
+        if key_hf not in data: data[key_hf] = np.zeros((1,1,1))
+        data[key_hf][0,0,0] += 0.9 # Weight for HF
+        
+        # Path 2: Doubles
+        q_l_dbl = curr_dbl
+        phys_dbl = dbl_config[i]
+        q_r_dbl = q_l_dbl + phys_dbl
+        
+        key_dbl = (q_l_dbl, q_r_dbl, phys_dbl)
+        if key_dbl not in data: data[key_dbl] = np.zeros((1,1,1))
+        data[key_dbl][0,0,0] += 0.1 # Weight for Doubles
+        
+        qns_L = sorted(list(set(k[0] for k in data)))
+        qns_R = sorted(list(set(k[1] for k in data)))
+        
+        # [0, 1] means both Emp and Occ sectors are allowed
+        bt = BlockTensor(data, [qns_L, qns_R, [0, 1]], [-1, 1, 1])
+        mps.append(bt)
+        
+        curr_hf += phys_hf
+        curr_dbl += phys_dbl
+        
+    return mps
 
 
 
@@ -237,6 +364,7 @@ class QCDMRG:
         self.e_core = None # core energy
         self.ci = None # CI coefficients
         self.H = None
+        self.H_raw = None
 
 
         self.hcore = self.h1e_cas = None # effective 1e CAS Hamiltonian including the influence of frozen orbitals
@@ -457,37 +585,51 @@ class QCDMRG:
         mpo = Mpo(model, algo="qr")
 
         # get it transposed for solver in PyQED: (L, R, P, P) -> (L, P, R, P)
+        self.H_raw = mpo.matrices
         H = [w.transpose(0, 3, 1, 2) for w in mpo.matrices]
         self.H = H
 
         return self
 
-    def run(self):
+    def run(self, U1=False):
         # if self.init_guess is None:
         #     logging.info('Building initial guess by iDMRG')
         #     # iDMRG
-
+        if self.H_raw is None: 
+            self.build()
+        final_H = self.H
         # DMRG Parameters
         N_SWEEPS = 20
         Initial_guess_NOISE    = 1e-3
 
         # get mpo and mps initial guess
         # mpo_dmrg = qc_dmrg_mpo(mf)
-        if self.init_guess == 'hf':
-            mps0 = get_noisy_hf_guess(mol.nelec, 2*self.ncas, noise=Initial_guess_NOISE)
+        if U1 and SYMMETRY_AVAILABLE:
+            print("  Converting MPO to U(1) Blocks (0=Emp, 1=Occ)...")
+            H_input = [w.transpose(0, 3, 1, 2) for w in self.H_raw]
+            final_H = convert_mpo_symmetric(H_input)
+            
+            print("  Generating Entangled Guess to force Bond Dim > 1...")
+            mps0 = get_entangled_guess(self.nelecas, 2*self.ncas)
+        else:
+            print("  Running Dense DMRG...")
+            final_H = self.H 
+            mps0 = get_noisy_hf_guess(self.nelecas, 2*self.ncas, noise=1e-3)
+        # if self.init_guess == 'hf':
+        #     mps0 = get_noisy_hf_guess(mol.nelec, 2*self.ncas, noise=Initial_guess_NOISE)
 
 
         t0 = time.time()
 
         # run dmrg!
         print(f"  Starting Sweeps (D={self.D})...")
-        dmrg = DMRG(self.H, D=self.D, nsweeps=N_SWEEPS, init_guess=mps0)
+        dmrg = DMRG(final_H, D=self.D, nsweeps=N_SWEEPS, init_guess=mps0, U1=U1)
         dmrg.run()
 
         # 6. Report result
         e_dmrg_total = dmrg.e_tot + self.mf.energy_nuc()
 
-
+        print('final number of electron is ',dmrg.nelec_dmrg())
         print(f"  RHF Energy:         {mf.e_tot:.8f} Ha")
         print(f"  E(DMRG) =  {e_dmrg_total:.8f} Ha")
         print(f"  Correlation Energy = {e_dmrg_total - mf.e_tot:.8f} Ha")
@@ -528,8 +670,8 @@ if __name__=='__main__':
     # mc.run()
 
     dmrg = QCDMRG(mf, ncas=8, nelecas=4, D=20)
-    dmrg.build().run()
-
+    dmrg.build().run(U1=True)
+    
     # conn refers to the connection operator, that is, the operator on the edge of
     # the block, on the interior of the chain.  We need to be able to represent S^z
     # and S^+ on that site in the current basis in order to grow the chain.

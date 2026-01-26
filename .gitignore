@@ -41,3 +41,5 @@ local_data_GL2013
 
 sh_file_for_HPC
 Miniforge3-MacOSX-arm64.sh
+Checkpoints
+examples/optimization

@@ -130,9 +130,9 @@ def davidson(A, neigen, tol=1E-6, itermax = 1000, jacobi=False):
 
             # correction vector
             if(jacobi):
-            	delta = jacobi_correction(q[:,j],A,theta[j])
+                delta = jacobi_correction(q[:,j],A,theta[j])
             else:
-            	delta = res / (theta[j]-Adiag+1E-16)
+                delta = res / (theta[j]-Adiag+1E-16)
                 #C = inv_approx_0 + theta[j]*I
                 #delta = -np.dot(C,res)
 
