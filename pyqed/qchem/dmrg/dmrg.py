@@ -105,44 +105,6 @@ def get_jw_term_robust(op_str_list, indices, factor):
     final_op_string = " ".join(final_ops_str)
     return Op(final_op_string, final_indices, factor=factor * ((-1) ** swaps) * extra_sign)
 
-
-class SymmetryManager:
-    def __init__(self, sym_list):
-        if sym_list is True: sym_list = ['charge', 'sz']
-        if sym_list is False or sym_list is None: sym_list = []
-        self.sym_types = [s.lower() for s in sym_list]
-        self.rank = len(self.sym_types)
-        self.enabled = self.rank > 0
-
-    def get_vac_qn(self):
-        return QN(*[0]*self.rank)
-
-    def get_phys_qn(self, site_idx, state_str):
-        """Map physical state ('emp', 'occ') to QN based on active symmetries."""
-        vals = []
-        for sym in self.sym_types:
-            if sym in ['charge', 'n', 'particle']:
-                if state_str == 'emp': vals.append(0)
-                else: vals.append(1) 
-            
-            elif sym in ['sz', 'spin', 's_z']:
-                # Even=Up(+1), Odd=Down(-1) -> Returns 2*Sz integers
-                if state_str == 'emp': 
-                    vals.append(0)
-                elif state_str == 'occ':
-                    if site_idx % 2 == 0: vals.append(1)  # Up
-                    else: vals.append(-1) # Down
-        return QN(*vals)
-    
-    def get_target_qn(self, nelec, spin):
-        vals = []
-        for sym in self.sym_types:
-            if sym in ['charge', 'n', 'particle']:
-                vals.append(int(nelec))
-            elif sym in ['sz', 'spin', 's_z']:
-                vals.append(int(spin))
-        return QN(*vals)
-
 # Configuration generators helpers for initial guess
 # non-normalized in those configs is fine. it is handeled in build_mps_from_configs.
 def gen_hf_config(nelec, nsites):
