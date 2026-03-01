@@ -887,17 +887,28 @@ class MPS:
             compressed_factors = compressed_factors[0]
         return MPS(compressed_factors, labels=['lv','p','rv'])
     
-    def calc_1site_rdm(self, idx=None):
+    def calc_local_site_rdms(self, idx=None):
         """
-        Calculate 1-site reduced density matrices.
+        Calculate the local reduced density matrix for individual, isolated sites.
+        (it is not 1 site rdm getting all <c^\dagger_i c_j>, this function only provides local information, such as the probability of the site being empty, singly occupied, or doubly occupied (<c^\dagger_i c_i>).
 
-        Dense (numpy) MPS path: uses standard [Left, Phys, Right] layout via _get_std_B.
+        Parameters
+        ----------
+        idx : int, list of int, tuple of int, or None, optional
+            The specific site index (or indices) to calculate the local RDM for. 
+            If None, calculates the local RDM for all sites in the chain. By default None.
 
-        U(1) (BlockTensor) path: builds left/right overlap environments using the
-        same contraction logic as the DMRG sweeps (contract_from_left/right),
-        but leaves the physical indices at the target site open.
-        TODO: U(1) branch is now still in Left Phys Right layout for MPS tensors.  Need to standardize.
-        Both Branch give numpy d×d matrices for convenience.
+        Returns
+        -------
+        dict
+            A dictionary mapping the requested site indices to their corresponding 
+            $d \times d$ local density matrices (as numpy arrays), where $d$ is the 
+            local physical dimension of the site.
+
+        Raises
+        ------
+        ValueError
+            If `idx` is not an int, list, tuple, or None.
         """
         import numpy as np
 
@@ -1011,23 +1022,66 @@ class MPS:
             idx = list(range(self.L))
         elif isinstance(idx, int):
             idx = [idx]
+
+        # 1. Build Left Environments
+        L_env = [np.array([[1.0]], dtype=complex)]
+        curr_L = L_env[0]
+        for i in range(self.L - 1):
+            B = self._get_std_B(i)
+            tmp = np.tensordot(curr_L, B, axes=(1, 0))
+            curr_L = np.tensordot(tmp, B.conj(), axes=([0, 1], [0, 1])).T
+            L_env.append(curr_L)
+            
+        # 2. Build Right Environments
+        R_env = [None] * self.L
+        curr_R = np.array([[1.0]], dtype=complex)
+        R_env[-1] = curr_R
+        for i in range(self.L - 1, 0, -1):
+            B = self._get_std_B(i)
+            tmp = np.tensordot(B, curr_R, axes=(2, 1))
+            curr_R = np.tensordot(tmp, B.conj(), axes=([1, 2], [1, 2])).T
+            R_env[i-1] = curr_R
+
+        # 3. Assemble Local RDMs
         rdm = {}
         for i in idx:
-            # Get Effective Wavefunction [Left, Phys, Right]
-            theta = self.get_theta1(i)
-            # Contract Left_env and Right_env
-            # Result is rho[Phys, Phys*]
-            rho = np.tensordot(theta, theta.conj(), axes=([0, 2], [0, 2]))
-            # Normalize 
+            B = self._get_std_B(i)
+            # Contract L_env with B -> tmp1(Bra_L, P, R)
+            tmp1 = np.tensordot(L_env[i], B, axes=(1, 0))
+            # Contract tmp1 with R_env -> tmp2(Bra_L, P, Bra_R)
+            tmp2 = np.tensordot(tmp1, R_env[i], axes=(2, 1))
+            # Contract tmp2 with B* -> rho(P, P*)
+            rho = np.tensordot(tmp2, B.conj(), axes=([0, 2], [0, 2]))
+            
+            # Normalize to ensure Tr(rho) = 1
             tr = np.trace(rho)
             if abs(tr) > 1e-12:
                 rho /= tr
             rdm[i] = rho
         return rdm
 
-    def calc_2site_rdm(self, idx_pairs=None):
+    def make_diagonal_rdm2(self, idx_pairs=None):
         """
-        Calculate 2-site reduced density matrices.
+        Calculate the 2-site reduced density matrices for specified pairs of sites.
+        
+        This method computes the exact local two-site density matrices by explicitly 
+        building the left and right environments from the boundaries inward. This 
+        exact trace bypasses any reliance on the canonical center of the MPS, 
+        ensuring numerically stable and physically valid results for any arbitrary state.
+
+        Parameters
+        ----------
+        idx_pairs : list of tuple of int, optional
+            A list of site index pairs `(i, j)` to calculate the 2-site RDM for. 
+            If None, the function calculates the RDMs for all possible unique 
+            pairs `i < j` in the chain. By default None.
+
+        Returns
+        -------
+        dict
+            A dictionary mapping each requested `(i, j)` tuple to its corresponding 
+            reduced density matrix (as a 2D dense complex numpy array). The dimension 
+            of the matrix is `(d_i * d_j, d_i * d_j)`.
         """
         import numpy as np
         from collections import defaultdict
@@ -1142,7 +1196,7 @@ class MPS:
                         # B*:     [L*_k, P_k, R*_k]
                         # Contract L with L, L* with L*, trace P_k.
                         # Output: [Pi, Pi*, R*_k, R_k]
-                        tensor = np.einsum('abcd, def, geh -> abfh', tensor, B, B.conj(), optimize=True)
+                        tensor = np.einsum('abcd, def, ceh -> abhf', tensor, B, B.conj(), optimize=True)
 
                     if j in js:
                         # Contract with component at j: [L_j, L*_j, Pj*, Pj]
@@ -1231,7 +1285,352 @@ class MPS:
                     rdm[(i, j)] = rho_mat
 
         return rdm
+    
+    def make_rdm1(self, sym_mgr=None):
+        """
+        Calculate the full global 1-electron reduced density matrix (1-RDM).
 
+        The elements are defined as $\\gamma_{ij} = \\langle \Psi | c_i^\\dagger c_j | \\Psi \\rangle$.
+        This method supports both the dense branch (using explicit Jordan-Wigner 
+        strings and transfer matrices) and the U(1) symmetric branch (using hole-state 
+        overlaps).
+
+        Parameters
+        ----------
+        sym_mgr : pyqed.mps.symmetry.SymmetryManager, optional
+            The symmetry manager containing the physical quantum number definitions. 
+            Strictly required if the MPS is utilizing the U(1) symmetric BlockTensor 
+            backend. By default None.
+
+        Returns
+        -------
+        np.ndarray
+            A dense complex numpy array of shape `(L, L)` representing the global 1-RDM, 
+            where `L` is the number of sites in the MPS.
+
+        Raises
+        ------
+        ValueError
+            If the MPS uses the U(1) symmetric backend but `sym_mgr` is not provided.
+        NotImplementedError
+            If the dense branch is called on a system with a local physical dimension 
+            other than d=2.
+        """
+        L = self.L
+        
+        # 1. Symmetric Branch (Requires sym_mgr)
+        if SYMMETRY_AVAILABLE and hasattr(self.Bs[0], 'qns'):
+            if sym_mgr is None:
+                raise ValueError("[Error] Symmetric RDM requires sym_mgr.")
+            
+            P = np.zeros((L, L), dtype=complex)
+            vac_qn = sym_mgr.get_vac_qn()
+            
+            # Pre-calculate hole states: |phi_j> = a_j |Psi>
+            phis = [None] * L
+            for j in range(L):
+                spin = 'up' if j % 2 == 0 else 'down'
+                W_a = build_annihilation_mpo_symmetric(j, L, sym_mgr, spin)
+                try:
+                    phi_data = apply_mpo_symmetric(W_a, self.Bs) 
+                    if phi_data:
+                        phis[j] = MPS(phi_data, labels=self.labels, bc=self.bc)
+                except Exception:
+                    phis[j] = None
+
+            # Compute Overlaps <phi_i | phi_j>
+            for i in range(L):
+                for j in range(i, L):
+                    if (i % 2) != (j % 2): continue # Spin conservation
+                    if phis[i] is None or phis[j] is None: continue
+                    
+                    val = self._mps_dot(phis[i], phis[j])
+                    P[i, j] = val
+                    P[j, i] = val.conjugate()
+            return P
+
+        # 2. Dense Branch (Exact O(L^2 D^3) evaluation with JW strings)
+        else:
+            P = np.zeros((L, L), dtype=complex)
+            d = self.dim
+            
+            if d == 2:
+                c_op    = np.array([[0, 1], [0, 0]], dtype=complex)
+                cdag_op = np.array([[0, 0], [1, 0]], dtype=complex)
+                z_op    = np.array([[1, 0], [0, -1]], dtype=complex)
+                n_op    = np.array([[0, 0], [0, 1]], dtype=complex)
+            else:
+                raise NotImplementedError(f"Dense 1-RDM currently supports d=2 spin-orbitals, got d={d}.")
+                
+            # A. Build Global Environments (Left and Right)
+            L_env = [np.array([[1.0]], dtype=complex)]
+            curr_L = L_env[0]
+            for i in range(L - 1):
+                B = self._get_std_B(i)
+                tmp = np.tensordot(curr_L, B, axes=(1, 0)) 
+                curr_L = np.tensordot(tmp, B.conj(), axes=([0, 1], [0, 1])).T 
+                L_env.append(curr_L)
+                
+            R_env = [None] * L
+            curr_R = np.array([[1.0]], dtype=complex)
+            R_env[-1] = curr_R
+            for i in range(L - 1, 0, -1):
+                B = self._get_std_B(i)
+                tmp = np.tensordot(B, curr_R, axes=(2, 1)) 
+                curr_R = np.tensordot(tmp, B.conj(), axes=([1, 2], [1, 2])).T 
+                R_env[i-1] = curr_R
+                
+            # B. Compute diagonal and off-diagonal elements
+            for i in range(L):
+                B_i = self._get_std_B(i)
+                
+                # 1. Diagonal element: <c_i^\dagger c_i>
+                op_ket_n = np.tensordot(n_op, B_i, axes=(1, 1)).transpose(1, 0, 2)
+                tmp_n1 = np.tensordot(L_env[i], op_ket_n, axes=(1, 0))
+                tmp_n2 = np.tensordot(tmp_n1, B_i.conj(), axes=([0, 1], [0, 1]))
+                P[i, i] = np.sum(tmp_n2 * R_env[i].T) # Trace the boundaries
+                
+                # 2. Off-diagonal elements <c_i^\dagger Z ... Z c_j>
+                op_ket_i = np.tensordot(cdag_op, B_i, axes=(1, 1)).transpose(1, 0, 2)
+                tmp = np.tensordot(L_env[i], op_ket_i, axes=(1, 0)) 
+                T = np.tensordot(tmp, B_i.conj(), axes=([0, 1], [0, 1])).T 
+                
+                for j in range(i + 1, L):
+                    B_j = self._get_std_B(j)
+                    op_ket_j = np.tensordot(c_op, B_j, axes=(1, 1)).transpose(1, 0, 2)
+                    
+                    tmp1 = np.tensordot(T, op_ket_j, axes=(1, 0)) 
+                    tmp2 = np.tensordot(tmp1, B_j.conj(), axes=([0, 1], [0, 1])) 
+                    val = np.sum(tmp2 * R_env[j].T) 
+                    
+                    P[i, j] = val
+                    P[j, i] = np.conj(val)
+                    
+                    # Advance JW string (Z)
+                    op_ket_z = np.tensordot(z_op, B_j, axes=(1, 1)).transpose(1, 0, 2)
+                    tmpz = np.tensordot(T, op_ket_z, axes=(1, 0))
+                    T = np.tensordot(tmpz, B_j.conj(), axes=([0, 1], [0, 1])).T
+                    
+            return P
+
+    def make_rdm2(self, sym_mgr=None):
+        """
+        Calculate the full global 4-index 2-electron reduced density matrix (2-RDM).
+
+        The elements are defined as $\\Gamma_{pqrs} = \\langle \Psi | c_p^\\dagger c_r^\\dagger c_s c_q | \\Psi \\rangle$.
+        This method evaluates the exact overlaps of two-hole states generated by applying 
+        annihilation operators (and their corresponding Jordan-Wigner strings) directly 
+        to the MPS. Scaling is $\\mathcal{O}(L^4)$.
+
+        Parameters
+        ----------
+        sym_mgr : pyqed.mps.symmetry.SymmetryManager, optional
+            The symmetry manager. Required if the MPS is utilizing the U(1) 
+            symmetric BlockTensor backend. By default None.
+
+        Returns
+        -------
+        np.ndarray
+            A dense complex numpy array of shape `(L, L, L, L)` representing the 
+            complete 4-index 2-RDM. Returns an array of zeros if called on a symmetric 
+            MPS without providing the `sym_mgr`.
+        """
+        L = self.L
+        G = np.zeros((L, L, L, L), dtype=complex)
+
+        if SYMMETRY_AVAILABLE and hasattr(self.Bs[0], 'qns'):
+            if not sym_mgr:
+                print("[Warning] Symmetric 2-RDM requires sym_mgr.")
+                return G
+            vac_qn = sym_mgr.get_vac_qn()
+
+            # 1. Pre-calculate single holes |phi_q> = a_q |Psi>
+            phis = [None] * L
+            for q in range(L):
+                spin = 'up' if q % 2 == 0 else 'down'
+                W_q = build_annihilation_mpo_symmetric(q, L, sym_mgr, spin)
+                try:
+                    d = apply_mpo_symmetric(W_q, self.Bs)
+                    if d: phis[q] = MPS(d, labels=self.labels, bc=self.bc)
+                except: pass
+
+            # 2. Double loop O(N^4)
+            for p in range(L):
+                if phis[p] is None: continue
+                for r in range(L):
+                    # Build |Bra> = a_r |phi_p>
+                    spin_r = 'up' if r % 2 == 0 else 'down'
+                    W_r = build_annihilation_mpo_symmetric(r, L, sym_mgr, spin_r)
+                    try:
+                        bra_data = apply_mpo_symmetric(W_r, phis[p].Bs)
+                        if not bra_data: continue
+                        bra_mps = MPS(bra_data, labels=self.labels, bc=self.bc)
+                    except: continue
+
+                    for s in range(L):
+                        if phis[s] is None: continue
+                        for q in range(L):
+                            if phis[q] is None: continue
+                            if ((p%2) + (r%2)) != ((s%2) + (q%2)): continue
+
+                            # Build |Ket> = a_s |phi_q>
+                            spin_s = 'up' if s % 2 == 0 else 'down'
+                            W_s = build_annihilation_mpo_symmetric(s, L, sym_mgr, spin_s)
+                            try:
+                                ket_data = apply_mpo_symmetric(W_s, phis[q].Bs)
+                                if not ket_data: continue
+                                ket_mps = MPS(ket_data, labels=self.labels, bc=self.bc)
+                            except: continue
+                            
+                            val = self._mps_dot(bra_mps, ket_mps)
+                            G[p, r, s, q] = val
+            return G
+        else:
+            d = self.dim
+            if d != 2:
+                raise NotImplementedError(f"Dense 2-RDM currently supports d=2 spin-orbitals, got d={d}.")
+                
+            c_op = np.array([[0, 1], [0, 0]], dtype=complex)
+            z_op = np.array([[1, 0], [0, -1]], dtype=complex)
+            perm_inv = np.argsort([self.lv_idx, self.p_idx, self.rv_idx])
+            
+            def apply_annihilation(mps_obj, q):
+                """Applies c_q (with JW strings) to return a new MPS."""
+                new_Bs = []
+                for i in range(L):
+                    B_std = mps_obj._get_std_B(i)
+                    if i < q:
+                        new_B = np.tensordot(z_op, B_std, axes=(1, 1)).transpose(1, 0, 2)
+                    elif i == q:
+                        new_B = np.tensordot(c_op, B_std, axes=(1, 1)).transpose(1, 0, 2)
+                    else:
+                        new_B = B_std.copy()
+                    # Restore original index order
+                    new_Bs.append(new_B.transpose(perm_inv))
+                return MPS(new_Bs, labels=mps_obj.labels, bc=mps_obj.bc)
+
+            # Pre-calculate 1-hole states: |phi_q> = c_q |Psi>
+            phis = [None] * L
+            for q in range(L):
+                tmp = apply_annihilation(self, q)
+                # Filter out 'dead' states with 0 electrons at site q
+                if abs(self._mps_dot(tmp, tmp)) > 1e-14:
+                    phis[q] = tmp
+
+            # Double loop O(L^4) for two-hole overlaps
+            for p in range(L):
+                if phis[p] is None: continue
+                for r in range(L):
+                    bra_mps = apply_annihilation(phis[p], r)
+                    if abs(self._mps_dot(bra_mps, bra_mps)) < 1e-14: continue
+                    
+                    for s in range(L):
+                        for q in range(L):
+                            if phis[q] is None: continue
+                            # Spin conservation check
+                            if ((p%2) + (r%2)) != ((s%2) + (q%2)): continue
+                            
+                            ket_mps = apply_annihilation(phis[q], s)
+                            val = self._mps_dot(bra_mps, ket_mps)
+                            G[p, r, s, q] = val
+                            
+            return G
+
+    def _mps_dot(self, mps1, mps2):
+        """
+        Calculate the inner product (overlap) between two Matrix Product States.
+
+        Evaluates < mps1 | mps2 >. Handles both dense NumPy tensors 
+        and symmetric BlockTensors efficiently by contracting the network from left to right.
+
+        Parameters
+        ----------
+        mps1 : MPS
+            The bra state |mps1>. The tensors of this state will be conjugated.
+        mps2 : MPS
+            The ket state |mps2>.
+
+        Returns
+        -------
+        complex
+            The scalar inner product evaluated from the complete contraction of the 
+            two MPS chains.
+        """
+        # Symmetric Branch (BlockTensor)
+        if SYMMETRY_AVAILABLE and isinstance(mps1.Bs[0], BlockTensor):
+            # E[q_bra_bond, q_ket_bond] = Matrix(dim_bra x dim_ket)
+            # Detect Vacuum QN from the first block
+            first_key = next(iter(mps1.Bs[0].data.keys()))
+            vac_qn = first_key[0] # Left Bond QN
+            
+            # Initialize Environment as 1x1 Identity in Vacuum sector
+            # E_blocks maps (QN_Bra, QN_Ket) -> Numpy Array
+            E_blocks = { (vac_qn, vac_qn): np.ones((1, 1), dtype=complex) }
+            
+            for i in range(self.L):
+                A = mps1.Bs[i] # Bra state (will be conjugated)
+                B = mps2.Bs[i] # Ket state
+                E_next = {}
+                
+                # Iterate over current Environment sectors
+                for (qLa, qLb), mat_E in E_blocks.items():
+                    # mat_E shape: (dL_A, dL_B)
+                    
+                    # 1. Filter Bra Blocks (A) that match Left QN = qLa
+                    # A.data keys: (qL, qR, qP)
+                    for keyA, blkA in A.data.items():
+                        if keyA[0] != qLa: continue
+                        qRa, qP = keyA[1], keyA[2]
+                        
+                        # 2. Filter Ket Blocks (B) that match Left QN = qLb AND Phys QN = qP
+                        # B.data keys: (qL, qR, qP)
+                        for keyB, blkB in B.data.items():
+                            if keyB[0] != qLb or keyB[2] != qP: continue
+                            qRb = keyB[1]
+                            
+                            # Contraction 
+                            # A*: (dL_A, dR_A, dP) -> from Bra
+                            # B : (dL_B, dR_B, dP) -> from Ket
+                            # E : (dL_A, dL_B)
+                            
+                            # 1: Contract E with A* over Left_Bra (index 0)
+                            # T(dL_B, dR_A, dP) = E(dL_A, dL_B) * A*(dL_A, dR_A, dP)
+                            # Axes: E[0] with A*[0]
+                            T = np.tensordot(mat_E, blkA.conj(), axes=(0, 0))
+                            
+                            # 2: Contract T with B over Left_Ket (index 0 of B, 0 of T)
+                            # and Physical (index 2 of B, 2 of T)
+                            # Res(dR_A, dR_B) = T(dL_B, dR_A, dP) * B(dL_B, dR_B, dP)
+                            # Axes: T[0, 2] with B[0, 2]
+                            block_res = np.tensordot(T, blkB, axes=([0, 2], [0, 2]))
+                            
+                            # Accumulate into next Environment
+                            next_key = (qRa, qRb)
+                            if next_key in E_next:
+                                E_next[next_key] += block_res
+                            else:
+                                E_next[next_key] = block_res
+                                
+                E_blocks = E_next
+                
+            # Final Result: Trace/Sum of the last environment block(s)
+            # For a proper overlap <Psi|Psi>, this should be a scalar 1.0
+            total = sum(np.sum(blk) for blk in E_blocks.values())
+            return total
+
+        # Dense Branch
+        else:
+            val = np.array([[1.0]], dtype=complex)
+            for i in range(self.L):
+                A = mps1.Bs[i] # (Left, Phys, Right)
+                B = mps2.Bs[i] 
+                
+                # E(la, lb) * A*(la, p, ra) -> T(lb, p, ra)
+                T = np.tensordot(val, A.conj(), axes=(0, 0))
+                # T(lb, p, ra) * B(lb, p, rb) -> Next_E(ra, rb)
+                val = np.tensordot(T, B, axes=([0, 1], [0, 1]))
+                
+            return val.flatten()[0]
 
 class Site(object):
     """A general single site
@@ -3214,27 +3613,98 @@ class DMRG:
 
         return [expect(psi, e_op) for e_op in e_ops]
 
-    def make_rdm(self, idx=None):
+    def make_rdm1(self, idx=None):
         """
-        Calculate 1-site reduced density matrix of the ground state.
-        Wrapper for MPS.calc_1site_rdm
-        \gamma_{ij} = < 0| c_j^\dagger c_i | 0 >
-        """
-        if self.ground_state is None:
-            raise ValueError("Run DMRG first to generate a ground state.")
-            
-        return self.ground_state.calc_1site_rdm(idx)
+        Calculate the global 1-site reduced density matrix of the optimized ground state.
+        
+        Wrapper for `MPS.make_rdm1`. Computes the matrix $\\gamma_{ij} = \\langle 0 | c_i^\\dagger c_j | 0 \\rangle$.
 
+        Parameters
+        ----------
+        idx : optional
+            Placeholder parameter to maintain API compatibility. Currently ignored as 
+            the function computes the full `(L, L)` global matrix. By default None.
+
+        Returns
+        -------
+        np.ndarray
+            A dense complex numpy array of shape `(L, L)` representing the global 1-RDM.
+        """
+        # if self.ground_state is None:
+        #     raise ValueError("Run DMRG first to generate a ground state.")
+            
+        return self.ground_state.make_rdm1(sym_mgr=self.sym_mgr)
+        # return self.ground_state.calc_1site_rdm(idx)
+
+    def make_local_site_rdm(self, idx=None):
+        """
+        Calculate the local reduced density matrices for individual, isolated sites.
+        
+        Wrapper for `MPS.calc_local_site_rdms`. Traces out the rest of the chain 
+        to isolate the internal $d \\times d$ quantum state of specific sites.
+
+        Parameters
+        ----------
+        idx : int or list of int, optional
+            The specific site index (or indices) to evaluate. If None, evaluates 
+            the local density matrices for all sites in the chain. By default None.
+
+        Returns
+        -------
+        dict
+            A dictionary mapping the requested site indices to their corresponding 
+            $d \\times d$ local density matrices (as numpy arrays).
+        """
+        return self.ground_state.calc_local_site_rdms(idx=idx)
+    
     def make_rdm2(self, idx_pairs=None):
         """
-        Calculate 2-site reduced density matrix of the ground state.
-        Wrapper for MPS.calc_2site_rdm
-        """
-        if self.ground_state is None:
-            raise ValueError("Run DMRG first to generate a ground state.")
-            
-        return self.ground_state.calc_2site_rdm(idx_pairs)
+        Calculate the full global 2-site reduced density matrix of the ground state.
+        
+        Wrapper for `MPS.make_rdm2`. Computes the complete $\\mathcal{O}(L^4)$ tensor 
+        $\\Gamma_{pqrs} = \\langle c_p^\\dagger c_r^\\dagger c_s c_q \\rangle$.
 
+        Parameters
+        ----------
+        idx_pairs : optional
+            Placeholder parameter to maintain API compatibility. Currently ignored as 
+            the function computes the full `(L, L, L, L)` global tensor. By default None.
+
+        Returns
+        -------
+        np.ndarray
+            A dense complex numpy array of shape `(L, L, L, L)`.
+        """
+        # if self.ground_state is None:
+        #     raise ValueError("Run DMRG first to generate a ground state.")
+            
+        return self.ground_state.make_rdm2(sym_mgr=self.sym_mgr)
+
+    def make_diagonal_rdm2(self, idx_pairs=None):
+        """
+        Calculate the diagonal blocks of the 2-site reduced density matrix.
+        
+        Wrapper for `MPS.make_diagonal_rdm2`. Efficiently extracts the two-site 
+        quantum state $\\rho_{ij}$ needed to compute density-density correlations 
+        like $\\langle n_i n_j \\rangle$ without evaluating the full $\\mathcal{O}(L^4)$ tensor.
+
+        Parameters
+        ----------
+        idx_pairs : list of tuple of int, optional
+            A list of site index pairs `(i, j)` to calculate the 2-site RDM for. 
+            If None, computes RDMs for all possible unique pairs. By default None.
+
+        Returns
+        -------
+        dict
+            A dictionary mapping each requested `(i, j)` tuple to its corresponding 
+            dense reduced density matrix numpy array.
+        """
+        # if self.ground_state is None:
+        #     raise ValueError("Run DMRG first to generate a ground state.")
+            
+        return self.ground_state.make_diagonal_rdm2(idx_pairs=idx_pairs)
+        
 def autoMPO(h1e, eri):
     """
     write the Hamiltonian into the MPO form
@@ -3442,7 +3912,204 @@ def fDMRG_1site_GS_OBC(H,D,Nsweeps):
     return E_list,M
 
 
+# Helper for RDM calculation
+def build_annihilation_mpo_symmetric(site_idx, L, sym_mgr, spin_sector):
+    """    
+    Constructs U(1) symmetric MPO for annihilation operator a_k.
+    Includes Jordan-Wigner strings (Z) for sites i < k.
 
+    Parameters
+    ----------
+    site_idx : _type_
+        _description_
+    L : _type_
+        _description_
+    sym_mgr : _type_
+        _description_
+    spin_sector : _type_
+        _description_
+
+    Returns
+    -------
+    _type_
+        _description_
+
+    Raises
+    ------
+    ImportError
+        _description_
+    """
+    if not SYMMETRY_AVAILABLE: raise ImportError("Symmetry required")
+    
+    vac_qn = sym_mgr.get_vac_qn()
+    # Determine Particle QN (The charge removed by annihilation)
+    # Spin-Orbital Mapping: If spin_sector='up', we look for site 0 (Even).
+    q_particle = sym_mgr.get_phys_qn(0 if spin_sector=='up' else 1, 'occ')
+    
+    tensors = []
+    
+    for i in range(L):
+        data = {}
+        # Physical QNs for this site
+        q_emp = sym_mgr.get_phys_qn(i, 'emp')
+        q_occ = sym_mgr.get_phys_qn(i, 'occ')
+        
+        if i < site_idx:
+            # Jordan-Wigner String (Z): Occ -> -Occ, Emp -> Emp
+            # Bond is Vacuum -> Vacuum
+            data[(vac_qn, vac_qn, q_emp, q_emp)] = np.array([[[[1.0]]]])
+            data[(vac_qn, vac_qn, q_occ, q_occ)] = np.array([[[[-1.0]]]])
+            
+        elif i == site_idx:
+            # Annihilation (a): Occ -> Emp
+            # Bond: Left(Vac) + Flux(Particle) = Right(Particle)
+            # Flux = Q_In - Q_Out = Occ - Emp = Particle
+            is_up = (i % 2 == 0)
+            valid_spin = (spin_sector == 'up' and is_up) or (spin_sector == 'down' and not is_up)
+            
+            if valid_spin:
+                # Key: (Left, Right, Out, In)
+                data[(vac_qn, q_particle, q_emp, q_occ)] = np.array([[[[1.0]]]])
+            
+        else: # i > site_idx
+            # Identity (I)
+            # Bond must carry the Particle charge to the right boundary
+            data[(q_particle, q_particle, q_emp, q_emp)] = np.array([[[[1.0]]]])
+            data[(q_particle, q_particle, q_occ, q_occ)] = np.array([[[[1.0]]]])
+
+        # If data is empty (e.g. wrong spin sector), create a zero-block to maintain MPO connectivity
+        if not data:
+             if i < site_idx: qL, qR = vac_qn, vac_qn
+             elif i == site_idx: qL, qR = vac_qn, q_particle
+             else: qL, qR = q_particle, q_particle
+             data[(qL, qR, q_emp, q_occ)] = np.zeros((1,1,1,1))
+
+        # Infer basis lists from keys
+        used_L = sorted(list(set(k[0] for k in data)))
+        used_R = sorted(list(set(k[1] for k in data)))
+        used_Out = sorted(list(set(k[2] for k in data)))
+        used_In = sorted(list(set(k[3] for k in data)))
+        
+        tensors.append(BlockTensor(data, [used_L, used_R, used_Out, used_In], [1, -1, 1, -1]))
+        
+    return tensors
+
+def apply_mpo_symmetric(W_list, M_list):
+    """
+    Symmetric application |Psi'> = W |Psi>. 
+    Robustly handles block fusion by pre-calculating dimensions.
+    """
+    import collections
+    new_mps = []
+    L = len(M_list)
+    
+    # [FIX] Dynamically determine the Vacuum QN from the first tensor's first bond
+    # This handles both int (0) and QN objects (QN(0,0))
+    first_key = next(iter(M_list[0].data.keys()))
+    vac_qn = first_key[0] # Left bond QN
+    
+    # Initialize map with the correct QN object
+    # Structure: { q_new: [ ((qw, qm), dim_prod), ... ] }
+    last_right_basis_map = {vac_qn: [((vac_qn, vac_qn), 1)]} 
+    
+    # Helper to get dimensions of a leg
+    def _get_qn_dims(bt, leg_idx):
+        dims = {}
+        for key, block in bt.data.items():
+            q = key[leg_idx]; d = block.shape[leg_idx]
+            dims[q] = d
+        return dims
+
+    for i in range(L):
+        W = W_list[i]; M = M_list[i]
+        
+        # 1. Contract Phys Indices: W[In] with M[Phys]
+        T = tensordot(W, M, axes=([3], [2]))
+        
+        # 2. Determine new Right Basis
+        current_right_basis_map = collections.defaultdict(list)
+        w_dims_r = _get_qn_dims(W, 1)
+        m_dims_r = _get_qn_dims(M, 1)
+        
+        for key_T in T.data:
+            qw_r, qm_r = key_T[1], key_T[4]
+            q_r_new = qw_r + qm_r
+            
+            if qw_r in w_dims_r and qm_r in m_dims_r:
+                d = w_dims_r[qw_r] * m_dims_r[qm_r]
+                pair_info = ((qw_r, qm_r), d)
+                if pair_info not in current_right_basis_map[q_r_new]:
+                    current_right_basis_map[q_r_new].append(pair_info)
+        
+        for q in current_right_basis_map:
+            current_right_basis_map[q].sort(key=lambda x: x[0])
+            
+        # 3. Construct Blocks
+        new_data = {}
+        blocks_by_sector = collections.defaultdict(dict)
+        
+        for key_T, block in T.data.items():
+            qw_l, qw_r, q_p_out, qm_l, qm_r = key_T
+            q_l_new = qw_l + qm_l; q_r_new = qw_r + qm_r
+            sector = (q_l_new, q_r_new, q_p_out)
+            comp_key = ((qw_l, qm_l), (qw_r, qm_r))
+            blocks_by_sector[sector][comp_key] = block
+
+        for sector, comps in blocks_by_sector.items():
+            q_l_new, q_r_new, q_p_out = sector
+            
+            row_info_list = last_right_basis_map.get(q_l_new, [])
+            col_info_list = current_right_basis_map.get(q_r_new, [])
+            
+            if not row_info_list or not col_info_list: continue 
+            
+            r_dim = sum(d for _, d in row_info_list)
+            c_dim = sum(d for _, d in col_info_list)
+            
+            row_offsets = {}; current_r = 0
+            for pair, d in row_info_list:
+                row_offsets[pair] = (current_r, d)
+                current_r += d
+            col_offsets = {}; current_c = 0
+            for pair, d in col_info_list:
+                col_offsets[pair] = (current_c, d)
+                current_c += d
+
+            # Boundary Condition: Force Dim=1 at last site
+            if i == L-1:
+                if c_dim > 1: c_dim = 1
+
+            new_block = np.zeros((r_dim, c_dim, 1), dtype=complex) 
+            
+            for ((w_l, m_l), (w_r, m_r)), blk in comps.items():
+                if (w_l, m_l) not in row_offsets or (w_r, m_r) not in col_offsets: continue
+                r_start, r_len = row_offsets[(w_l, m_l)]
+                c_start, c_len_full = col_offsets[(w_r, m_r)]
+                
+                blk_perm = blk.transpose(0, 3, 1, 4, 2)
+                dim_p = blk.shape[2]
+                if new_block.shape[2] != dim_p: 
+                    new_block = np.zeros((r_dim, c_dim, dim_p), dtype=complex)
+                
+                to_fill = blk_perm.reshape(blk.shape[0]*blk.shape[3], blk.shape[1]*blk.shape[4], dim_p)
+                actual_r = min(r_len, to_fill.shape[0])
+                actual_c = min(c_len_full, c_dim - c_start)
+                actual_c = min(actual_c, to_fill.shape[1])
+                
+                if actual_r > 0 and actual_c > 0:
+                    new_block[r_start:r_start+actual_r, c_start:c_start+actual_c, :] = to_fill[:actual_r, :actual_c, :]
+
+            if np.sum(np.abs(new_block)) > 1e-16:
+                new_data[sector] = new_block
+
+        qns_L = sorted(list(set(k[0] for k in new_data)))
+        qns_R = sorted(list(set(k[1] for k in new_data)))
+        qns_P = list(W.qns[2])
+        
+        new_mps.append(BlockTensor(new_data, [qns_L, qns_R, qns_P], [-1, 1, 1]))
+        last_right_basis_map = current_right_basis_map
+
+    return new_mps
 
 
 if __name__ == '__main__':

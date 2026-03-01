@@ -738,8 +738,8 @@ class QCDMRG(CASCI):
         print(f"  Starting Sweeps (D={self.D})...")
         dmrg = DMRG(final_H, D=self.D, nsweeps=nsweeps, init_guess=mps0, 
                     U1=use_symmetry, target_qn=target_qn, not_conv_err=False,sym_mgr = self.sym_mgr)
-        dmrg.run()
-        self.dmrg = dmrg
+        # dmrg.run()
+        self.dmrg = dmrg.run()
         # Report
         e_dmrg_total = dmrg.e_tot + self.e_core
         print(f"  RHF Energy:         {self.mf.e_tot:.8f} Ha")
@@ -823,15 +823,6 @@ class QCDMRG(CASCI):
                 label = f"Unknown ({sym_type})"
             print(f"    {label:<12} : Target={target_val:<8.4f} | Measured={measured:<8.4f} | Diff={diff:.2e} ")
 
-
-
-class DMRGSCF(QCDMRG):
-    """
-    optimize the orbitals
-    """
-    pass
-
-
 if __name__=='__main__':
 
     from pyqed.qchem.mcscf.direct_ci import CASCI
@@ -852,8 +843,11 @@ if __name__=='__main__':
     mf = mol.RHF().run()
 
 
-    dmrg = QCDMRG(mf, ncas=12, nelecas=6, D=60) #here we could assign number of electron wanted to be not equal to the number of electron in the HF state.
-    dmrg.build().run(symmetry_list=['charge','s_z'], initial_guess='cid')
+    qcdmrg = QCDMRG(mf, ncas=6, nelecas=6, D=20) #here we could assign number of electron wanted to be not equal to the number of electron in the HF state.
+    qcdmrg.build().run(initial_guess='cid')
+    # qcdmrg.build().run(symmetry_list=['charge','s_z'], initial_guess='cid')
+    rdm1 = qcdmrg.dmrg.ground_state.make_rdm1(sym_mgr=qcdmrg.dmrg.sym_mgr)
+    print(rdm1)
 
     # mc = CASCI(mf, ncas=8, nelecas=4)
     # mc.run()
