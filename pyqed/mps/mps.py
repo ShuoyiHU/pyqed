@@ -1558,9 +1558,11 @@ class MPS:
         """
         # Symmetric Branch (BlockTensor)
         if SYMMETRY_AVAILABLE and isinstance(mps1.Bs[0], BlockTensor):
+            mps1_std = mps1.to_order(['lv', 'rv', 'p'])
+            mps2_std = mps2.to_order(['lv', 'rv', 'p'])
             # E[q_bra_bond, q_ket_bond] = Matrix(dim_bra x dim_ket)
             # Detect Vacuum QN from the first block
-            first_key = next(iter(mps1.Bs[0].data.keys()))
+            first_key = next(iter(mps1_std.Bs[0].data.keys()))
             vac_qn = first_key[0] # Left Bond QN
             
             # Initialize Environment as 1x1 Identity in Vacuum sector
@@ -1568,8 +1570,8 @@ class MPS:
             E_blocks = { (vac_qn, vac_qn): np.ones((1, 1), dtype=complex) }
             
             for i in range(self.L):
-                A = mps1.Bs[i] # Bra state (will be conjugated)
-                B = mps2.Bs[i] # Ket state
+                A = mps1_std.Bs[i] # Bra state (will be conjugated)
+                B = mps2_std.Bs[i] # Ket state
                 E_next = {}
                 
                 # Iterate over current Environment sectors
@@ -1620,10 +1622,12 @@ class MPS:
 
         # Dense Branch
         else:
+            mps1_std = mps1.to_order(['lv', 'p', 'rv'])
+            mps2_std = mps2.to_order(['lv', 'p', 'rv'])
             val = np.array([[1.0]], dtype=complex)
             for i in range(self.L):
-                A = mps1.Bs[i] # (Left, Phys, Right)
-                B = mps2.Bs[i] 
+                A = mps1_std.Bs[i] # (Left, Phys, Right)
+                B = mps2_std.Bs[i] 
                 
                 # E(la, lb) * A*(la, p, ra) -> T(lb, p, ra)
                 T = np.tensordot(val, A.conj(), axes=(0, 0))
@@ -2415,15 +2419,15 @@ def apply_mpo(w_list, B_list, chi_max):
     """
     Apply the MPO to an MPS.
 
-    MPS index order: [chi1, chi2, d] = [left_bond, right_bond, physical]
-    MPO index order: [chi1, chi2, d_up, d_down] = [left_bond, right_bond, out, in]
+    MPS index order: [chi_L, d, chi_R] = [Left, Phys, Right]
+    MPO index order: [b_L, b_R, d_out, d_in] = [Left, Right, Out, In]
 
     Parameters
     ----------
     w_list : list
         MPO tensors, each with shape [chi1, chi2, d_up, d_down].
     B_list : list
-        MPS tensors, each with shape [chi1, chi2, d].
+        MPS tensors, each with shape [chi_L, d, chi_R].
     chi_max : int
         Maximum bond dimension for compression.
 
@@ -2440,6 +2444,7 @@ def apply_mpo(w_list, B_list, chi_max):
         w_list_copy = w_list.factors
     else:
         w_list_copy = w_list
+        
     if isinstance(B_list, MPS):
         B_list_copy = B_list.factors
     else:
@@ -2452,18 +2457,22 @@ def apply_mpo(w_list, B_list, chi_max):
     result = [B.copy() for B in B_list_copy]
 
     for i_site in range(L):
-        # B: [chi_L, chi_R, d]
+        # B: [chi_L, d_in, chi_R]
         # W: [b_L, b_R, d_out, d_in]
-        chi_L, chi_R, d = result[i_site].shape
-        b_L, b_R, d_out, d_in = w_list_copy[i_site].shape
-        # Contract W[..., d_in] with B[..., d]
+        chi_L, d_in_mps, chi_R = result[i_site].shape
+        b_L, b_R, d_out, d_in_mpo = w_list_copy[i_site].shape
+        
+        # Contract W's In (j) with B's Phys (j)
         # W: abij (a=b_L, b=b_R, i=d_out, j=d_in)
-        # B: klj (k=chi_L, l=chi_R, j=d)
-        # einsum: 'abij,klj->akbli' then reshape to [chi_L*b_L, chi_R*b_R, d_out]
-        B_new = np.einsum('abij,klj->akbli', w_list_copy[i_site], result[i_site])
-        B_new = np.reshape(B_new, (chi_L * b_L, chi_R * b_R, d_out))
+        # B: kjl (k=chi_L, j=d_in, l=chi_R)
+        # einsum: 'abij,kjl->akilb' -> (b_L, chi_L, d_out, chi_R, b_R)
+        B_new = np.einsum('abij,kjl->akilb', w_list_copy[i_site], result[i_site])
+        
+        # Reshape to strictly [Left, Phys, Right] for the compress function
+        B_new = np.reshape(B_new, (b_L * chi_L, d_out, chi_R * b_R))
         result[i_site] = B_new
     
+    # compress strictly expects [Left, Phys, Right]
     return compress(result, chi_max)
 
 

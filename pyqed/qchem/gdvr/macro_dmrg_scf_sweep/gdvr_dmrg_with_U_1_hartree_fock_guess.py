@@ -466,20 +466,6 @@ def align_orbital_phases(d_old, d_new, S_prim):
         min_overlap = min(min_overlap, overlap)
     return d_new, min_overlap
 
-def apply_mpo_to_mps(mpo_tensors, mps_tensors):
-    new_mps = []
-    L = len(mps_tensors)
-    for i in range(L):
-        M = mps_tensors[i]; W = mpo_tensors[i]         
-        T = np.tensordot(W, M, axes=([3], [0]))
-        T = T.transpose(2, 0, 3, 1, 4)
-        d_out = T.shape[0]
-        new_DL = T.shape[1] * T.shape[2]
-        new_DR = T.shape[3] * T.shape[4]
-        new_M = T.reshape(d_out, new_DL, new_DR)
-        new_mps.append(new_M)
-    return new_mps
-
 def build_annihilation_mpo(coeff_vector):
     L = len(coeff_vector); tensors = []
     I = np.eye(2); Z = np.array([[1, 0], [0, -1]]); a = np.array([[0, 1], [0, 0]]) 
@@ -507,23 +493,61 @@ def _bt_to_dense(bt):
     return out
 
 def calculate_overlap_with_hf_robust(mps_tensors, C_mo_spatial, occupied_indices, n_spatial):
+    # 1. Safely convert BlockTensors and force them into [Left, Phys, Right]
     curr_mps = []
     for t in mps_tensors:
-        if hasattr(t, 'data'): curr_mps.append(_bt_to_dense(t))
-        else: curr_mps.append(t.copy())
+        if hasattr(t, 'data'):
+            dense_t = _bt_to_dense(t) # Output from helper is [Left, Right, Phys]
+            curr_mps.append(dense_t.transpose(0, 2, 1)) # Transpose to [Left, Phys, Right]
+        else:
+            curr_mps.append(t.copy())
+            
+    L = len(curr_mps)
+    
+    # 2. Build the Annihilation Vectors
     ops = []
     for mo_idx in occupied_indices:
         vec = C_mo_spatial[:, mo_idx]
         op_down = np.zeros(2 * n_spatial); op_down[1::2] = vec; ops.append(op_down)
         op_up = np.zeros(2 * n_spatial); op_up[0::2] = vec; ops.append(op_up)
+        
+    # 3. Apply MPOs
     for k, op_vec in enumerate(ops):
-        mpo = build_annihilation_mpo(op_vec)
-        curr_mps = apply_mpo_to_mps(mpo, curr_mps)
-    val = np.array([[1.0]])
+        # MPO shape: [b_L, b_R, Phys_Out, Phys_In]
+        mpo = build_annihilation_mpo(op_vec) 
+        
+        next_mps = []
+        for i in range(L):
+            B = curr_mps[i] # [Chi_L, Phys_In, Chi_R]
+            W = mpo[i]      # [b_L, b_R, Phys_Out, Phys_In]
+            
+            # Contract W[Phys_In] (axis 3) with B[Phys_In] (axis 1)
+            # Result axes: (b_L, b_R, Phys_Out, Chi_L, Chi_R)
+            T = np.tensordot(W, B, axes=(3, 1))
+            
+            # Reorder to (b_L, Chi_L, Phys_Out, b_R, Chi_R)
+            T = T.transpose(0, 3, 2, 1, 4)
+            
+            # Merge virtual bonds to restore [Left, Phys, Right] format
+            new_shape = (T.shape[0] * T.shape[1], T.shape[2], T.shape[3] * T.shape[4])
+            next_mps.append(T.reshape(new_shape))
+            
+        curr_mps = next_mps
+        
+    # 4. Project onto the Vacuum State
+    # Because curr_mps is strictly [Left, Phys, Right], Vacuum is axis 1
+    val = np.array([1.0], dtype=complex)
     for M in curr_mps:
-        if M.shape[0] < 1: val = val * 0.0; break
-        mat = M[0, :, :]; val = val @ mat 
-    return val.flatten()[0]
+        if M.shape[0] < 1: 
+            return 0.0
+        
+        # Project Physical index to 0 (Vacuum state) -> mat shape: (Chi_L, Chi_R)
+        mat = M[:, 0, :] 
+        
+        # Contract Virtual Bonds: (1, Chi_L) @ (Chi_L, Chi_R) -> (1, Chi_R)
+        val = np.dot(val, mat)
+        
+    return np.real_if_close(val[0])
 
 def save_checkpoint(stage_name, d_stack, mps_tensors, energy_dict, mol, params, output_dir):
     os.makedirs(output_dir, exist_ok=True)
