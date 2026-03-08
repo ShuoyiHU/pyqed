@@ -19,7 +19,7 @@ from pyqed.mps.autompo.basis import BasisSimpleElectron
 from pyqed.mps.autompo.light_automatic_mpo import Mpo
 import pyqed.mps.mps as mps_lib
 import pyqed.mps.dmrg as dmrg_lib
-from pyqed.mps.mps import dense_to_symmetric_mpo, SymmetryManager
+from pyqed.mps.mps import dense_to_symmetric_mpo, SymmetryManager, svd_symmetric
 from pyqed.qchem.gdvr.macro_dmrg_scf_sweep import gdvr_dmrg_scf
 
 try:
@@ -84,7 +84,8 @@ def get_noisy_hf_guess(n_elec, n_spin, noise=1e-3):
     return mps_guess
 
 def get_entangled_guess(n_elec, n_spin):
-    if not SYMMETRY_AVAILABLE: return []
+    if not SYMMETRY_AVAILABLE: 
+        return []
     mps = []
     hf_config = [1]*n_elec + [0]*(n_spin - n_elec)
     dbl_config = hf_config.copy()
@@ -147,6 +148,41 @@ def make_abelian_random_block_init_guess(L, target_qn, phys_qns=None, max_bond_s
         Bs.append(B)
     return Bs
 
+def compress_mps_native(mps, D_max=40):
+    """
+    wrapper to do Left-to-Right sequential SVD compression using svd_symmetric in mps.py.
+    """
+    L = len(mps)
+    for i in range(L - 1):
+        # Contract adjacent sites M_i and M_{i+1}
+        # M_i axes: (Left, Right, Phys)
+        # T axes resulting from tensordot: (Left_L, Phys_L, Right_R, Phys_R)
+        T = tensordot(mps[i], mps[i+1], axes=([1], [0]))
+
+        # svd_symmetric expects (Left_L, Phys_L, Right_R, Phys_R)
+        # transposed by (0, 2, 1, 3)
+        AA = T.transpose(0, 2, 1, 3)
+
+        U, V, final_S, trunc_err, _ = svd_symmetric(AA, m_max=D_max)
+
+        # U comes out as (Left, Phys_L, Bond). We need (Left, Bond, Phys_L) for standard MPS
+        mps[i] = U.transpose(0, 2, 1)
+
+        # Absorb the Singular Values into V
+        # V axes are correctly (Bond, Right_R, Phys_R)
+        for q_key, blk in V.data.items():
+            q_mid = q_key[0] 
+            S_mat = final_S[q_mid]
+            
+            # Multiply S_mat (count, count) with V block (count, d_R, d_P)
+            V.data[q_key] = np.tensordot(S_mat, blk, axes=([1], [0]))
+
+        mps[i+1] = V
+    nrm = mps[-1].norm()
+    if nrm > 1e-12:
+        mps[-1] = mps[-1] * (1.0 / nrm)
+
+    return mps
 
 # initial guess for dmrg using HF result (transform from HF state in MO basis to AO basis)
 
@@ -382,7 +418,7 @@ def apply_mpo_symmetric(W_list, M_list, vac_qn):
 
     return new_mps
 
-def generate_exact_hf_guess(mol, C_mo_spatial, Nz, sym_mgr):
+def generate_exact_hf_guess(mol, C_mo_spatial, Nz, sym_mgr, D_max = 40):
     logger.info(f"  [Guess] Generating EXACT HF Slater Determinant (AO Basis)...")
     n_spin = 2 * Nz
     
@@ -399,12 +435,13 @@ def generate_exact_hf_guess(mol, C_mo_spatial, Nz, sym_mgr):
         op_up = np.zeros(n_spin); op_up[0::2] = vec
         mpo_up = build_creation_mpo_generalized(op_up, sym_mgr, spin_sector='up')
         mps = apply_mpo_symmetric(mpo_up, mps, vac_qn)
-        
+        mps = compress_mps_native(mps, D_max=D_max)
         # 3. Create Down Electron
         # Map spatial vector to spin-chain (1, 3, 5...)
         op_down = np.zeros(n_spin); op_down[1::2] = vec
         mpo_dn = build_creation_mpo_generalized(op_down, sym_mgr, spin_sector='down')
         mps = apply_mpo_symmetric(mpo_dn, mps, vac_qn)
+        mps = compress_mps_native(mps, D_max=D_max)
         
     dims = [sum([b.shape[0]*b.shape[1] for b in t.data.values()]) for t in mps] 
     logger.info(f"  [Guess] Finished. Dims ~ {max(dims)}")
@@ -894,7 +931,7 @@ def run_gdvr_dmrg_loop(
         if last_mps_tensors is None:
             if abelian_symmetry:
                 # Use Symmetric Exact HF Guess
-                mps_guess = generate_exact_hf_guess(mol, Cmo, Nz, sym_mgr)
+                mps_guess = generate_exact_hf_guess(mol, Cmo, Nz, sym_mgr, D_max= dmrg_bond_dim)
             else:
                 # Use Dense Noisy Guess
                 mps_guess = mps_lib.get_noisy_hf_guess(mol.nelec, 2*Nz)
