@@ -2286,6 +2286,8 @@ class MPO:
         """
 
         return expmpo(self.H, constant, method='taylor', order=4, scale=0)
+<<<<<<< main
+=======
 
     def compress(self, chi_max):
         """
@@ -2321,6 +2323,7 @@ class MPO:
             final_factors.append(W_final)
 
         return MPO(final_factors)
+>>>>>>> abelian_tdmps_test
 
 def gwp_mps(coord, nstates=None, inistates=0, a=None, x0=None, p0=0., dx=None, **kwargs):
     """
