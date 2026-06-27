@@ -1037,6 +1037,80 @@ class BasisSimpleElectron(BasisSet):
     def copy(self, new_dof):
         return self.__class__(new_dof)
 
+class BasisSpatialOrbital(BasisSet):
+    r"""
+    The basis set for a spatial orbital with 4 states:
+    0: |0> (empty)
+    1: |u> (spin-up occupied)
+    2: |d> (spin-down occupied)
+    3: |ud> (doubly occupied)
+    
+    The local state is defined as |ud> = a^\dagger_u a^\dagger_d |0>.
+    """
+    is_electron = True
+
+    def __init__(self, dof, sigmaqn=None):
+        if sigmaqn is None:
+            sigmaqn = [0, 1, 1, 2]
+        super().__init__(dof, 4, sigmaqn)
+
+    def op_mat(self, op):
+        if not isinstance(op, Op):
+            op = Op(op, None)
+
+        op_symbols = getattr(op, 'split_symbol', op.symbol.split())
+        op_factor = op.factor
+        
+        mat = np.eye(4)
+
+        for sym in op_symbols:
+            loc_mat = np.zeros((4, 4))
+            
+            # Spin-up operators
+            if sym in [r"a^\dagger_u", "a^+_u"]:
+                loc_mat[1, 0] = 1.
+                loc_mat[3, 2] = 1.
+            elif sym == "a_u":
+                loc_mat[0, 1] = 1.
+                loc_mat[2, 3] = 1.
+                
+            # Spin-down operators (includes the local fermionic phase)
+            elif sym in [r"a^\dagger_d", "a^+_d"]:
+                loc_mat[2, 0] = 1.
+                loc_mat[3, 1] = -1.  # Minus sign: a^\dagger_d passes a^\dagger_u
+            elif sym == "a_d":
+                loc_mat[0, 2] = 1.
+                loc_mat[1, 3] = -1.
+            # Number operators
+            elif sym == "n_u":
+                loc_mat[1, 1] = 1.
+                loc_mat[3, 3] = 1.
+            elif sym == "n_d":
+                loc_mat[2, 2] = 1.
+                loc_mat[3, 3] = 1.
+            elif sym in ["n", "n_tot"]:
+                loc_mat[1, 1] = 1.
+                loc_mat[2, 2] = 1.
+                loc_mat[3, 3] = 2.
+            # Parity Operator (Jordan-Wigner Z)
+            elif sym == "Z":
+                loc_mat[0, 0] = 1.
+                loc_mat[1, 1] = -1.
+                loc_mat[2, 2] = -1.
+                loc_mat[3, 3] = 1.
+            # Identity
+            elif sym == "I":
+                loc_mat = np.eye(4)
+                
+            else:
+                raise ValueError(f"op_symbol:{sym} is not supported in BasisSpatialOrbital")
+                
+            mat = mat @ loc_mat
+
+        return mat * op_factor
+
+    def copy(self, new_dof):
+        return self.__class__(new_dof, self.sigmaqn)
 
 class BasisHalfSpin(BasisSet):
     r"""
@@ -1103,6 +1177,98 @@ class BasisHalfSpin(BasisSet):
 
     def copy(self, new_dof):
         return self.__class__(new_dof, self.sigmaqn)
+
+
+class BasisSpin(BasisSet):
+    r"""
+    A general basis set for a particle with Spin S. 
+    Dimension = 2S + 1.
+    
+    Parameters
+    ----------
+    dof : hashable
+        Degree of freedom name.
+    S : float or int
+        The spin quantum number (e.g., 1 for Spin-1, 0.5 for Spin-1/2).
+    """
+    
+    is_spin = True
+
+    def __init__(self, dof, S, sigmaqn: List = None):
+        self.S = float(S)
+        nbas = int(2 * S + 1)
+        if sigmaqn is None:
+            # Default quantum numbers usually not needed for simple spin, 
+            # but can be placeholders
+            sigmaqn = [0] * nbas
+            
+        super().__init__(dof, nbas, sigmaqn)
+
+    def op_mat(self, op: Union[Op, str]):
+        if not isinstance(op, Op):
+            op = Op(op, None)
+        op_symbol, op_factor = op.split_symbol, op.factor
+
+        # Helper to generate diagonal m values: S, S-1, ..., -S
+        m_vals = np.linspace(self.S, -self.S, self.nbas)
+
+        if len(op_symbol) == 1:
+            sym = op_symbol[0]
+            mat = np.zeros((self.nbas, self.nbas), dtype=complex)
+
+            if sym == "I":
+                mat = np.eye(self.nbas)
+            
+            elif sym in ["sigma_z", "Z", "z", "Sz"]:
+                # S_z |m> = m |m>
+                mat = np.diag(m_vals)
+            
+            elif sym in ["sigma_+", "+", "Sp", "S+"]:
+                # S_+ |m> = sqrt(S(S+1) - m(m+1)) |m+1>
+                # Matrix element is <m+1 | S_+ | m>
+                # In matrix indexing: row i corresponds to m' = S - i
+                # We want m' = m + 1. 
+                # This connects column j (state m) to row j-1 (state m+1)
+                for i in range(1, self.nbas):
+                    m = m_vals[i] # This is the 'from' state
+                    val = np.sqrt(self.S*(self.S+1) - m*(m+1))
+                    mat[i-1, i] = val
+
+            elif sym in ["sigma_-", "-", "Sm", "S-"]:
+                # S_- |m> = sqrt(S(S+1) - m(m-1)) |m-1>
+                # Connects column j (state m) to row j+1 (state m-1)
+                for i in range(self.nbas - 1):
+                    m = m_vals[i]
+                    val = np.sqrt(self.S*(self.S+1) - m*(m-1))
+                    mat[i+1, i] = val
+
+            elif sym in ["sigma_x", "X", "x", "Sx"]:
+                # Sx = (S+ + S-) / 2
+                mat_p = self.op_mat("S+")
+                mat_m = self.op_mat("S-")
+                mat = 0.5 * (mat_p + mat_m)
+
+            elif sym in ["sigma_y", "Y", "y", "Sy"]:
+                # Sy = (S+ - S-) / 2i
+                mat_p = self.op_mat("S+")
+                mat_m = self.op_mat("S-")
+                mat = (mat_p - mat_m) / 2.0j
+                
+            elif sym in ["isigma_y", "iY", "iy"]:
+                 mat = (1j * self.op_mat("Y")).real
+
+            else:
+                raise ValueError(f"op_symbol:{sym} is not supported for BasisSpin")
+        else:
+            # Handle product operators like "Sx Sz"
+            mat = np.eye(self.nbas, dtype=complex)
+            for o in op_symbol:
+                mat = mat @ self.op_mat(o)
+
+        return mat * op_factor
+
+    def copy(self, new_dof):
+        return self.__class__(new_dof, self.S, self.sigmaqn)
 
 
 class BasisDummy(BasisSet):

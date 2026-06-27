@@ -6,7 +6,6 @@ from scipy import linalg
 from scipy.special import jv, jvp # MODIFIED: Imported jvp for analytical derivative
 from pyqed.mol import Mol, dag
 from sklearn.cluster import KMeans
-import matplotlib.pyplot as plt
 # from tqdm import tqdm
 import time
 from pyqed.floquet.utils import track_valence_band, berry_phase_winding, figure, track_valence_band_GL2013, save_data_to_hdf5, load_data_from_hdf5

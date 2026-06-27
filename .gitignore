@@ -39,7 +39,17 @@ local_data_GL2013
 *.nbi
 
 sh_file_for_HPC
-Checkpoints
-pyqed/HEOM/prony_test_radical_coulomb.py
-Miniforge3-MacOSX-arm64.sh
 examples/optimization
+Checkpoints
+Miniforge3-MacOSX-arm64.sh
+Scan_Results_Nz_32
+.vscode
+*.png
+*.csv
+*.png
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.tex
