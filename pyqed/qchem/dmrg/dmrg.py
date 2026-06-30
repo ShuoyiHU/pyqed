@@ -1146,7 +1146,7 @@ def _build_tensor_mpo_from_symbolic_terms(basis_sites, term_map, *, cutoff=1e-14
     return TensorMPO(factors, homogenous=False), len(terms)
 
 
-def _build_one_body_tensor_mpo(basis_sites, spatial_matrix, *, cutoff=1e-14):
+def _build_one_body_tensor_mpo(basis_sites, spatial_matrix, *, cutoff=1e-14, algo="qr"):
     """Build the spin-summed one-body MPO O = sum_pqσ M_pq a†_{pσ} a_{qσ}."""
     ncas = spatial_matrix.shape[0]
     term_map = {}
@@ -1156,7 +1156,7 @@ def _build_one_body_tensor_mpo(basis_sites, spatial_matrix, *, cutoff=1e-14):
         _accumulate_symbolic_term(term_map, symbol, dofs, factor, tol=cutoff)
         symbol, dofs, factor = get_jw_term_spec([r"a^\dagger", "a"], [2 * p + 1, 2 * q + 1], val)
         _accumulate_symbolic_term(term_map, symbol, dofs, factor, tol=cutoff)
-    return _build_tensor_mpo_from_symbolic_terms(basis_sites, term_map, cutoff=cutoff)
+    return _build_tensor_mpo_from_symbolic_terms(basis_sites, term_map, cutoff=cutoff, algo=algo)
 
 
 def _compress_tensor_mpo(tensor_mpo, chi_max=None):

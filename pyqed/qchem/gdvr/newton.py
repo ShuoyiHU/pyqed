@@ -21,6 +21,9 @@ class CollocatedERIOp:
         self.Kx_h = list(Kx_h)
         assert len(self.K_h)  >= self.Nz
         assert len(self.Kx_h) >= self.Nz
+        self.K_nl_km = self._permuted_kernel_list((0, 3, 2, 1))
+        self.K_nk_ml = self.Kx_h
+        self.K_nl_mk = self._permuted_kernel_list((0, 3, 1, 2))
         self.active_h = tuple(
             h for h in range(self.Nz)
             if self.K_h[h] is not None and self.Kx_h[h] is not None
@@ -31,6 +34,16 @@ class CollocatedERIOp:
             self.max_active_h = int(max(self.active_h))
         else:
             self.max_active_h = -1
+
+    def _permuted_kernel_list(self, axes):
+        n2 = self.N * self.N
+        out = []
+        for K in self.K_h:
+            if K is None:
+                out.append(None)
+                continue
+            out.append(np.asarray(K).reshape(self.N, self.N, self.N, self.N).transpose(axes).reshape(n2, n2))
+        return out
 
     def offset_is_active(self, h):
         h = int(abs(h))

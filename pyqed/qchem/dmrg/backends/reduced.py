@@ -247,6 +247,8 @@ def build_spatial_complementary_operator_families(
     exact_component_compression_validation_vectors=1,
     exact_component_compression_min_reduction=1,
     exact_component_compression_max_group_size=64,
+    enable_native_boundary_r=False,
+    validate_native_boundary_r=True,
     enable_native_boundary_p=True,
     validate_native_boundary_p=True,
     native_boundary_p_validation_policy="first_pass",
