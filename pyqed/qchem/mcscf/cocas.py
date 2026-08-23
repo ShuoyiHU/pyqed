@@ -101,7 +101,13 @@ class OrbitalDIIS:
         return _orthonormalize_columns(U_new)
 
 
-def _apply_orbital_diis(diis_helper, U, h1e, eri, dm1, dm2, current_energy):
+def _apply_orbital_diis(
+    diis_helper,
+    U,
+    objective,
+    objective_args,
+    current_energy,
+):
     """Accept a DIIS-mixed ``U`` only if it improves the current objective.
 
     The historical main-branch DIIS scheme extrapolated blindly, which can
@@ -117,7 +123,7 @@ def _apply_orbital_diis(diis_helper, U, h1e, eri, dm1, dm2, current_energy):
     if U_diis is U:
         return U
 
-    candidate_energy = energy(U_diis, h1e, eri, dm1, dm2)
+    candidate_energy = objective(U_diis, *objective_args)
     current_energy = np.asarray(current_energy).real.item()
     candidate_energy = np.asarray(candidate_energy).real.item()
 
@@ -293,6 +299,9 @@ def _fresh_casci_like(source):
     mc.direct_connectivity = getattr(source, 'direct_connectivity', None)
     mc.SC1 = getattr(source, 'SC1', None)
     mc.SC2 = getattr(source, 'SC2', None)
+    mc.orbital_core_mode = getattr(source, "orbital_core_mode", "analytic")
+    rdm_info = getattr(source, "orbital_rdm_last_info", None)
+    mc.orbital_rdm_last_info = None if rdm_info is None else dict(rdm_info)
     return mc
 
 
@@ -318,6 +327,55 @@ def _make_orbital_rdm12(mc, state_id, *, with_core):
     return mc.make_rdm12(state_id, with_core=with_core)
 
 
+def _normalize_orbital_core_mode(mode):
+    normalized = str(mode).strip().lower().replace("-", "_")
+    aliases = {
+        "active": "analytic",
+        "active_only": "analytic",
+        "full": "embedded",
+        "full_rdm": "embedded",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in {"analytic", "embedded"}:
+        raise ValueError("orbital_core_mode must be 'analytic' or 'embedded'.")
+    return normalized
+
+
+def _record_orbital_rdm_storage(mc, dm1, dm2, *, mode, ncore):
+    info = dict(getattr(mc, "orbital_rdm_last_info", None) or {})
+    ncas = int(dm1.shape[0] if mode == "analytic" else dm1.shape[0] - ncore)
+    dtype = np.result_type(dm1.dtype, dm2.dtype)
+    embedded_norb = int(ncore + ncas)
+    info.update({
+        "core_mode": mode,
+        "rdm1_shape": tuple(int(value) for value in dm1.shape),
+        "rdm2_shape": tuple(int(value) for value in dm2.shape),
+        "rdm_bytes": int(dm1.nbytes + dm2.nbytes),
+        "active_rdm_bytes": int(
+            (ncas**2 + ncas**4) * np.dtype(dtype).itemsize
+        ),
+        "embedded_rdm_bytes_estimate": int(
+            (embedded_norb**2 + embedded_norb**4) * np.dtype(dtype).itemsize
+        ),
+    })
+    mc.orbital_core_mode = mode
+    mc.orbital_rdm_last_info = info
+
+
+def _orbital_rdms(mc, state_id, *, core_mode):
+    mode = _normalize_orbital_core_mode(core_mode)
+    with_core = mode == "embedded" and mc.ncore > 0
+    dm1, dm2 = _make_orbital_rdm12(mc, state_id, with_core=with_core)
+    _record_orbital_rdm_storage(
+        mc,
+        dm1,
+        dm2,
+        mode=mode,
+        ncore=int(mc.ncore),
+    )
+    return dm1, dm2
+
+
 def _wguess(src, dst, state=0):
     """Reuse the accepted DMRG MPS as the next macroiteration guess."""
 
@@ -337,8 +395,8 @@ def _cap(cap0, tr):
     return min(float(cap0), float(tr))
 
 
-def _gn(U, h1e, eri, dm1, dm2):
-    g = opt_gradient(U, h1e, eri, dm1, dm2)
+def _gn(U, gradient_function, objective_args):
+    g = gradient_function(U, *objective_args)
     return float(opt_norm(opt_grad(U, g)))
 
 
@@ -407,6 +465,7 @@ class COCAS(CASCI):
                  macro_trust_shrink=0.5,
                  macro_trust_grow=1.5,
                  warm_start_dmrg=True,
+                 orbital_core_mode="analytic",
                  use_cholesky=None,
                  verbose=0,
                  **kwargs):
@@ -439,6 +498,9 @@ class COCAS(CASCI):
         self.macro_trust_shrink = float(macro_trust_shrink)
         self.macro_trust_grow = float(macro_trust_grow)
         self.warm_start_dmrg = bool(warm_start_dmrg)
+        self.orbital_core_mode = _normalize_orbital_core_mode(
+            orbital_core_mode
+        )
         # Optional DIIS mixing over the optimized U matrices.  This mirrors the
         # main-branch accelerator while keeping it configurable on bg.
         self.diis = diis
@@ -525,6 +587,7 @@ class COCAS(CASCI):
                 macro_trust_shrink=self.macro_trust_shrink,
                 macro_trust_grow=self.macro_trust_grow,
                 warm_start_dmrg=self.warm_start_dmrg,
+                orbital_core_mode=self.orbital_core_mode,
                 diis=self.diis,
                 diis_space=self.diis_space,
                 diis_start=self.diis_start,
@@ -557,6 +620,7 @@ class COCAS(CASCI):
                 macro_trust_shrink=self.macro_trust_shrink,
                 macro_trust_grow=self.macro_trust_grow,
                 warm_start_dmrg=self.warm_start_dmrg,
+                orbital_core_mode=self.orbital_core_mode,
                 diis=self.diis,
                 diis_space=self.diis_space,
                 diis_start=self.diis_start,
@@ -583,6 +647,16 @@ class COCAS(CASCI):
         self.mo_cas = getattr(mc, 'mo_cas', None)
         self.nstates = mc.nstates
         self.solver_backend = getattr(mc, 'solver_backend', None)
+        self.orbital_core_mode = getattr(
+            mc,
+            "orbital_core_mode",
+            self.orbital_core_mode,
+        )
+        self.orbital_rdm_last_info = getattr(
+            mc,
+            "orbital_rdm_last_info",
+            None,
+        )
 
         return self
 
@@ -590,6 +664,240 @@ class COCAS(CASCI):
         self.nstates = len(weights)
         self.weights = weights
         return self
+
+
+def _active_core_factor_intermediates(
+    U,
+    pair_factors,
+    dm1,
+    dm2,
+    ncore,
+    *,
+    with_derivative=True,
+):
+    """Energy and transformed-factor derivative for an active-only RDM."""
+
+    ncas = int(dm1.shape[0])
+    if U.shape[1] != ncore + ncas:
+        raise ValueError("U columns must equal ncore plus the active RDM dimension.")
+    transformed = contract("Ppq,px,qy->Pxy", pair_factors, U, U)
+    active = slice(ncore, ncore + ncas)
+    taa = transformed[:, active, active]
+
+    active_energy = 0.5 * contract("Pab,Pcd,abcd->", taa, taa, dm2)
+    if ncore == 0:
+        if not with_derivative:
+            return active_energy, transformed, None
+        derivative = np.zeros_like(transformed, dtype=np.result_type(
+            transformed.dtype,
+            dm1.dtype,
+            dm2.dtype,
+        ))
+        derivative[:, active, active] += 0.5 * (
+            contract("Pcd,abcd->Pab", taa, dm2)
+            + contract("Pab,abcd->Pcd", taa, dm2)
+        )
+        return active_energy, transformed, derivative
+
+    core = slice(0, ncore)
+    tcc = transformed[:, core, core]
+    tca = transformed[:, core, active]
+    tac = transformed[:, active, core]
+    trace_core = np.trace(tcc, axis1=1, axis2=2)
+    active_trace = contract("Pab,ab->P", taa, dm1)
+
+    energy_value = active_energy
+    energy_value += 2.0 * contract("P,P->", trace_core, trace_core)
+    energy_value -= contract("Pij,Pji->", tcc, tcc)
+    energy_value += 2.0 * contract("P,P->", trace_core, active_trace)
+    energy_value -= 0.5 * contract("Pia,Pib,ab->", tca, tca, dm1)
+    energy_value -= 0.5 * contract("Pai,Pbi,ab->", tac, tac, dm1)
+
+    if not with_derivative:
+        return energy_value, transformed, None
+    derivative = np.zeros_like(transformed, dtype=np.result_type(
+        transformed.dtype,
+        dm1.dtype,
+        dm2.dtype,
+    ))
+    derivative[:, active, active] += 0.5 * (
+        contract("Pcd,abcd->Pab", taa, dm2)
+        + contract("Pab,abcd->Pcd", taa, dm2)
+    )
+
+    diagonal = np.arange(ncore)
+    derivative[:, diagonal, diagonal] += (
+        4.0 * trace_core + 2.0 * active_trace
+    )[:, None]
+    derivative[:, core, core] -= 2.0 * tcc.transpose(0, 2, 1)
+    derivative[:, active, active] += (
+        2.0 * trace_core[:, None, None] * dm1[None, :, :]
+    )
+    derivative[:, core, active] -= 0.5 * (
+        contract("Pib,ab->Pia", tca, dm1)
+        + contract("Pib,ba->Pia", tca, dm1)
+    )
+    derivative[:, active, core] -= 0.5 * (
+        contract("Pbi,ab->Pai", tac, dm1)
+        + contract("Pbi,ba->Pai", tac, dm1)
+    )
+    return energy_value, transformed, derivative
+
+
+def _factor_derivative_to_orbital_gradient(U, pair_factors, derivative):
+    return (
+        contract("Ppq,qy,Pxy->px", pair_factors, U, derivative)
+        + contract("Ppq,px,Pxy->qy", pair_factors, U, derivative)
+    )
+
+
+def _active_core_dense_energy(U, eri, dm1, dm2, ncore):
+    active = slice(ncore, ncore + dm1.shape[0])
+    ua = U[:, active]
+    value = 0.5 * contract(
+        "pqrs,pa,qb,rc,sd,abcd->",
+        eri,
+        ua,
+        ua,
+        ua,
+        ua,
+        dm2,
+    )
+    if ncore == 0:
+        return value
+
+    uc = U[:, :ncore]
+    core_density = uc @ uc.T
+    active_density = ua @ dm1 @ ua.T
+    value += 2.0 * contract("pqrs,pq,rs->", eri, core_density, core_density)
+    value -= contract("pqrs,ps,qr->", eri, core_density, core_density)
+    value += contract("pqrs,pq,rs->", eri, core_density, active_density)
+    value += contract("pqrs,pq,rs->", eri, active_density, core_density)
+    value -= 0.5 * contract("pqrs,pr,qs->", eri, core_density, active_density)
+    value -= 0.5 * contract("pqrs,pr,qs->", eri, active_density, core_density)
+    return value
+
+
+def _active_core_dense_gradient(U, eri, dm1, dm2, ncore):
+    ncas = int(dm1.shape[0])
+    active = slice(ncore, ncore + ncas)
+    ua = U[:, active]
+    gradient_value = np.zeros_like(
+        U,
+        dtype=np.result_type(U.dtype, eri.dtype, dm1.dtype, dm2.dtype),
+    )
+    gradient_value[:, active] += 0.5 * (
+        contract("pqrs,qb,rc,sd,abcd->pa", eri, ua, ua, ua, dm2)
+        + contract("pqrs,pa,rc,sd,abcd->qb", eri, ua, ua, ua, dm2)
+        + contract("pqrs,pa,qb,sd,abcd->rc", eri, ua, ua, ua, dm2)
+        + contract("pqrs,pa,qb,rc,abcd->sd", eri, ua, ua, ua, dm2)
+    )
+    if ncore == 0:
+        return gradient_value
+
+    uc = U[:, :ncore]
+    core_density = uc @ uc.T
+    active_density = ua @ dm1 @ ua.T
+
+    core_derivative = 2.0 * (
+        contract("xyrs,rs->xy", eri, core_density)
+        + contract("pqxy,pq->xy", eri, core_density)
+    )
+    core_derivative -= (
+        contract("xqry,qr->xy", eri, core_density)
+        + contract("pxys,ps->xy", eri, core_density)
+    )
+    core_derivative += contract("xyrs,rs->xy", eri, active_density)
+    core_derivative += contract("pqxy,pq->xy", eri, active_density)
+    core_derivative -= 0.5 * (
+        contract("xqys,qs->xy", eri, active_density)
+        + contract("pxry,pr->xy", eri, active_density)
+    )
+
+    active_derivative = contract("pqxy,pq->xy", eri, core_density)
+    active_derivative += contract("xyrs,rs->xy", eri, core_density)
+    active_derivative -= 0.5 * (
+        contract("pxry,pr->xy", eri, core_density)
+        + contract("xqys,qs->xy", eri, core_density)
+    )
+
+    gradient_value[:, :ncore] += (
+        core_derivative + core_derivative.T
+    ) @ uc
+    gradient_value[:, active] += (
+        active_derivative @ ua @ dm1.T
+        + active_derivative.T @ ua @ dm1
+    )
+    return gradient_value
+
+
+def _active_core_energy(U, h1e, eri, dm1, dm2, ncore):
+    """Orbital energy using active RDMs and analytic closed-shell core terms."""
+
+    ncore = int(ncore)
+    ncas = int(dm1.shape[0])
+    if U.shape[1] != ncore + ncas:
+        raise ValueError("U columns must equal ncore plus the active RDM dimension.")
+    active = slice(ncore, ncore + ncas)
+    ua = U[:, active]
+    value = contract("pq,pa,qb,ab->", h1e, ua, ua, dm1)
+    if ncore:
+        uc = U[:, :ncore]
+        value += 2.0 * contract("pq,pi,qi->", h1e, uc, uc)
+    if np.ndim(eri) == 3:
+        two_electron, _, _ = _active_core_factor_intermediates(
+            U,
+            eri,
+            dm1,
+            dm2,
+            ncore,
+            with_derivative=False,
+        )
+        return value + two_electron
+    return value + _active_core_dense_energy(U, eri, dm1, dm2, ncore)
+
+
+def _active_core_gradient(U, h1e, eri, dm1, dm2, ncore):
+    """Gradient paired with :func:`_active_core_energy`."""
+
+    ncore = int(ncore)
+    ncas = int(dm1.shape[0])
+    active = slice(ncore, ncore + ncas)
+    ua = U[:, active]
+    gradient_value = np.zeros_like(
+        U,
+        dtype=np.result_type(U.dtype, h1e.dtype, eri.dtype, dm1.dtype, dm2.dtype),
+    )
+    gradient_value[:, active] += (
+        h1e @ ua @ dm1.T + h1e.T @ ua @ dm1
+    )
+    if ncore:
+        uc = U[:, :ncore]
+        gradient_value[:, :ncore] += 2.0 * (
+            h1e @ uc + h1e.T @ uc
+        )
+    if np.ndim(eri) == 3:
+        _, _, derivative = _active_core_factor_intermediates(
+            U, eri, dm1, dm2, ncore
+        )
+        gradient_value += _factor_derivative_to_orbital_gradient(
+            U, eri, derivative
+        )
+    else:
+        gradient_value += _active_core_dense_gradient(
+            U, eri, dm1, dm2, ncore
+        )
+    return gradient_value
+
+
+def _orbital_objective(mode, h1e, eri, dm1, dm2, ncore):
+    if mode == "analytic":
+        return (
+            _active_core_energy,
+            _active_core_gradient,
+            (h1e, eri, dm1, dm2, int(ncore)),
+        )
+    return energy, opt_gradient, (h1e, eri, dm1, dm2)
 
 
 def energy(U, h1e, eri, dm1, dm2):
@@ -637,6 +945,7 @@ def kernel(mc, U0, nelecas, ncas, C0, h1e, eri, max_cycles=30, tol=1e-6,
            macro_trust_shrink=0.5, macro_trust_grow=1.5,
            warm_start_dmrg=True,
            macro_callback=None,
+           orbital_core_mode="analytic",
            raise_on_nonconvergence=True, **kwargs):
     r"""
     complete active space orbital optimization with orthonomality constraint
@@ -673,12 +982,8 @@ def kernel(mc, U0, nelecas, ncas, C0, h1e, eri, max_cycles=30, tol=1e-6,
 
     """
 
-    if mc.ncore > 0:
-        with_core = True
-    else:
-        with_core = False
-
-    dm1, dm2 = _make_orbital_rdm12(mc, 0, with_core=with_core)
+    core_mode = _normalize_orbital_core_mode(orbital_core_mode)
+    dm1, dm2 = _orbital_rdms(mc, 0, core_mode=core_mode)
 
     # eri = mc.eri_so[0, 0] # for spin-restricted calculation
     # nmo = self.nmo
@@ -701,19 +1006,35 @@ def kernel(mc, U0, nelecas, ncas, C0, h1e, eri, max_cycles=30, tol=1e-6,
     diag = []
 
     def opt_u(u, d1, d2, st, cap, use_diis=True):
+        objective, gradient_function, objective_args = _orbital_objective(
+            core_mode, h1e, eri, d1, d2, mc.ncore
+        )
+        minimize_options = {}
+        if core_mode == "analytic":
+            minimize_options["gradient_function"] = gradient_function
         u1, e1 = minimize(
-            energy, u, args=(h1e, eri, d1, d2), tau=st,
+            objective, u, args=objective_args, tau=st,
             algorithm=optimizer, history_size=optimizer_history,
             epsilon=optimizer_tol,
             max_iterations=optimizer_max_steps,
             max_step_norm=cap,
+            **minimize_options,
         )
         if use_diis:
-            u1 = _apply_orbital_diis(orbital_diis, u1, h1e, eri, d1, d2, e1)
+            u1 = _apply_orbital_diis(
+                orbital_diis,
+                u1,
+                objective,
+                objective_args,
+                e1,
+            )
         return u1
 
     U_acc = U0
-    gn = _gn(U_acc, h1e, eri, dm1, dm2)
+    _, gradient_function, objective_args = _orbital_objective(
+        core_mode, h1e, eri, dm1, dm2, mc.ncore
+    )
+    gn = _gn(U_acc, gradient_function, objective_args)
     U = opt_u(U_acc, dm1, dm2, 1.0, _cap(cap0, tr))
 
     k = 0
@@ -793,8 +1114,11 @@ def kernel(mc, U0, nelecas, ncas, C0, h1e, eri, max_cycles=30, tol=1e-6,
         e_old = mc.e_tot
 
 
-        dm1, dm2 = _make_orbital_rdm12(mc, 0, with_core=with_core)
-        gn = _gn(U_acc, h1e, eri, dm1, dm2)
+        dm1, dm2 = _orbital_rdms(mc, 0, core_mode=core_mode)
+        _, gradient_function, objective_args = _orbital_objective(
+            core_mode, h1e, eri, dm1, dm2, mc.ncore
+        )
+        gn = _gn(U_acc, gradient_function, objective_args)
 
         U = opt_u(U_acc, dm1, dm2, 1.0, _cap(cap0, tr))
         # print(E + mol.energy_nuc())
@@ -861,12 +1185,10 @@ def kernel_state_average(mc, weights, U0, nelecas, ncas, C0, h1e, eri,
                          macro_trust_shrink=0.5, macro_trust_grow=1.5,
                          warm_start_dmrg=True,
                          macro_callback=None,
+                         orbital_core_mode="analytic",
                          raise_on_nonconvergence=True, **kwargs):
 
-    if mc.ncore > 0:
-        with_core = True
-    else:
-        with_core = False
+    core_mode = _normalize_orbital_core_mode(orbital_core_mode)
 
     nstates = mc.nstates
     e_history = [mc.e_tot]
@@ -878,7 +1200,7 @@ def kernel_state_average(mc, weights, U0, nelecas, ncas, C0, h1e, eri,
     dm1 = 0
     dm2 = 0
     for n in range(nstates):
-        _dm1, _dm2 = _make_orbital_rdm12(mc, n, with_core=with_core)
+        _dm1, _dm2 = _orbital_rdms(mc, n, core_mode=core_mode)
         dm1 += _dm1 * weights[n]
         dm2 += _dm2 * weights[n]
 
@@ -895,21 +1217,37 @@ def kernel_state_average(mc, weights, U0, nelecas, ncas, C0, h1e, eri,
     diag = []
 
     def opt_u(u, d1, d2, st, cap, use_diis=True):
+        objective, gradient_function, objective_args = _orbital_objective(
+            core_mode, h1e, eri, d1, d2, mc.ncore
+        )
+        minimize_options = {}
+        if core_mode == "analytic":
+            minimize_options["gradient_function"] = gradient_function
         u1, e1 = minimize(
-            energy, u, args=(h1e, eri, d1, d2), tau=st,
+            objective, u, args=objective_args, tau=st,
             algorithm=optimizer, history_size=optimizer_history,
             epsilon=optimizer_tol,
             max_iterations=optimizer_max_steps,
             max_step_norm=cap,
+            **minimize_options,
         )
         if use_diis:
-            u1 = _apply_orbital_diis(orbital_diis, u1, h1e, eri, d1, d2, e1)
+            u1 = _apply_orbital_diis(
+                orbital_diis,
+                u1,
+                objective,
+                objective_args,
+                e1,
+            )
         return u1
 
 
     e_old = sum(weights * mc.e_tot)
     U_acc = U0
-    gn = _gn(U_acc, h1e, eri, dm1, dm2)
+    _, gradient_function, objective_args = _orbital_objective(
+        core_mode, h1e, eri, dm1, dm2, mc.ncore
+    )
+    gn = _gn(U_acc, gradient_function, objective_args)
     U = opt_u(U_acc, dm1, dm2, 1.0, _cap(cap0, tr))
     last_mo_coeff = C0 @ U_acc
     best_e = float(np.real(np.asarray(e_old).reshape(-1)[0]))
@@ -996,10 +1334,13 @@ def kernel_state_average(mc, weights, U0, nelecas, ncas, C0, h1e, eri,
         dm1 = 0
         dm2 = 0
         for n in range(nstates):
-            _dm1, _dm2 = _make_orbital_rdm12(mc, n, with_core=with_core)
+            _dm1, _dm2 = _orbital_rdms(mc, n, core_mode=core_mode)
             dm1 += _dm1 * weights[n]
             dm2 += _dm2 * weights[n]
-        gn = _gn(U_acc, h1e, eri, dm1, dm2)
+        _, gradient_function, objective_args = _orbital_objective(
+            core_mode, h1e, eri, dm1, dm2, mc.ncore
+        )
+        gn = _gn(U_acc, gradient_function, objective_args)
 
         # Reuse the more conservative restart step from the state-specific
         # kernel.  The state-averaged surface is typically flatter, so jumping

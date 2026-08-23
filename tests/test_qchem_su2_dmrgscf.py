@@ -10,6 +10,12 @@ from pyqed.qchem import CASCI, Molecule
 from pyqed.qchem.dmrg.backends.nonabelian import _qchem_sweep_measure
 from pyqed.qchem.dmrg.dmrgscf import DMRGSCF
 from pyqed.qchem.hf import RHF
+from pyqed.qchem.mcscf.cocas import (
+    _active_core_energy,
+    _active_core_gradient,
+    energy as _embedded_rdm_energy,
+)
+from pyqed.optimize import gradient as _embedded_rdm_gradient
 
 
 def _h2_rhf():
@@ -63,6 +69,20 @@ def _lih_rhf():
     return RHF(mol).run()
 
 
+def _lih_factor_rhf():
+    mol = Molecule(
+        atom="Li 0 0 0; H 0 0 3.0",
+        unit="bohr",
+        basis="sto-3g",
+    )
+    mol.build(
+        driver="builtin",
+        eri="factors",
+        options={"eri_backend": "cpp"},
+    )
+    return RHF(mol).run()
+
+
 def _eightfold_eri_average(tensor):
     axes = (
         (0, 1, 2, 3),
@@ -75,6 +95,201 @@ def _eightfold_eri_average(tensor):
         (3, 2, 1, 0),
     )
     return sum(np.transpose(tensor, permutation) for permutation in axes) / 8.0
+
+
+def _embed_closed_shell_core_rdm12(active_dm1, active_dm2, ncore):
+    ncas = active_dm1.shape[0]
+    norb = ncore + ncas
+    dm1 = np.zeros((norb, norb), dtype=active_dm1.dtype)
+    dm2 = np.zeros((norb, norb, norb, norb), dtype=active_dm2.dtype)
+    np.fill_diagonal(dm1[:ncore, :ncore], 2.0)
+    dm1[ncore:, ncore:] = active_dm1
+    if ncore:
+        eye = np.eye(ncore)
+        dm2[:ncore, :ncore, :ncore, :ncore] = (
+            4 * np.einsum("ij,kl->ijkl", eye, eye)
+            - 2 * np.einsum("ps,rq->pqrs", eye, eye)
+        )
+        for i in range(ncore):
+            dm2[i, i, ncore:, ncore:] = 2 * active_dm1
+            dm2[ncore:, ncore:, i, i] = 2 * active_dm1
+            dm2[i, ncore:, i, ncore:] = -active_dm1
+            dm2[ncore:, i, ncore:, i] = -active_dm1
+    dm2[ncore:, ncore:, ncore:, ncore:] = active_dm2
+    return dm1, dm2
+
+
+def test_active_only_rdm_analytic_core_objective_matches_embedded_rdm():
+    rng = np.random.default_rng(7)
+    nmo, ncore, ncas, naux = 7, 2, 3, 5
+    U, _ = np.linalg.qr(rng.normal(size=(nmo, ncore + ncas)))
+    h1e = rng.normal(size=(nmo, nmo))
+    h1e = 0.5 * (h1e + h1e.T)
+    pair_factors = rng.normal(size=(naux, nmo, nmo))
+    pair_factors = 0.5 * (pair_factors + pair_factors.transpose(0, 2, 1))
+    eri = np.einsum("Ppq,Prs->pqrs", pair_factors, pair_factors)
+    active_dm1 = rng.normal(size=(ncas, ncas))
+    active_dm1 = 0.5 * (active_dm1 + active_dm1.T)
+    active_dm2 = rng.normal(size=(ncas, ncas, ncas, ncas))
+    embedded_dm1, embedded_dm2 = _embed_closed_shell_core_rdm12(
+        active_dm1,
+        active_dm2,
+        ncore,
+    )
+
+    reference_energy = _embedded_rdm_energy(
+        U,
+        h1e,
+        eri,
+        embedded_dm1,
+        embedded_dm2,
+    )
+    reference_gradient = _embedded_rdm_gradient(
+        U,
+        h1e,
+        eri,
+        embedded_dm1,
+        embedded_dm2,
+    )
+    for integral_representation in (eri, pair_factors):
+        np.testing.assert_allclose(
+            _active_core_energy(
+                U,
+                h1e,
+                integral_representation,
+                active_dm1,
+                active_dm2,
+                ncore,
+            ),
+            reference_energy,
+            atol=1.0e-10,
+        )
+        np.testing.assert_allclose(
+            _active_core_gradient(
+                U,
+                h1e,
+                integral_representation,
+                active_dm1,
+                active_dm2,
+                ncore,
+            ),
+            reference_gradient,
+            atol=1.0e-9,
+        )
+
+
+def test_su2_dmrgscf_active_only_core_mode_matches_embedded_reference():
+    mf = _lih_rhf()
+    common = dict(
+        ncas=2,
+        nelecas=2,
+        D=8,
+        max_cycles=4,
+        symmetry="su2",
+        orbital_rdm_algorithm="npdm",
+        init_guess="hf",
+        verbose=0,
+    )
+    run_options = dict(
+        nstates=1,
+        nsweeps=3,
+        mixer_zero_block_noise_scale=0.0,
+        require_conv=False,
+        warm_start_dmrg=False,
+    )
+    embedded = DMRGSCF(
+        mf,
+        orbital_core_mode="embedded",
+        **common,
+    ).run(**run_options)
+    analytic = DMRGSCF(
+        mf,
+        orbital_core_mode="analytic",
+        **common,
+    ).run(**run_options)
+
+    np.testing.assert_allclose(analytic.e_tot, embedded.e_tot, atol=1.0e-7)
+    assert len(analytic.e_history) == len(embedded.e_history)
+    assert embedded.orbital_rdm_last_info["core_mode"] == "embedded"
+    assert embedded.orbital_rdm_last_info["rdm2_shape"] == (3, 3, 3, 3)
+    assert analytic.orbital_rdm_last_info["core_mode"] == "analytic"
+    assert analytic.orbital_rdm_last_info["rdm2_shape"] == (2, 2, 2, 2)
+    assert (
+        analytic.orbital_rdm_last_info["rdm_bytes"]
+        < embedded.orbital_rdm_last_info["rdm_bytes"]
+    )
+
+
+def test_state_averaged_su2_dmrgscf_uses_active_only_core_rdms():
+    mf = _lih_rhf()
+    common = dict(
+        ncas=2,
+        nelecas=2,
+        D=8,
+        max_cycles=1,
+        symmetry="su2",
+        orbital_rdm_algorithm="npdm",
+        init_guess="hf",
+        verbose=0,
+    )
+    run_options = dict(
+        nstates=2,
+        weights=[0.5, 0.5],
+        nsweeps=3,
+        mixer_zero_block_noise_scale=0.0,
+        require_conv=False,
+        warm_start_dmrg=False,
+    )
+    embedded = DMRGSCF(
+        mf,
+        orbital_core_mode="embedded",
+        **common,
+    ).run(**run_options)
+    analytic = DMRGSCF(
+        mf,
+        orbital_core_mode="analytic",
+        **common,
+    ).run(**run_options)
+
+    np.testing.assert_allclose(analytic.e_tot, embedded.e_tot, atol=1.0e-5)
+    assert analytic.orbital_rdm_last_info["core_mode"] == "analytic"
+    assert analytic.orbital_rdm_last_info["rdm2_shape"] == (2, 2, 2, 2)
+
+
+def test_factorized_su2_dmrgscf_uses_active_only_core_rdms():
+    mf = _lih_factor_rhf()
+    common = dict(
+        ncas=2,
+        nelecas=2,
+        D=8,
+        max_cycles=4,
+        symmetry="su2",
+        orbital_rdm_algorithm="npdm",
+        integral_backend="ri",
+        init_guess="hf",
+        verbose=0,
+    )
+    run_options = dict(
+        nstates=1,
+        nsweeps=3,
+        mixer_zero_block_noise_scale=0.0,
+        require_conv=False,
+        warm_start_dmrg=False,
+    )
+    embedded = DMRGSCF(
+        mf,
+        orbital_core_mode="embedded",
+        **common,
+    ).run(**run_options)
+    analytic = DMRGSCF(
+        mf,
+        orbital_core_mode="analytic",
+        **common,
+    ).run(**run_options)
+
+    assert analytic.orbital_integral_representation == "factors"
+    np.testing.assert_allclose(analytic.e_tot, embedded.e_tot, atol=1.0e-7)
+    assert analytic.orbital_rdm_last_info["rdm2_shape"] == (2, 2, 2, 2)
 
 
 def test_state_averaged_su2_dmrgscf_preserves_su2_solver():
@@ -414,6 +629,40 @@ def test_local_comparison_runs_su2_response_and_npdm_dmrgscf():
     assert "response - NPDM" in report
 
 
+def test_local_comparison_reports_active_only_core_time_and_memory():
+    embedded, analytic = _run_core_mode_comparison(
+        _lih_rhf(),
+        ncas=2,
+        nelecas=2,
+        D=8,
+        max_cycles=1,
+        nstates=1,
+        weights=[1.0],
+        nsweeps=3,
+        init_guess="hf",
+    )
+
+    assert embedded.orbital_core_mode == "embedded"
+    assert analytic.orbital_core_mode == "analytic"
+    np.testing.assert_allclose(embedded.e_tot, analytic.e_tot, atol=1.0e-5)
+    assert (
+        analytic.orbital_rdm_last_info["rdm_bytes"]
+        < embedded.orbital_rdm_last_info["rdm_bytes"]
+    )
+    assert embedded.comparison_wall_time_s > 0.0
+    assert analytic.comparison_wall_time_s > 0.0
+
+    output = StringIO()
+    with redirect_stdout(output):
+        _print_core_mode_comparison(embedded, analytic, weights=[1.0])
+    report = output.getvalue()
+    assert "Before: embedded core RDM" in report
+    assert "After: active-only RDM + analytic core" in report
+    assert "Optimizer RDM shapes" in report
+    assert "RDM storage reduction" in report
+    assert "embedded - analytic" in report
+
+
 def _run_co_dmrg_comparison(
     mf,
     *,
@@ -478,6 +727,66 @@ def _run_co_dmrg_comparison(
     return response, npdm
 
 
+def _run_with_timing(solver, driver_options):
+    started = perf_counter()
+    solver.run(**driver_options)
+    solver.comparison_wall_time_s = perf_counter() - started
+    return solver
+
+
+def _run_core_mode_comparison(
+    mf,
+    *,
+    ncas,
+    nelecas,
+    D,
+    max_cycles,
+    nstates,
+    weights,
+    nsweeps,
+    init_guess,
+    macro_tol=1.0e-6,
+    dmrg_conv_tol=1.0e-7,
+    require_conv=False,
+    warm_start_dmrg=False,
+):
+    weights = np.asarray(weights, dtype=float)
+    if weights.shape != (nstates,):
+        raise ValueError("weights must contain one value per requested state.")
+    if not np.isclose(np.sum(weights), 1.0):
+        raise ValueError("state-average weights must sum to one.")
+    driver_options = dict(
+        nstates=nstates,
+        weights=weights.tolist(),
+        nsweeps=nsweeps,
+        conv_tol=dmrg_conv_tol,
+        mixer_zero_block_noise_scale=0.0,
+        require_conv=require_conv,
+        warm_start_dmrg=warm_start_dmrg,
+    )
+    solver_options = dict(
+        ncas=ncas,
+        nelecas=nelecas,
+        D=D,
+        max_cycles=max_cycles,
+        macro_tol=macro_tol,
+        dmrg_conv_tol=dmrg_conv_tol,
+        symmetry="su2",
+        orbital_rdm_algorithm="npdm",
+        init_guess=init_guess,
+        verbose=0,
+    )
+    embedded = _run_with_timing(
+        DMRGSCF(mf, orbital_core_mode="embedded", **solver_options),
+        driver_options,
+    )
+    analytic = _run_with_timing(
+        DMRGSCF(mf, orbital_core_mode="analytic", **solver_options),
+        driver_options,
+    )
+    return embedded, analytic
+
+
 def _energy_vector(energy):
     return np.asarray(energy, dtype=float).reshape(-1)
 
@@ -488,6 +797,7 @@ def _print_method_result(label, solver, weights):
     print("-" * len(label))
     print(f"Symmetry labels: {solver.symmetry}")
     print(f"Orbital RDM algorithm: {solver.orbital_rdm_algorithm}")
+    print(f"Inactive-core treatment: {solver.orbital_core_mode}")
     print(f"Spin penalty enabled: {solver.spin_purification}")
     print("Energy history:")
     for step, energy in enumerate(solver.e_history):
@@ -509,9 +819,16 @@ def _print_method_result(label, solver, weights):
         print(f"Wall time: {solver.comparison_wall_time_s:.2f} s")
     rdm_info = getattr(solver, "orbital_rdm_last_info", None)
     if rdm_info:
+        if "wall_time_s" in rdm_info:
+            print(
+                f"Last orbital-RDM build: {rdm_info['wall_time_s']:.4f} s, "
+                f"component MPS="
+                f"{rdm_info.get('component_mps_bytes', 0) / 2**20:.3f} MiB"
+            )
         print(
-            f"Last orbital-RDM build: {rdm_info['wall_time_s']:.4f} s, "
-            f"component MPS={rdm_info.get('component_mps_bytes', 0) / 2**20:.3f} MiB"
+            f"Optimizer RDM shapes: {rdm_info['rdm1_shape']} / "
+            f"{rdm_info['rdm2_shape']}; stored="
+            f"{rdm_info['rdm_bytes'] / 2**20:.6f} MiB"
         )
 
 
@@ -541,9 +858,43 @@ def _print_co_dmrg_comparison(response, npdm, *, weights):
     print(f"Maximum absolute root difference: {np.max(np.abs(difference)):.12e}")
 
 
+def _print_core_mode_comparison(embedded, analytic, *, weights):
+    weights = np.asarray(weights, dtype=float)
+    _print_method_result("Before: embedded core RDM", embedded, weights)
+    _print_method_result(
+        "After: active-only RDM + analytic core",
+        analytic,
+        weights,
+    )
+    embedded_energy = _energy_vector(embedded.e_tot)
+    analytic_energy = _energy_vector(analytic.e_tot)
+    difference = embedded_energy - analytic_energy
+    before_bytes = embedded.orbital_rdm_last_info["rdm_bytes"]
+    after_bytes = analytic.orbital_rdm_last_info["rdm_bytes"]
+    reduction = before_bytes / after_bytes if after_bytes else np.inf
+
+    print("\nBefore/after comparison")
+    print("-----------------------")
+    for root, (old_root, new_root, delta) in enumerate(
+        zip(embedded_energy, analytic_energy, difference)
+    ):
+        print(
+            f"Root {root}: embedded={old_root:.12f}, analytic={new_root:.12f}, "
+            f"embedded - analytic={delta:+.12e}"
+        )
+    print(
+        "Weighted embedded - analytic: "
+        f"{float(np.dot(weights, difference)):+.12e}"
+    )
+    print(
+        f"RDM storage reduction: {before_bytes / 2**20:.6f} -> "
+        f"{after_bytes / 2**20:.6f} MiB ({reduction:.2f}x smaller)"
+    )
+
+
 def main():
-    # Add, remove, or edit entries here.  Every case is run twice with the same
-    # SU(2) settings; only the orbital-RDM algorithm changes.
+    # Add, remove, or edit entries here. Every case uses SU(2) NPDM twice; only
+    # the inactive-core treatment changes (old embedded RDM versus active-only).
     cases = [
         {
             "name": "H2",
@@ -573,16 +924,14 @@ def main():
             "D": 32,
         },
         {
-            # The response reference is much slower for CAS(6,6), so this
-            # requested LiF case is provided as an opt-in local benchmark.
             "enabled": True,
             "name": "LiF",
             "atom": "Li 0 0 0; F 0 0 3.0",
             "unit": "bohr",
-            "basis": "6-31g",
+            "basis": "6-311g",
             "ncas": 6,
             "nelecas": 6,
-            "D": 64,
+            "D": 200,
         },
     ]
     max_macroiterations = 8
@@ -614,7 +963,7 @@ def main():
             f"Basis={case['basis']}, CAS=({case['ncas']}o, {case['nelecas']}e), "
             f"D={case['D']}, states/weights={nstates}/{weights.tolist()}"
         )
-        response, npdm = _run_co_dmrg_comparison(
+        embedded, analytic = _run_core_mode_comparison(
             mf,
             ncas=case["ncas"],
             nelecas=case["nelecas"],
@@ -627,7 +976,7 @@ def main():
             require_conv=False,
             warm_start_dmrg=False,
         )
-        _print_co_dmrg_comparison(response, npdm, weights=weights)
+        _print_core_mode_comparison(embedded, analytic, weights=weights)
     print(f"\nSuite wall time: {perf_counter() - suite_started:.2f} s")
 
 

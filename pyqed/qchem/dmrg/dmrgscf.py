@@ -10,7 +10,11 @@ DMRGSCF
 # TODO: so since we are sharing CASSCF optimization code, currently after the DMRGSCF, final print get E(CASSCF) = xxxxxxx, it might be better if we fix that.
 from pyqed.qchem import CASSCF
 from pyqed.qchem.dmrg.dmrg import QCDMRG
-from pyqed.qchem.mcscf.cocas import kernel, kernel_state_average
+from pyqed.qchem.mcscf.cocas import (
+    _normalize_orbital_core_mode,
+    kernel,
+    kernel_state_average,
+)
 import numpy as np
 
 
@@ -137,6 +141,7 @@ class DMRGSCF(QCDMRG):
         macro_tol=1e-6,
         dmrg_conv_tol=1e-7,
         integral_backend="auto",
+        orbital_core_mode="analytic",
         **kwargs,
     ):
        
@@ -152,6 +157,9 @@ class DMRGSCF(QCDMRG):
         self.max_cycles = max_cycles # macroiterations
         self.tol = float(macro_tol) # macro energy tol
         self.dmrg_conv_tol = float(dmrg_conv_tol)
+        self.orbital_core_mode = _normalize_orbital_core_mode(
+            orbital_core_mode
+        )
         self.mo_coeff = None # opt orb
 
 
@@ -185,6 +193,9 @@ class DMRGSCF(QCDMRG):
         warm = kwargs.pop("warm_start_dmrg", default_warm_start)
         sw_tol = kwargs.pop("sweep_tol", kwargs.pop("conv_tol", self.dmrg_conv_tol))
         ldense = kwargs.pop("local_dense_max_dim", 0)
+        orbital_core_mode = _normalize_orbital_core_mode(
+            kwargs.pop("orbital_core_mode", self.orbital_core_mode)
+        )
 
         # Starting molecular orbitals for orbital optimization.  By default this
         # is the HF MO basis; callers can pass a previous DMRGSCF ``mo_coeff``
@@ -386,6 +397,7 @@ class DMRGSCF(QCDMRG):
                 macro_trust_grow=tr_up,
                 warm_start_dmrg=warm,
                 macro_callback=macro_callback,
+                orbital_core_mode=orbital_core_mode,
                 raise_on_nonconvergence=require_conv,
                 **kwargs,
             )
@@ -418,6 +430,7 @@ class DMRGSCF(QCDMRG):
                 macro_trust_grow=tr_up,
                 warm_start_dmrg=warm,
                 macro_callback=macro_callback,
+                orbital_core_mode=orbital_core_mode,
                 raise_on_nonconvergence=require_conv,
                 **kwargs,
             )
@@ -440,6 +453,11 @@ class DMRGSCF(QCDMRG):
             mc,
             "orbital_rdm_last_info",
             None,
+        )
+        self.orbital_core_mode = getattr(
+            mc,
+            "orbital_core_mode",
+            orbital_core_mode,
         )
         self.casci = mc
 

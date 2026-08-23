@@ -56,7 +56,8 @@ def minimize(f, X0, args=(), tau=2, taum=1e-15, tauM=1e15, eta=0.85,
              rho1=0.5, delta=0.2, epsilon=1e-5, algorithm='RCG',
              history_size=7, max_iterations=200, max_step_norm=None,
              newton_shift=1e-4, newton_max_cycle=6,
-             newton_max_subspace=12, newton_tol=1e-4):
+             newton_max_subspace=12, newton_tol=1e-4,
+             gradient_function=None):
     """
     Minimize ``f(X)`` subject to orthonormal columns ``X.T @ X = I``.
 
@@ -98,6 +99,9 @@ def minimize(f, X0, args=(), tau=2, taum=1e-15, tauM=1e15, eta=0.85,
         Hard cap on the norm of the tangent-space step ``tau * direction``.
         This is useful when the non-monotone line search accepts a descent
         step that is still too aggressive for the outer CASSCF macroiteration.
+    gradient_function : callable or None, optional
+        Euclidean gradient paired with ``f``. The standard orbital gradient is
+        used when omitted.
 
     Returns
     -------
@@ -122,10 +126,11 @@ def minimize(f, X0, args=(), tau=2, taum=1e-15, tauM=1e15, eta=0.85,
 
     # Start from a projected point so the optimizer can be called with slightly
     # noisy guesses without violating the manifold constraint.
+    euclidean_gradient = gradient if gradient_function is None else gradient_function
     X = project(X0)
     C = f(X, *args)
     Q = 1.0
-    G = gradient(X, *args)
+    G = euclidean_gradient(X, *args)
     df = grad(X, G)
     direction = -df
     v = C
@@ -137,10 +142,22 @@ def minimize(f, X0, args=(), tau=2, taum=1e-15, tauM=1e15, eta=0.85,
         if algorithm == 'LBFGS':
             direction = -lbfgs_direction(df, lbfgs_s, lbfgs_y)
         elif algorithm in ('NEWTON', 'AH'):
+            if gradient_function is None:
+                hessian_action = lambda D: riemannian_hessian_action(
+                    X, D, G, *args
+                )
+            else:
+                hessian_action = lambda D: _riemannian_hessian_action_from_gradient(
+                    X,
+                    D,
+                    G,
+                    euclidean_gradient,
+                    args,
+                )
             direction = matrix_free_newton_direction(
                 X,
                 df,
-                lambda D: riemannian_hessian_action(X, D, G, *args),
+                hessian_action,
                 shift=newton_shift,
                 max_cycle=newton_max_cycle,
                 max_subspace=newton_max_subspace,
@@ -181,7 +198,7 @@ def minimize(f, X0, args=(), tau=2, taum=1e-15, tauM=1e15, eta=0.85,
         Qnew = eta * Q + 1.0
         v = trial_value
         Cnew = (eta * Q * C + v) / Qnew
-        Gnew = gradient(Xnew, *args)
+        Gnew = euclidean_gradient(Xnew, *args)
         df_new = grad(Xnew, Gnew)
 
         transported_grad = transport(Xnew, df)
@@ -516,6 +533,27 @@ def riemannian_hessian_action(X, direction, euclidean_grad, h1e, h2e, dm1, dm2):
     """
     D = tangent_projection(X, direction)
     dG = gradient_directional_derivative(X, D, h1e, h2e, dm1, dm2)
+    A = sym(X.T.conj() @ euclidean_grad)
+    dA = sym(D.T.conj() @ euclidean_grad + X.T.conj() @ dG)
+    return tangent_projection(X, dG - D @ A - X @ dA)
+
+
+def _riemannian_hessian_action_from_gradient(
+    X,
+    direction,
+    euclidean_grad,
+    gradient_function,
+    args,
+):
+    """Finite-difference Hessian action for custom orbital objectives."""
+
+    D = tangent_projection(X, direction)
+    scale = max(1.0, norm(D))
+    step = np.sqrt(np.finfo(float).eps) / scale
+    dG = (
+        gradient_function(X + step * D, *args)
+        - gradient_function(X - step * D, *args)
+    ) / (2.0 * step)
     A = sym(X.T.conj() @ euclidean_grad)
     dA = sym(D.T.conj() @ euclidean_grad + X.T.conj() @ dG)
     return tangent_projection(X, dG - D @ A - X @ dA)
