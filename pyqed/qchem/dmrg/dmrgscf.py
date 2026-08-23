@@ -85,6 +85,47 @@ def _complete_mo_basis(mf, mo_coeff):
     return np.real_if_close(full)
 
 
+def _orbital_optimization_integrals(mf, mo_coeff, integral_backend):
+    """Return dense MO ERIs or MO pair factors for the orbital objective."""
+
+    backend = str(integral_backend or "auto").lower()
+    factors = getattr(mf, "eri_factors", None)
+    if factors is None:
+        factors = getattr(getattr(mf, "mol", None), "eri_factors", None)
+    has_factors = factors is not None
+    mol = getattr(mf, "mol", None)
+    has_dense = any(
+        value is not None
+        for value in (
+            getattr(mf, "eri", None),
+            getattr(mf, "eri_s4", None),
+            getattr(mf, "eri_s8", None),
+            getattr(mol, "eri", None),
+            getattr(mol, "eri_s4", None),
+            getattr(mol, "eri_s8", None),
+        )
+    )
+    use_factors = backend in {"ri", "cholesky"} or (
+        backend == "auto" and has_factors and not has_dense
+    )
+    if use_factors:
+        if not has_factors:
+            raise ValueError(
+                "Factorized co-DMRG orbital optimization requires RI/Cholesky "
+                "factors on the mean-field reference."
+            )
+        getter = getattr(mf, "get_eri_mo_factors", None)
+        if getter is None:
+            getter = getattr(mf, "mo_factors", None)
+        if getter is None:
+            raise ValueError(
+                "The mean-field reference has factors but cannot transform them "
+                "to the MO basis."
+            )
+        return np.asarray(getter(mo_coeff)), "factors"
+    return np.asarray(mf.get_eri_mo(mo_coeff)), "dense"
+
+
 class DMRGSCF(QCDMRG):
     def __init__(
         self,
@@ -124,6 +165,9 @@ class DMRGSCF(QCDMRG):
 
     def run(self, nstates=1, weights = None, require_conv=True, mo_coeff=None, **kwargs):
         mf = self.mf
+        macro_callback = kwargs.pop("macro_callback", None)
+        if macro_callback is not None and not callable(macro_callback):
+            raise TypeError("macro_callback must be callable or None.")
         rej = kwargs.pop("reject_macro_energy", True)
         rise = kwargs.pop("macro_energy_rise_tol", 1.0e-8)
         rmax = kwargs.pop("macro_reject_max", 8)
@@ -167,6 +211,7 @@ class DMRGSCF(QCDMRG):
             ncas=ncas,
             nelecas=nelecas,
             D=self.D,
+            init_guess=getattr(self, "init_guess", "hf"),
             site=getattr(self, "site", getattr(self, "site_basis", "spin_orbital")),
             spatial_reduced_mpo=getattr(self, "spatial_reduced_mpo", None),
             symmetry=getattr(self, "symmetry", None),
@@ -284,6 +329,11 @@ class DMRGSCF(QCDMRG):
                 "debug_spatial_family_hamiltonian_check",
                 False,
             ),
+            orbital_rdm_algorithm=getattr(
+                self,
+                "orbital_rdm_algorithm",
+                "response",
+            ),
             integral_backend=getattr(self, "integral_backend", "auto"),
             verbose=getattr(self, "verbose", 0),
         )
@@ -302,7 +352,13 @@ class DMRGSCF(QCDMRG):
         mc.run(nstates=self.nstates, weights=self.weights, mo_coeff=C0, **kwargs)
         # matrix elements in CMOs
         h1e = mf.get_hcore_mo(C0)
-        eri = mf.get_eri_mo(C0)
+        eri, orbital_integral_representation = _orbital_optimization_integrals(
+            mf,
+            C0,
+            getattr(self, "integral_backend", "auto"),
+        )
+        self.orbital_integral_representation = orbital_integral_representation
+        self.orbital_integral_shape = tuple(int(value) for value in eri.shape)
 
         U0 = np.zeros((nmo, ncas+ncore))
         for i in range(ncas+ncore):
@@ -329,6 +385,7 @@ class DMRGSCF(QCDMRG):
                 macro_trust_shrink=tr_dn,
                 macro_trust_grow=tr_up,
                 warm_start_dmrg=warm,
+                macro_callback=macro_callback,
                 raise_on_nonconvergence=require_conv,
                 **kwargs,
             )
@@ -360,6 +417,7 @@ class DMRGSCF(QCDMRG):
                 macro_trust_shrink=tr_dn,
                 macro_trust_grow=tr_up,
                 warm_start_dmrg=warm,
+                macro_callback=macro_callback,
                 raise_on_nonconvergence=require_conv,
                 **kwargs,
             )
@@ -374,9 +432,15 @@ class DMRGSCF(QCDMRG):
         self.solver_converged = bool(getattr(mc, "solver_converged", False))
         self.macro_iterations = int(getattr(mc, "macro_iterations", 0))
         self.dmrg = getattr(mc, "dmrg", None)
+        self.states = getattr(mc, "states", [])
         self.H = getattr(mc, "H", None)
         self.H_raw = getattr(mc, "H_raw", None)
         self.e_core = getattr(mc, "e_core", None)
+        self.orbital_rdm_last_info = getattr(
+            mc,
+            "orbital_rdm_last_info",
+            None,
+        )
         self.casci = mc
 
         if require_conv and not self.solver_converged:
@@ -410,3 +474,5 @@ if __name__=='__main__':
         symmetry_list=['charge', 'sz'], 
         initial_guess='cid'
     )
+    print(mc.e_tot)
+    print(mc.e_history)

@@ -10,6 +10,7 @@ from pyqed.qchem.basis import (
     _basis_signature,
     _builtin_worker_count,
     _cart_shell_blocks,
+    _cart2sph_unit_block,
     _compute_cartesian_shell_quartet_block_cython,
     _compute_dense_eri_serial,
     _compute_dense_eri_serial_cpp_cartesian,
@@ -23,6 +24,8 @@ from pyqed.qchem.basis import (
     _compute_one_electron_shellblocked_cython,
     _compute_pair_bounds,
     _compute_three_center_pair_tensor_from_signatures,
+    _contiguous_shell_blocks_from_signatures,
+    _make_contraction_signatures,
     _shell,
     make_contractions,
     parse_gbs,
@@ -102,6 +105,58 @@ def test_native_shell_generator_includes_f_cartesian_components():
     assert len(_shell(3)) == 10
     assert _shell(3)[0] == (3, 0, 0)
     assert _shell(3)[-1] == (0, 0, 3)
+
+
+def test_generalized_fe_ccpvdz_contractions_are_contiguous_cartesian_shells():
+    basis_dict = parse_gbs(_basis_path("cc-pvdz"))
+    atoms = ["Fe"]
+    coords = np.zeros((1, 3))
+
+    basis = make_contractions(basis_dict, atoms, coords, coord_types="c")
+    blocks = _cart_shell_blocks(basis)
+    expected_blocks = sum(np.asarray(coeffs).reshape(len(exps), -1).shape[1]
+                          for _l, exps, coeffs in basis_dict["Fe"])
+    assert len(blocks) == expected_blocks
+
+    signatures = _make_contraction_signatures(basis_dict, atoms, coords)
+    assert signatures == tuple(_basis_signature(function) for function in basis)
+    signature_blocks = _contiguous_shell_blocks_from_signatures(signatures)
+    assert len(signature_blocks) == expected_blocks
+    for start, stop in signature_blocks:
+        block = signatures[start:stop]
+        assert len({signature[0] for signature in block}) == stop - start
+
+
+def test_builtin_g_spherical_transform_maps_xzzz_to_positive_m1_channel():
+    transform = _cart2sph_unit_block(4)
+    xzzz = _shell(4).index((1, 0, 3))
+    nonzero_columns = np.flatnonzero(np.abs(transform[xzzz]) > 1e-14)
+    np.testing.assert_array_equal(nonzero_columns, [5])
+    assert transform[xzzz, 5] == pytest.approx(np.sqrt(10.0 / 7.0))
+
+
+def test_builtin_g_spherical_transform_is_orthonormal_and_angularly_pure():
+    basis_dict = {
+        "H": [
+            (0, np.array([1.0]), np.array([[1.0]])),
+            (4, np.array([1.0]), np.array([[1.0]])),
+        ]
+    }
+    coords = np.zeros((1, 3))
+    basis = make_contractions(basis_dict, ["H"], coords, coord_types="c")
+    overlap, _kinetic, _nuclear = _compute_one_electron_shellblocked(
+        basis,
+        coords,
+        np.zeros(1),
+    )
+    transform = _cart2sph_unit_block(4)
+
+    np.testing.assert_allclose(
+        transform.T @ overlap[1:, 1:] @ transform,
+        np.eye(9),
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(overlap[0, 1:] @ transform, np.zeros(9), atol=1e-12)
 
 
 def test_native_build_supports_d_shells_in_cartesian_basis():

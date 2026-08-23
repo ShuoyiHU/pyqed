@@ -92,9 +92,17 @@ def _optional_extensions():
         accelerate_link_args = (
             ["-framework", "Accelerate"] if sys.platform == "darwin" else []
         )
-        casscf_libraries = ["blas"] if sys.platform.startswith("linux") else []
-        casscf_macros = (
+        blas_libraries = ["blas"] if sys.platform.startswith("linux") else []
+        blas_macros = (
             [("PYQED_USE_CBLAS", "1")]
+            if sys.platform.startswith("linux")
+            else []
+        )
+        su2_libraries = (
+            ["lapack", "blas"] if sys.platform.startswith("linux") else []
+        )
+        su2_macros = blas_macros + (
+            [("PYQED_USE_LAPACK", "1")]
             if sys.platform.startswith("linux")
             else []
         )
@@ -116,8 +124,8 @@ def _optional_extensions():
                 language="c++",
                 extra_compile_args=cpp_compile_args,
                 extra_link_args=accelerate_link_args,
-                libraries=casscf_libraries,
-                define_macros=casscf_macros,
+                libraries=blas_libraries,
+                define_macros=blas_macros,
                 optional=True,
             )
         )
@@ -180,6 +188,8 @@ def _optional_extensions():
                 extra_link_args=accelerate_link_args + (
                     ["-ldl"] if sys.platform.startswith("linux") else []
                 ),
+                libraries=su2_libraries,
+                define_macros=su2_macros,
                 optional=True,
             )
         )

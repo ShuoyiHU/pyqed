@@ -1541,7 +1541,8 @@ def _contiguous_shell_blocks_from_signatures(signatures):
         if stop > nao:
             raise ValueError("Invalid Cartesian shell partition in signature list.")
         ref = (l, origin, exps)
-        if any((sum(signatures[k][0]), signatures[k][1], signatures[k][2]) != ref for k in range(start, stop)):
+        if any((sum(signatures[k][0]), signatures[k][1], signatures[k][2]) != ref
+               for k in range(start, stop)):
             raise ValueError("Signature ordering is not contiguous by Cartesian shell.")
         blocks.append((start, stop))
         start = stop
@@ -5082,8 +5083,8 @@ def make_contractions(basis_dict, atoms, coords, coord_types):
             if coeffs.ndim == 1:
                 coeffs = coeffs[:, None]
             exps_tuple = tuple(float(x) for x in np.asarray(exps, dtype=float))
-            for shell in _shell(angmom):
-                for icontr in range(coeffs.shape[1]):
+            for icontr in range(coeffs.shape[1]):
+                for shell in _shell(angmom):
                     coefs_tuple = tuple(float(x) for x in coeffs[:, icontr])
                     tpl_exps, tpl_coefs, tpl_norm, tpl_prim_weights = (
                         _normalized_contracted_gaussian_template(
@@ -5128,9 +5129,9 @@ def _make_contraction_signatures(basis_dict, atoms, coords, coord_types="c"):
             if coeffs.ndim == 1:
                 coeffs = coeffs[:, None]
             exps_tuple = tuple(float(x) for x in np.asarray(exps, dtype=float))
-            for shell in _shell(int(angmom)):
-                shell_tuple = tuple(int(x) for x in shell)
-                for icontr in range(coeffs.shape[1]):
+            for icontr in range(coeffs.shape[1]):
+                for shell in _shell(int(angmom)):
+                    shell_tuple = tuple(int(x) for x in shell)
                     coefs_tuple = tuple(float(x) for x in coeffs[:, icontr])
                     tpl_exps, _tpl_coefs, _tpl_norm, tpl_prim_weights = (
                         _normalized_contracted_gaussian_template(
@@ -5243,20 +5244,20 @@ def _cart2sph_unit_block(l):
     if l == 4:
         return np.array(
             [
-                [0.0, 0.0, 0.0, 0.0, 0.39467353541831303197, 0.0, -0.58834840541455207145, 0.0, 0.79056941504209483299],
-                [1.0606601717798212866, 0.0, -0.40824829046386301637, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 0.0, 0.0, -0.89442719099991587856, 0.0, 0.79056941504209483299, 0.0],
-                [0.0, 0.0, 0.0, 0.0, 0.18257418583505537115, 0.0, 0.0, 0.0, -1.0606601717798212866],
-                [0.0, 1.1180339887498948482, 0.0, -0.40824829046386301637, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 0.0, -0.73029674334022148461, 0.0, 0.81649658092772603273, 0.0, 0.0],
-                [-1.0606601717798212866, 0.0, -0.40824829046386301637, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 0.0, 0.0, -0.40824829046386301637, 0.0, -1.1180339887498948482, 0.0],
-                [0.0, 0.0, 1.154700538379251529, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 1.1180339887498948482, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 0.0, 0.39467353541831303197, 0.0, 0.58834840541455207145, 0.0, 0.79056941504209483299],
-                [0.0, -0.79056941504209483299, 0.0, -0.89442719099991587856, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 0.0, -0.73029674334022148461, 0.0, -0.81649658092772603273, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 1.1180339887498948482, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0, 0.375, 0.0, -0.5590169943749474241, 0.0, 0.7395099728874520053],
+                [1.1180339887498948482, 0.0, -0.42257712736425828875, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0, 0.0, -0.89642145700079522998, 0.0, 0.79056941504209483299, 0.0],
+                [0.0, 0.0, 0.0, 0.0, 0.21957751641341996535, 0.0, 0.0, 0.0, -1.2990381056766579701],
+                [0.0, 1.0606601717798212866, 0.0, -0.40089186286863657703, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0, -0.87831006565367986142, 0.0, 0.9819805060619657157, 0.0, 0.0],
+                [-1.1180339887498948482, 0.0, -0.42257712736425828875, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0, 0.0, -0.40089186286863657703, 0.0, -1.0606601717798212866, 0.0],
+                [0.0, 0.0, 1.1338934190276816816, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0, 0.0, 1.19522860933439363997, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0, 0.375, 0.0, 0.5590169943749474241, 0.0, 0.7395099728874520053],
+                [0.0, -0.79056941504209483299, 0.0, -0.89642145700079522998, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0, -0.87831006565367986142, 0.0, -0.9819805060619657157, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 1.19522860933439363997, 0.0, 0.0, 0.0, 0.0, 0.0],
                 [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
             ],
             dtype=float,

@@ -15,7 +15,7 @@ namespace pyqed::dmrg {
 
 using Complex = std::complex<double>;
 
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(PYQED_USE_LAPACK)
 extern "C" void zheev_(
     char* jobz,
     char* uplo,
@@ -56,6 +56,9 @@ extern "C" void zgesvd_(
     double* rwork,
     int* info
 );
+#endif
+
+#if defined(__APPLE__) || defined(PYQED_USE_CBLAS)
 extern "C" void cblas_zgemv(
     const int order,
     const int transpose,
@@ -129,7 +132,7 @@ inline void complex_thin_svd(
     if (rows == 0 || cols == 0) {
         return;
     }
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(PYQED_USE_LAPACK)
     const int m = static_cast<int>(rows);
     const int n = static_cast<int>(cols);
     const int k = static_cast<int>(rank);
@@ -203,7 +206,7 @@ inline void complex_thin_svd(
 #else
     (void)matrix;
     throw std::runtime_error(
-        "Thin SVD currently requires an Accelerate LAPACK build."
+        "Thin SVD requires a LAPACK-enabled native build."
     );
 #endif
 }
@@ -284,7 +287,7 @@ inline RealSymmetricEigendecomposition symmetric_eigh(
     if (dimension == 1) {
         return {{matrix[0]}, {1.0}};
     }
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(PYQED_USE_LAPACK)
     if (
         dimension >
         static_cast<std::size_t>(std::numeric_limits<int>::max())
@@ -461,7 +464,7 @@ inline RealLowestEigenpair lowest_projected_eigenpair(
     if (dimension == 1) {
         return {matrix[0], {1.0}};
     }
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(PYQED_USE_LAPACK)
     const int n = static_cast<int>(dimension);
     std::vector<double> column_major(dimension * dimension);
     for (std::size_t row = 0; row < dimension; ++row) {
@@ -627,7 +630,7 @@ inline LowestEigenpair lowest_projected_eigenpair(
     if (dimension == 1) {
         return {matrix[0].real(), {Complex(1.0, 0.0)}};
     }
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(PYQED_USE_LAPACK)
     const int n = static_cast<int>(dimension);
     const int lda = n;
     std::vector<Complex> column_major(dimension * dimension);
@@ -3006,7 +3009,7 @@ inline std::vector<Complex> block_matvec(
     }
     std::vector<Complex> output(dimension, 0.0);
     for (const BlockView& block : blocks) {
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(PYQED_USE_CBLAS)
         if (
             block.row_stride == block.cols
             && block.col_stride == 1

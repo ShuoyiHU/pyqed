@@ -259,6 +259,11 @@ def _fresh_casci_like(source):
                 "debug_spatial_family_hamiltonian_check",
                 False,
             ),
+            orbital_rdm_algorithm=getattr(
+                source,
+                "orbital_rdm_algorithm",
+                "response",
+            ),
             orb_sym=getattr(source, "orb_sym", None),
             verbose=getattr(source, "verbose", 0),
         )
@@ -302,6 +307,15 @@ def _run_casci_like(mc, *args, method="direct_ci", **kwargs):
         kwargs.pop("use_cholesky", None)
         return mc.run(*args, **kwargs)
     return mc.run(*args, method=method, **kwargs)
+
+
+def _make_orbital_rdm12(mc, state_id, *, with_core):
+    """Get the RDM convention required by the restricted orbital objective."""
+
+    make_orbital_rdm12 = getattr(mc, "make_orbital_rdm12", None)
+    if make_orbital_rdm12 is not None:
+        return make_orbital_rdm12(state_id, with_core=with_core)
+    return mc.make_rdm12(state_id, with_core=with_core)
 
 
 def _wguess(src, dst, state=0):
@@ -622,6 +636,7 @@ def kernel(mc, U0, nelecas, ncas, C0, h1e, eri, max_cycles=30, tol=1e-6,
            macro_trust_min=1.0e-4, macro_trust_max=1.0,
            macro_trust_shrink=0.5, macro_trust_grow=1.5,
            warm_start_dmrg=True,
+           macro_callback=None,
            raise_on_nonconvergence=True, **kwargs):
     r"""
     complete active space orbital optimization with orthonomality constraint
@@ -663,7 +678,7 @@ def kernel(mc, U0, nelecas, ncas, C0, h1e, eri, max_cycles=30, tol=1e-6,
     else:
         with_core = False
 
-    dm1, dm2 = mc.make_rdm12(0, with_core=with_core)
+    dm1, dm2 = _make_orbital_rdm12(mc, 0, with_core=with_core)
 
     # eri = mc.eri_so[0, 0] # for spin-restricted calculation
     # nmo = self.nmo
@@ -745,6 +760,18 @@ def kernel(mc, U0, nelecas, ncas, C0, h1e, eri, max_cycles=30, tol=1e-6,
         row = {"macro": k + 1, "energy": e_now, "dE": de, "gn": gn, "tr": tr, "rej": rej}
         row.update(_sdiag(current_mc))
         diag.append(row)
+        if macro_callback is not None:
+            macro_callback({
+                "macro": k + 1,
+                "accepted": True,
+                "energy": np.array(current_mc.e_tot, copy=True),
+                "energy_history": tuple(
+                    np.array(value, copy=True) for value in e_history
+                ),
+                "mo_coeff": np.array(mo_coeff, copy=True),
+                "diagnostics": dict(row),
+                "casci": current_mc,
+            })
         if e_now < best_e:
             best_e = e_now
             best_mc = current_mc
@@ -766,7 +793,7 @@ def kernel(mc, U0, nelecas, ncas, C0, h1e, eri, max_cycles=30, tol=1e-6,
         e_old = mc.e_tot
 
 
-        dm1, dm2 = mc.make_rdm12(0, with_core=with_core)
+        dm1, dm2 = _make_orbital_rdm12(mc, 0, with_core=with_core)
         gn = _gn(U_acc, h1e, eri, dm1, dm2)
 
         U = opt_u(U_acc, dm1, dm2, 1.0, _cap(cap0, tr))
@@ -833,6 +860,7 @@ def kernel_state_average(mc, weights, U0, nelecas, ncas, C0, h1e, eri,
                          macro_trust_min=1.0e-4, macro_trust_max=1.0,
                          macro_trust_shrink=0.5, macro_trust_grow=1.5,
                          warm_start_dmrg=True,
+                         macro_callback=None,
                          raise_on_nonconvergence=True, **kwargs):
 
     if mc.ncore > 0:
@@ -850,7 +878,7 @@ def kernel_state_average(mc, weights, U0, nelecas, ncas, C0, h1e, eri,
     dm1 = 0
     dm2 = 0
     for n in range(nstates):
-        _dm1, _dm2 = mc.make_rdm12(n, with_core=with_core)
+        _dm1, _dm2 = _make_orbital_rdm12(mc, n, with_core=with_core)
         dm1 += _dm1 * weights[n]
         dm2 += _dm2 * weights[n]
 
@@ -932,6 +960,18 @@ def kernel_state_average(mc, weights, U0, nelecas, ncas, C0, h1e, eri,
         row = {"macro": k + 1, "energy": e_now, "dE": de, "gn": gn, "tr": tr, "rej": rej}
         row.update(_sdiag(current_mc))
         diag.append(row)
+        if macro_callback is not None:
+            macro_callback({
+                "macro": k + 1,
+                "accepted": True,
+                "energy": np.array(current_mc.e_tot, copy=True),
+                "energy_history": tuple(
+                    np.array(value, copy=True) for value in e_history
+                ),
+                "mo_coeff": np.array(mo_coeff, copy=True),
+                "diagnostics": dict(row),
+                "casci": current_mc,
+            })
         if e_now < best_e:
             best_e = e_now
             best_mc = current_mc
@@ -956,7 +996,7 @@ def kernel_state_average(mc, weights, U0, nelecas, ncas, C0, h1e, eri,
         dm1 = 0
         dm2 = 0
         for n in range(nstates):
-            _dm1, _dm2 = mc.make_rdm12(n, with_core=with_core)
+            _dm1, _dm2 = _make_orbital_rdm12(mc, n, with_core=with_core)
             dm1 += _dm1 * weights[n]
             dm2 += _dm2 * weights[n]
         gn = _gn(U_acc, h1e, eri, dm1, dm2)

@@ -230,6 +230,19 @@ def _normalize_site(site):
     )
 
 
+def _normalize_orbital_rdm_algorithm(algorithm):
+    normalized = str(algorithm or "response").lower().replace("-", "_")
+    aliases = {
+        "old": "response",
+        "hamiltonian_response": "response",
+        "density_matrix": "npdm",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in {"response", "npdm"}:
+        raise ValueError("orbital_rdm_algorithm must be 'response' or 'npdm'.")
+    return normalized
+
+
 def _normalize_integral_backend(integral_backend):
     backend = str(integral_backend or "auto").lower().replace("-", "_")
     aliases = {
@@ -713,6 +726,153 @@ class _SpatialNPDMContractions:
             key = self._site_op_key(op_specs, site)
             E = self._transfer(E, self.Bs[site], self._site_op(key))
         return self._close_with_right(E, last) / self.norm
+
+
+def _fully_reduced_spatial_mps_to_component_mps(state):
+    """Expand SU(2) magnetic components locally while retaining MPS form."""
+    from pyqed.mps.mps import MPS as DenseMPS
+    from pyqed.mps.nonabelian.coupling import (
+        clebsch_gordan,
+        ordered_two_m_values,
+    )
+    from pyqed.mps.su2 import SpatialOrbitalSite
+
+    canonical_site = SpatialOrbitalSite()
+    physical = {}
+    for sector_index, sector in enumerate(canonical_site.qn):
+        for local_index, basis_index in enumerate(
+            canonical_site.state_index[sector_index]
+        ):
+            physical[(sector, ordered_two_m_values(sector.irrep)[local_index])] = int(
+                basis_index
+            )
+
+    target = state.sites[-1].qns[2][0]
+    target_two_m = int(target.irrep.two_j)
+
+    def expanded_bond(qns, *, selected_two_m=None):
+        slots = defaultdict(int)
+        mapping = {}
+        for sector in qns:
+            slot = slots[sector]
+            slots[sector] += 1
+            for two_m in ordered_two_m_values(sector.irrep):
+                if selected_two_m is not None and int(two_m) != int(selected_two_m):
+                    continue
+                mapping[(sector, slot, int(two_m))] = len(mapping)
+        return mapping
+
+    tensors = []
+    for site_index, tensor in enumerate(state.sites):
+        left = expanded_bond(tensor.qns[0])
+        right = expanded_bond(
+            tensor.qns[2],
+            selected_two_m=target_two_m if site_index == len(state.sites) - 1 else None,
+        )
+        dtype = np.result_type(
+            *[np.asarray(block).dtype for block in tensor.data.values()],
+            float,
+        )
+        dense = np.zeros((len(left), canonical_site.d, len(right)), dtype=dtype)
+        for (q_left, q_phys, q_right), block in tensor.data.items():
+            reduced = np.asarray(block)
+            for left_slot in range(reduced.shape[0]):
+                for right_slot in range(reduced.shape[2]):
+                    amplitude = reduced[left_slot, 0, right_slot]
+                    if amplitude == 0:
+                        continue
+                    for two_m_left in ordered_two_m_values(q_left.irrep):
+                        left_index = left.get(
+                            (q_left, left_slot, int(two_m_left))
+                        )
+                        if left_index is None:
+                            continue
+                        for two_m_phys in ordered_two_m_values(q_phys.irrep):
+                            physical_index = physical[(q_phys, int(two_m_phys))]
+                            for two_m_right in ordered_two_m_values(q_right.irrep):
+                                right_index = right.get(
+                                    (q_right, right_slot, int(two_m_right))
+                                )
+                                if right_index is None:
+                                    continue
+                                coefficient = clebsch_gordan(
+                                    q_left.irrep,
+                                    q_phys.irrep,
+                                    q_right.irrep,
+                                    int(two_m_left),
+                                    int(two_m_phys),
+                                    int(two_m_right),
+                                )
+                                if coefficient:
+                                    dense[left_index, physical_index, right_index] += (
+                                        amplitude * coefficient
+                                    )
+        tensors.append(dense)
+    return DenseMPS(tensors, labels=["lv", "p", "rv"], bc="finite")
+
+
+class _FullyReducedSpatialNPDMContractions:
+    """Environment-cached NPDM sweep over an SU(2)-component MPS view."""
+
+    def __init__(self, solver, state):
+        self.solver = solver
+        self.state = _fully_reduced_spatial_mps_to_component_mps(state)
+        self.ncas = int(solver.ncas)
+        self.npdm = _SpatialNPDMContractions(self.state)
+        if abs(self.npdm.norm) <= 1.0e-14:
+            raise ValueError("Cannot build orbital RDMs from a zero-norm MPS.")
+        self.operator_count = 0
+        self.component_mps_bytes = int(sum(B.nbytes for B in self.state.Bs))
+
+    @staticmethod
+    def _eightfold_average(tensor):
+        axes = (
+            (0, 1, 2, 3),
+            (1, 0, 2, 3),
+            (0, 1, 3, 2),
+            (1, 0, 3, 2),
+            (2, 3, 0, 1),
+            (2, 3, 1, 0),
+            (3, 2, 0, 1),
+            (3, 2, 1, 0),
+        )
+        return sum(np.transpose(tensor, permutation) for permutation in axes) / 8.0
+
+    def make_rdm12(self):
+        gamma1 = np.zeros((self.ncas, self.ncas), dtype=float)
+        for p in range(self.ncas):
+            for q in range(self.ncas):
+                value = 0.0
+                for sigma in range(2):
+                    value += self.npdm.expect_string(
+                        [("cre", sigma, p), ("ann", sigma, q)]
+                    ).real
+                    self.operator_count += 1
+                gamma1[q, p] = value
+
+        gamma2 = np.zeros((self.ncas,) * 4, dtype=float)
+        pairs = [(p, r) for p in range(self.ncas) for r in range(self.ncas)]
+        for sigma in range(2):
+            for tau in range(2):
+                for left, (p, r) in enumerate(pairs):
+                    for right in range(left, len(pairs)):
+                        q, s = pairs[right]
+                        value = self.npdm.expect_string(
+                            [
+                                ("cre", sigma, p),
+                                ("cre", tau, r),
+                                ("ann", tau, s),
+                                ("ann", sigma, q),
+                            ]
+                        ).real
+                        self.operator_count += 1
+                        gamma2[p, q, r, s] += value
+                        if right != left:
+                            gamma2[q, p, s, r] += value
+
+        gamma1 = 0.5 * (gamma1 + gamma1.T)
+        gamma2 = self._eightfold_average(gamma2)
+        return gamma1, gamma2
 
 
 def _build_spatial_s2_term_map(ncas, *, scale=1.0, cutoff=1e-10):
@@ -1901,6 +2061,7 @@ class DMRG(CASCI):
                  debug_complementary_action_check_tol=1.0e-10,
                  debug_complementary_action_check_limit=32,
                  debug_spatial_family_hamiltonian_check=False,
+                 orbital_rdm_algorithm="response",
                  orb_sym=None):
         """
         DMRG sweeping algorithm directly using DVR set (without SCF calculations)
@@ -2022,6 +2183,10 @@ class DMRG(CASCI):
         self._s2_mpo_cache = {}
         self._spatial_operator_cache = None
         self.spatial_rdm2_algorithm = "npdm"
+        self.orbital_rdm_algorithm = _normalize_orbital_rdm_algorithm(
+            orbital_rdm_algorithm
+        )
+        self.orbital_rdm_last_info = None
         self._active_hamiltonian = None
         self.complementary_operators = None
         self.complementary_operator_mpos = None
@@ -2368,7 +2533,7 @@ class DMRG(CASCI):
         raise TypeError(f"Unsupported initial guess type: {type(guess)}")
 
     def fix_nelec(self, shift):
-        """
+        r"""
         fix the number of electrons by energy penalty
 
         .. math::
@@ -2412,7 +2577,7 @@ class DMRG(CASCI):
     #     return self
 
     def fix_spin(self, s=None, ss=0, shift=0.2):
-        """
+        r"""
         Bias the DMRG optimization toward spin-pure states with a linear ``S^2`` penalty.
 
         .. math::
@@ -5283,6 +5448,166 @@ class DMRG(CASCI):
         embedded[ncore:norb, ncore:norb, ncore:norb, ncore:norb] = gamma2
         return embedded
 
+    def _fully_reduced_spatial_orbital_expectation(self, state, *, h1=None, eri=None):
+        """Evaluate a symmetric orbital Hamiltonian in the active reduced representation."""
+        from pyqed.mps.nonabelian.environment import contract_chain_expectation
+        from pyqed.qchem.dmrg.backends.nonabelian import (
+            _identity_mpo_factors_for_sites_and_mpo,
+        )
+        from pyqed.qchem.dmrg.backends.reduced import (
+            build_spatial_reduced_hamiltonian_mpo,
+        )
+
+        if (h1 is None) == (eri is None):
+            raise ValueError("Provide exactly one reduced one- or two-body operator.")
+        if h1 is not None:
+            h1e = np.asarray(h1)
+            eri_spin = None
+        else:
+            h1e = np.zeros((self.ncas, self.ncas), dtype=float)
+            eri_spatial = np.asarray(eri)
+            eri_spin = np.broadcast_to(
+                eri_spatial,
+                (2, 2) + eri_spatial.shape,
+            ).copy()
+        operator = build_spatial_reduced_hamiltonian_mpo(
+            h1e,
+            eri=eri_spin,
+            fully_reduced=True,
+            n_elec=self.nelecas,
+            spin=self.spin,
+            ecore=0.0,
+        )
+        sites = state.sites
+        numerator = contract_chain_expectation(
+            sites,
+            operator.mpo,
+            moving_environment=operator.moving_environment,
+        )
+        identity = _identity_mpo_factors_for_sites_and_mpo(
+            sites,
+            operator.mpo,
+        )
+        denominator = contract_chain_expectation(sites, identity)
+        if abs(denominator) <= 1.0e-14:
+            raise ValueError("Cannot build orbital RDMs from a zero-norm MPS.")
+        return float(np.real(numerator / denominator))
+
+    def _make_fully_reduced_spatial_orbital_rdm1(self, state_id=0, with_core=False):
+        state = self._get_state_for_rdm(state_id)
+        gamma = np.zeros((self.ncas, self.ncas), dtype=float)
+        for p in range(self.ncas):
+            for q in range(p, self.ncas):
+                h1 = np.zeros((self.ncas, self.ncas), dtype=float)
+                h1[p, q] = 1.0
+                h1[q, p] = 1.0
+                multiplicity = 1 if p == q else 2
+                value = self._fully_reduced_spatial_orbital_expectation(
+                    state,
+                    h1=h1,
+                ) / multiplicity
+                gamma[p, q] = value
+                gamma[q, p] = value
+        if not with_core:
+            return gamma
+        norb = self.ncore + self.ncas
+        embedded = np.zeros((norb, norb), dtype=float)
+        np.fill_diagonal(embedded[:self.ncore, :self.ncore], 2.0)
+        embedded[self.ncore:norb, self.ncore:norb] = gamma
+        return embedded
+
+    def _make_fully_reduced_spatial_orbital_rdm2(self, state_id=0, with_core=False):
+        state = self._get_state_for_rdm(state_id)
+        gamma2 = np.zeros((self.ncas,) * 4, dtype=float)
+        visited = set()
+        for p, q, r, s in np.ndindex((self.ncas,) * 4):
+            index = (p, q, r, s)
+            if index in visited:
+                continue
+            orbit = {
+                (p, q, r, s),
+                (q, p, r, s),
+                (p, q, s, r),
+                (q, p, s, r),
+                (r, s, p, q),
+                (s, r, p, q),
+                (r, s, q, p),
+                (s, r, q, p),
+            }
+            visited.update(orbit)
+            eri = np.zeros((self.ncas,) * 4, dtype=float)
+            for member in orbit:
+                eri[member] = 1.0
+            value = 2.0 * self._fully_reduced_spatial_orbital_expectation(
+                state,
+                eri=eri,
+            ) / len(orbit)
+            for member in orbit:
+                gamma2[member] = value
+        if not with_core:
+            return gamma2
+        ncore = self.ncore
+        norb = ncore + self.ncas
+        embedded = np.zeros((norb,) * 4, dtype=float)
+        if ncore > 0:
+            eye = np.eye(ncore)
+            embedded[:ncore, :ncore, :ncore, :ncore] = (
+                4 * np.einsum('ij,kl->ijkl', eye, eye)
+                - 2 * np.einsum('ps,rq->pqrs', eye, eye)
+            )
+            dm1 = self._make_fully_reduced_spatial_orbital_rdm1(
+                state_id,
+                with_core=False,
+            )
+            for i in range(ncore):
+                embedded[i, i, ncore:norb, ncore:norb] = 2 * dm1
+                embedded[ncore:norb, ncore:norb, i, i] = 2 * dm1
+                embedded[i, ncore:norb, i, ncore:norb] = -dm1
+                embedded[ncore:norb, i, ncore:norb, i] = -dm1
+        embedded[ncore:norb, ncore:norb, ncore:norb, ncore:norb] = gamma2
+        return embedded
+
+    def _make_fully_reduced_spatial_npdm_orbital_rdm12(
+        self,
+        state_id=0,
+        with_core=False,
+    ):
+        state = self._get_state_for_rdm(state_id)
+        started = time.perf_counter()
+        npdm = _FullyReducedSpatialNPDMContractions(self, state)
+        dm1, dm2 = npdm.make_rdm12()
+        self.orbital_rdm_last_info = {
+            "algorithm": "npdm",
+            "representation": "spin_component_mps",
+            "state_id": int(state_id),
+            "operator_count": int(npdm.operator_count),
+            "component_mps_bytes": int(npdm.component_mps_bytes),
+            "wall_time_s": float(time.perf_counter() - started),
+        }
+        if not with_core:
+            return dm1, dm2
+
+        ncore = self.ncore
+        norb = ncore + self.ncas
+        embedded1 = np.zeros((norb, norb), dtype=float)
+        np.fill_diagonal(embedded1[:ncore, :ncore], 2.0)
+        embedded1[ncore:norb, ncore:norb] = dm1
+
+        embedded2 = np.zeros((norb,) * 4, dtype=float)
+        if ncore > 0:
+            eye = np.eye(ncore)
+            embedded2[:ncore, :ncore, :ncore, :ncore] = (
+                4 * np.einsum('ij,kl->ijkl', eye, eye)
+                - 2 * np.einsum('ps,rq->pqrs', eye, eye)
+            )
+            for i in range(ncore):
+                embedded2[i, i, ncore:norb, ncore:norb] = 2 * dm1
+                embedded2[ncore:norb, ncore:norb, i, i] = 2 * dm1
+                embedded2[i, ncore:norb, i, ncore:norb] = -dm1
+                embedded2[ncore:norb, i, ncore:norb, i] = -dm1
+        embedded2[ncore:norb, ncore:norb, ncore:norb, ncore:norb] = dm2
+        return embedded1, embedded2
+
     def _make_spatial_site_rdm1(self, state_id=0, spatial=False, with_core=False):
         """1-RDM for the d=4 spatial-site backend."""
         if self.spatial_site_basis == "fully_reduced":
@@ -5562,7 +5887,7 @@ class DMRG(CASCI):
         return g_out
 
     def make_rdm1(self, state_id=0, spatial=False, with_core=False):
-        """
+        r"""
         Calculates the 1-RDM.
         If spatial=True, spin-traces to the spatial MO basis.
         If with_core=True, re-embeds the frozen core electrons on the diagonal.
@@ -5734,6 +6059,41 @@ class DMRG(CASCI):
         """
         return self.make_rdm1(state_id, spatial, with_core), self.make_rdm2(state_id, spatial, with_core)
 
+    def make_orbital_rdm12(self, state_id=0, with_core=False):
+        """Return the spatial RDMs used by restricted orbital optimization.
+
+        For fully reduced SU(2), ``orbital_rdm_algorithm='response'`` keeps the
+        reference implementation that contracts one reduced probe Hamiltonian
+        per symmetry-unique integral.  ``'npdm'`` expands magnetic components
+        locally into an MPS view, reuses its left/right environments, and
+        measures the spin-free 1- and 2-RDM without constructing a determinant
+        vector.  Other backends use their ordinary spatial RDMs.
+        """
+        if self.site == "spatial" and self.spatial_site_basis == "fully_reduced":
+            algorithm = _normalize_orbital_rdm_algorithm(
+                self.orbital_rdm_algorithm
+            )
+            if algorithm == "npdm":
+                return self._make_fully_reduced_spatial_npdm_orbital_rdm12(
+                    state_id,
+                    with_core=with_core,
+                )
+            return (
+                self._make_fully_reduced_spatial_orbital_rdm1(
+                    state_id,
+                    with_core=with_core,
+                ),
+                self._make_fully_reduced_spatial_orbital_rdm2(
+                    state_id,
+                    with_core=with_core,
+                ),
+            )
+        return self.make_rdm12(
+            state_id,
+            spatial=True,
+            with_core=with_core,
+        )
+
     def make_local_site_rdm(self, idx=None):
         """
         Calculate the local reduced density matrices for individual, isolated spin-orbitals.
@@ -5765,7 +6125,7 @@ class DMRG(CASCI):
         return self.dmrg.make_local_site_rdm(idx=idx)
 
     def make_diagonal_rdm2(self, idx_pairs=None):
-        """
+        r"""
         Calculate the diagonal blocks of the 2-site reduced density matrix.
 
         Extracts the two-site quantum state :math:`\rho_{ij}` needed to compute

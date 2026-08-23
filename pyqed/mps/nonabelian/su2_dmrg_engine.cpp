@@ -21,7 +21,9 @@
 
 #ifdef __APPLE__
 #include <malloc/malloc.h>
+#endif
 
+#if defined(__APPLE__) || defined(PYQED_USE_CBLAS)
 extern "C" void cblas_dgemm(
     const int order,
     const int trans_a,
