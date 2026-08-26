@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 
+import pyqed._vuletta.solver as vuletta_solver_module
 from pyqed._vuletta import (
     ConditionalCanonicalLETTA,
     ConditionalTangentData,
@@ -460,6 +461,50 @@ def test_vuletta_rejects_fractional_bond_dimension():
         vuletta(_tfim_bond(), bond_dim=1.5)
 
 
+def test_conditional_canonical_update_is_the_default():
+    assert VULETTAOptions().update_method == "conditional_canonical"
+
+
+def test_conditional_solver_does_not_construct_the_dense_tangent_gram(monkeypatch):
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("dense tangent Gram matrix was constructed")
+
+    monkeypatch.setattr(
+        vuletta_solver_module,
+        "tangent_gram_matrix",
+        fail_if_called,
+    )
+
+    result = vuletta(
+        _tfim_bond(),
+        bond_dim=1,
+        seed=3,
+        options=VULETTAOptions(max_iterations=100),
+    )
+
+    assert result.converged
+    assert result.update_method == "conditional_canonical"
+    assert result.canonical_state is not None
+    assert result.canonical_residual_norm < 1.0e-10
+    assert result.canonical_state.left_isometry_error() < 1.0e-10
+    assert result.canonical_state.right_isometry_error() < 1.0e-10
+    assert result.canonical_state.center_error() < 1.0e-10
+
+
+def test_legacy_dense_natural_gradient_path_remains_available():
+    result = vuletta(
+        _tfim_bond(),
+        bond_dim=1,
+        seed=3,
+        options=VULETTAOptions(
+            max_iterations=1,
+            update_method="natural_gradient",
+        ),
+    )
+
+    assert result.update_method == "natural_gradient"
+
+
 def test_vuletta_rejects_invalid_function_evaluation_limit():
     with pytest.raises(ValueError, match="max_function_evaluations"):
         vuletta(
@@ -498,7 +543,9 @@ def test_vuletta_finds_nontrivial_pair_tied_ising_state():
     )
     assert result.energy < -1.56
     assert result.gradient_method == "analytic"
-    assert result.update_method == "natural_gradient"
+    assert result.update_method == "conditional_canonical"
+    assert result.canonical_state is not None
+    assert result.canonical_residual_norm < 1.0e-10
     assert result.metric_rank == 2
 
 

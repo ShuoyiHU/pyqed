@@ -9,12 +9,18 @@ import numpy as np
 from scipy.optimize import minimize
 
 from .gradients import (
+    conditional_tangent_direction,
     energy_and_gradient,
     natural_gradient,
     tangent_gram_matrix,
 )
 from .operators import _as_two_site_operator, energy_density
-from .state import UniformLETTA, random_uniform_letta
+from .state import (
+    ConditionalCanonicalLETTA,
+    UniformLETTA,
+    conditional_canonicalize,
+    random_uniform_letta,
+)
 
 
 @dataclass(frozen=True)
@@ -23,12 +29,13 @@ class VULETTAOptions:
     max_function_evaluations: int | None = None
     tolerance: float = 1.0e-8
     energy_tolerance: float = 1.0e-13
-    update_method: str = "natural_gradient"
+    update_method: str = "conditional_canonical"
     gradient_method: str = "analytic"
     finite_difference_scheme: str = "3-point"
     max_line_search_steps: int = 30
     max_parameter_step: float = 2.0
     metric_rcond: float = 1.0e-10
+    canonical_rcond: float = 1.0e-12
     armijo_coefficient: float = 1.0e-4
     stationarity_tolerance: float = 1.0e-6
     verbosity: int = 0
@@ -40,6 +47,7 @@ class VULETTAIteration:
     energy: float
     energy_change: float | None
     residual_norm: float | None = None
+    canonical_residual_norm: float | None = None
     step_size: float | None = None
 
 
@@ -55,6 +63,9 @@ class VULETTAResult:
     parameter_norm: float
     residual_norm: float
     metric_rank: int | None
+    canonical_state: ConditionalCanonicalLETTA | None
+    canonical_residual_norm: float | None
+    reduced_dimension: int | None
     update_method: str
     gradient_method: str
     history: tuple[VULETTAIteration, ...]
@@ -143,6 +154,7 @@ def vuletta(
         or options.stationarity_tolerance <= 0.0
         or options.max_parameter_step <= 0.0
         or options.metric_rcond <= 0.0
+        or options.canonical_rcond <= 0.0
         or not 0.0 < options.armijo_coefficient < 1.0
     ):
         raise ValueError("solver tolerances must be positive.")
@@ -152,13 +164,22 @@ def vuletta(
         raise ValueError(
             "gradient_method must be 'analytic' or 'finite_difference'."
         )
-    if options.update_method not in {"natural_gradient", "lbfgs"}:
-        raise ValueError("update_method must be 'natural_gradient' or 'lbfgs'.")
+    if options.update_method not in {
+        "conditional_canonical",
+        "natural_gradient",
+        "lbfgs",
+    }:
+        raise ValueError(
+            "update_method must be 'conditional_canonical', "
+            "'natural_gradient', or 'lbfgs'."
+        )
     if (
-        options.update_method == "natural_gradient"
+        options.update_method in {"conditional_canonical", "natural_gradient"}
         and options.gradient_method != "analytic"
     ):
-        raise ValueError("natural_gradient updates require the analytic gradient.")
+        raise ValueError(
+            "conditional and natural-gradient updates require the analytic gradient."
+        )
 
     array = np.asarray(hamiltonian)
     if array.ndim == 2:
@@ -189,7 +210,7 @@ def vuletta(
     shape = state.tensor.shape
     parameters = _pack_tensor(state.tensor, real)
     if options.max_function_evaluations is None:
-        if options.update_method == "natural_gradient":
+        if options.update_method in {"conditional_canonical", "natural_gradient"}:
             max_function_evaluations = (
                 1
                 + options.max_iterations
@@ -202,7 +223,7 @@ def vuletta(
                 2 if options.finite_difference_scheme == "3-point" else 1
             )
             evaluations_per_line_search = 1 + stencil_size * parameters.size
-        if options.update_method != "natural_gradient":
+        if options.update_method not in {"conditional_canonical", "natural_gradient"}:
             max_function_evaluations = (
                 1
                 + options.max_iterations
@@ -245,6 +266,178 @@ def vuletta(
                 f"VULETTA {record.iteration:4d}  energy={energy: .14f}  "
                 f"dE={change_text}"
             )
+
+    if options.update_method == "conditional_canonical":
+        function_evaluations = 0
+        success = False
+        message = "STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT"
+        iterations = 0
+        canonical_state = conditional_canonicalize(
+            state,
+            rcond=options.canonical_rcond,
+        )
+        residual_norm = np.inf
+        canonical_residual_norm = max(
+            canonical_state.left_isometry_error(),
+            canonical_state.right_isometry_error(),
+            canonical_state.center_error(),
+        )
+        reduced_dimension = None
+
+        for iteration in range(1, options.max_iterations + 1):
+            current_state = canonical_state.state
+            energy, tensor_gradient = energy_and_gradient(current_state, h)
+            function_evaluations += 1
+            tangent = conditional_tangent_direction(
+                canonical_state,
+                tensor_gradient,
+                real=real,
+                rcond=options.canonical_rcond,
+            )
+            residual_norm = tangent.residual_norm
+            reduced_dimension = tangent.reduced_dimension
+            canonical_residual_norm = max(
+                canonical_state.left_isometry_error(),
+                canonical_state.right_isometry_error(),
+                canonical_state.center_error(),
+            )
+            iterations = iteration - 1
+            if (
+                residual_norm <= options.stationarity_tolerance
+                and canonical_residual_norm <= options.stationarity_tolerance
+            ):
+                success = True
+                message = (
+                    "CONVERGENCE: CONDITIONAL TANGENT AND CANONICAL "
+                    "RESIDUALS <= STATIONARITY TOLERANCE"
+                )
+                break
+
+            descent = np.asarray(tangent.direction).copy()
+            coordinate_step_norm = residual_norm
+            if coordinate_step_norm > options.max_parameter_step:
+                scale = options.max_parameter_step / coordinate_step_norm
+                descent *= scale
+            slope = float(np.real(np.vdot(tensor_gradient, descent)))
+            if not np.isfinite(slope) or slope >= 0.0:
+                message = "STOP: CONDITIONAL TANGENT DIRECTION IS NOT DESCENDING"
+                break
+
+            step_size = 1.0
+            accepted = False
+            trial_energy = energy
+            trial_tensor = current_state.tensor
+            for _line_search in range(options.max_line_search_steps):
+                if function_evaluations >= max_function_evaluations:
+                    message = "STOP: TOTAL NO. OF F,G EVALUATIONS EXCEEDS LIMIT"
+                    break
+                trial_tensor = current_state.tensor + step_size * descent
+                try:
+                    trial_energy = energy_density(UniformLETTA(trial_tensor), h)
+                except ValueError:
+                    trial_energy = np.inf
+                function_evaluations += 1
+                if trial_energy <= (
+                    energy + options.armijo_coefficient * step_size * slope
+                ):
+                    accepted = True
+                    break
+                step_size *= 0.5
+            if not accepted:
+                if function_evaluations < max_function_evaluations:
+                    message = "STOP: ARMIJO LINE SEARCH FAILED"
+                break
+
+            canonical_state = conditional_canonicalize(
+                UniformLETTA(trial_tensor),
+                rcond=options.canonical_rcond,
+            )
+            change = abs(trial_energy - energy)
+            canonical_residual_norm = max(
+                canonical_state.left_isometry_error(),
+                canonical_state.right_isometry_error(),
+                canonical_state.center_error(),
+            )
+            history.append(
+                VULETTAIteration(
+                    iteration=iteration,
+                    energy=trial_energy,
+                    energy_change=change,
+                    residual_norm=residual_norm,
+                    canonical_residual_norm=canonical_residual_norm,
+                    step_size=step_size,
+                )
+            )
+            iterations = iteration
+            if options.verbosity:
+                print(
+                    f"VULETTA {iteration:4d}  energy={trial_energy: .14f}  "
+                    f"dE={change:.3e}  residual={residual_norm:.3e}  "
+                    f"canonical={canonical_residual_norm:.3e}  "
+                    f"step={step_size:.3e}"
+                )
+
+        final_state = canonical_state.state
+        final_energy, final_tensor_gradient = energy_and_gradient(final_state, h)
+        function_evaluations += 1
+        final_tangent = conditional_tangent_direction(
+            canonical_state,
+            final_tensor_gradient,
+            real=real,
+            rcond=options.canonical_rcond,
+        )
+        residual_norm = final_tangent.residual_norm
+        reduced_dimension = final_tangent.reduced_dimension
+        canonical_residual_norm = max(
+            canonical_state.left_isometry_error(),
+            canonical_state.right_isometry_error(),
+            canonical_state.center_error(),
+        )
+        packed_tensor = _pack_tensor(final_state.tensor, real)
+        packed_gradient = _pack_gradient(final_tensor_gradient, real)
+        parameter_norm = float(np.linalg.norm(packed_tensor))
+        radial_coefficient = np.dot(packed_tensor, packed_gradient) / (
+            parameter_norm * parameter_norm
+        )
+        coordinate_gradient = packed_gradient - radial_coefficient * packed_tensor
+        coordinate_gradient_norm = float(np.linalg.norm(coordinate_gradient))
+        gradient_norm = parameter_norm * coordinate_gradient_norm
+        converged = bool(
+            (success or residual_norm <= options.stationarity_tolerance)
+            and residual_norm <= options.stationarity_tolerance
+            and canonical_residual_norm <= options.stationarity_tolerance
+        )
+        if converged and not success:
+            message = (
+                "CONVERGENCE: CONDITIONAL TANGENT AND CANONICAL "
+                "RESIDUALS <= STATIONARITY TOLERANCE"
+            )
+        elif not converged:
+            message += (
+                f"; conditional tangent residual {residual_norm:.3e}, "
+                f"canonical residual {canonical_residual_norm:.3e}, "
+                "exceeds stationarity_tolerance "
+                f"{options.stationarity_tolerance:.3e}"
+            )
+        return VULETTAResult(
+            state=final_state,
+            energy=final_energy,
+            converged=converged,
+            iterations=iterations,
+            function_evaluations=function_evaluations,
+            gradient_norm=gradient_norm,
+            coordinate_gradient_norm=coordinate_gradient_norm,
+            parameter_norm=parameter_norm,
+            residual_norm=residual_norm,
+            metric_rank=reduced_dimension,
+            canonical_state=canonical_state,
+            canonical_residual_norm=canonical_residual_norm,
+            reduced_dimension=reduced_dimension,
+            update_method=options.update_method,
+            gradient_method=options.gradient_method,
+            history=tuple(history),
+            message=message,
+        )
 
     if options.update_method == "natural_gradient":
         function_evaluations = 0
@@ -377,6 +570,9 @@ def vuletta(
             parameter_norm=parameter_norm,
             residual_norm=residual_norm,
             metric_rank=metric_rank,
+            canonical_state=None,
+            canonical_residual_norm=None,
+            reduced_dimension=None,
             update_method=options.update_method,
             gradient_method=options.gradient_method,
             history=tuple(history),
@@ -434,6 +630,9 @@ def vuletta(
         parameter_norm=parameter_norm,
         residual_norm=gradient_norm,
         metric_rank=None,
+        canonical_state=None,
+        canonical_residual_norm=None,
+        reduced_dimension=None,
         update_method=options.update_method,
         gradient_method=options.gradient_method,
         history=tuple(history),

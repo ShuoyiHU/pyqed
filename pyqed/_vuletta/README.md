@@ -3,21 +3,22 @@
 This package implements a direct variational uniform version of the
 nearest-neighbor leg-tied tensor ansatz.
 
-Read [vuletta_theory.tex](theory/vuletta_theory.tex) for the complete
-derivation. It covers the structured transfer contraction, physical-dependent
-gauge freedom, Gram matrix, tangent projector, VU-like stationarity equation,
-analytic transfer response, and the implemented numerical steps.
-[THEORY.md](THEORY.md) remains as a compact summary.
+The implementation uses the exact structured-MPS contraction identity while
+optimizing only the tied LETTA entries. For the nearest-neighbor chain, the
+shared physical state supports an exact conditional mixed-canonical gauge.
 
 ## Public API
 
 - `UniformLETTA` stores one repeated pair tensor.
+- `ConditionalCanonicalLETTA` stores `TL`, `TC`, `TR`, and conditioned centers.
+- `conditional_canonicalize` constructs the exact NN conditional gauge.
 - `transfer_data` constructs the thermodynamic transfer fixed points.
 - `one_site_expectation` evaluates a local observable.
 - `two_site_expectation` evaluates a nearest-neighbor observable.
 - `energy_density` evaluates a nearest-neighbor Hamiltonian.
 - `energy_and_gradient` evaluates the exact transfer-response derivative.
 - `tangent_gram_matrix` constructs the connected uniform-state metric.
+- `conditional_tangent_direction` constructs horizontal whitened coordinates.
 - `expand_uniform_letta` embeds a converged state at a larger bond dimension.
 - `vuletta` minimizes the energy directly over the LETTA entries.
 
@@ -81,8 +82,9 @@ print(result.residual_norm)
 print(result.converged)
 ```
 
-The default update is a tangent-metric natural-gradient step. The result is
-marked converged only when the gauge-invariant tangent residual is below
+The default update is a conditional-canonical tangent step. The result is
+marked converged only when both the horizontal tangent residual and the
+conditional-canonical residual are below
 
 $$
 \texttt{stationarity_tolerance}.
@@ -94,7 +96,7 @@ unless an explicit, matching `bond_dim` is also given.
 
 ## Convergence diagnostics
 
-`max_iterations` is an upper bound. The default natural-gradient solver can
+`max_iterations` is an upper bound. The default conditional-canonical solver can
 stop earlier because:
 
 - the tangent-metric residual reaches `stationarity_tolerance`;
@@ -111,22 +113,61 @@ Q(1-\mathcal E)^{-1}Q.
 $$
 
 This needs one transfer eigensystem per accepted iteration, instead of one
-eigensystem for every perturbed coordinate. `gradient_method="finite_difference"`
-with `update_method="lbfgs"` remains available as a reference check.
+eigensystem for every perturbed coordinate. The old dense connected-Gram path
+remains available with `update_method="natural_gradient"`, and
+`gradient_method="finite_difference"` with `update_method="lbfgs"` remains a
+finite-difference reference.
 
-`residual_norm` is
+For the default path, let $N_q$ span the orthogonal complement of the
+left-canonical conditioned block and let $\rho_q$ be the corresponding
+right-metric block. `residual_norm` is
 
 $$
-\epsilon_{\mathrm{tan}}
+\epsilon_{\mathrm{tan}}^2
 =
-\sqrt{g_{\mathrm{coord}}^{\mathsf T}
-\mathsf G^+g_{\mathrm{coord}}},
+\sum_q
+\left\|N_q^\dagger g_q\rho_q^{-1/2}\right\|_F^2,
 $$
 
-where the pseudoinverse removes normalization, projective phase, and LETTA
-gauge directions. `gradient_norm` is retained as the Euclidean
-parameter-sphere norm for diagnostics, but it is coordinate and gauge
-dependent. `metric_rank` reports the retained physical tangent dimension.
+which equals the dense connected-Gram pseudoinverse residual but never forms
+that singular matrix. `gradient_norm` is retained as a Euclidean diagnostic,
+but it is coordinate and gauge dependent. `metric_rank` and
+`reduced_dimension` report the active real tangent dimension.
+
+## Conditional mixed-canonical gauge
+
+Write the pair tensor as $T^{p,q}_{\alpha\beta}$, where $q$ is the shared
+physical state on the right edge. Its exact gauge freedom is
+
+$$
+T^{p,q}\longrightarrow G_p^{-1}T^{p,q}G_q.
+$$
+
+The nearest-neighbor copy structure makes the canonical conditions sectorwise:
+
+$$
+\sum_p (T_L^{p,q})^\dagger T_L^{p,q}=I_D,
+\qquad
+\sum_q T_R^{p,q}(T_R^{p,q})^\dagger=I_D.
+$$
+
+The conditioned centers obey
+
+$$
+T_C^{p,q}=T_L^{p,q}C_q=C_pT_R^{p,q}.
+$$
+
+Every active variation satisfies
+
+$$
+\sum_p (T_L^{p,q})^\dagger X^{p,q}=0
+\qquad\text{for every }q.
+$$
+
+Thus normalization, projective phase, and all physical-dependent virtual gauge
+directions are absent from the active coordinates. Full conditioned transfer
+support is required by the optimizer; `canonical_rcond` controls its numerical
+rank threshold.
 
 ## Ising comparison
 
@@ -183,7 +224,7 @@ LETTA. The LETTA constraint is present throughout every objective evaluation.
 - one repeated nearest-neighbor pair tensor;
 - one-site translation invariance;
 - dense transfer eigensolvers;
-- dense tangent Gram matrices and reduced resolvents;
+- dense transfer eigensolvers and analytic-gradient reduced resolvents;
 - injective transfer operators only;
 - no long-range leg sharing or symmetry blocks;
 - nonconvex optimization; continuation reduces but cannot mathematically
