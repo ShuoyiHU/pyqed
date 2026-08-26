@@ -194,6 +194,30 @@ PYTHONPATH=. python -m pyqed._vuletta.examples.tfim_comparison \
     --independent-letta-initializations
 ```
 
+## VULETTA versus VUMPS benchmark
+
+The reproducible benchmark covers the transverse-field Ising model at
+$J=1$, $g=1.5$ and the antiferromagnetic spin-$1/2$ Heisenberg chain. It
+records energy, model-specific one- and two-site observables, tangent
+residual, convergence status, iteration count, and wall-clock time for each
+LETTA or MPS bond dimension.
+
+Run the default sweep with
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 PYTHONPATH=. \
+python -m pyqed._vuletta.benchmarks.one_dimensional_models \
+    --letta-bond-dimensions 1 2 3 \
+    --mps-bond-dimensions 1 2 3 4 6 \
+    --csv benchmark.csv \
+    --markdown benchmark.md
+```
+
+LETTA uses bond-dimension continuation, while each VUMPS row uses the same
+deterministic random seed. Timings are process- and machine-dependent; use
+`--repeats 3` (or more) to report the median after one untimed warm-up.
+
 ## Important distinction
 
 The structured MPS tensor is a contraction identity:
@@ -223,7 +247,6 @@ LETTA. The LETTA constraint is present throughout every objective evaluation.
 
 - one repeated nearest-neighbor pair tensor;
 - one-site translation invariance;
-- dense transfer eigensolvers;
 - dense transfer eigensolvers and analytic-gradient reduced resolvents;
 - injective transfer operators only;
 - no long-range leg sharing or symmetry blocks;
