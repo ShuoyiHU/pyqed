@@ -327,6 +327,7 @@ def vuletta(
             accepted = False
             trial_energy = energy
             trial_tensor = current_state.tensor
+            trial_canonical_state = None
             for _line_search in range(options.max_line_search_steps):
                 if function_evaluations >= max_function_evaluations:
                     message = "STOP: TOTAL NO. OF F,G EVALUATIONS EXCEEDS LIMIT"
@@ -340,18 +341,23 @@ def vuletta(
                 if trial_energy <= (
                     energy + options.armijo_coefficient * step_size * slope
                 ):
-                    accepted = True
-                    break
+                    try:
+                        trial_canonical_state = conditional_canonicalize(
+                            UniformLETTA(trial_tensor),
+                            rcond=options.canonical_rcond,
+                        )
+                    except ValueError:
+                        trial_canonical_state = None
+                    else:
+                        accepted = True
+                        break
                 step_size *= 0.5
             if not accepted:
                 if function_evaluations < max_function_evaluations:
                     message = "STOP: ARMIJO LINE SEARCH FAILED"
                 break
 
-            canonical_state = conditional_canonicalize(
-                UniformLETTA(trial_tensor),
-                rcond=options.canonical_rcond,
-            )
+            canonical_state = trial_canonical_state
             change = abs(trial_energy - energy)
             canonical_residual_norm = max(
                 canonical_state.left_isometry_error(),

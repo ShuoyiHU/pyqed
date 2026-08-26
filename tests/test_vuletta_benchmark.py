@@ -48,8 +48,10 @@ def test_small_benchmark_returns_letta_and_vumps_rows_with_timings():
     letta, mps = rows
     assert letta.transfer_bond_dim == 2
     assert letta.tensor_entries == 4
+    assert letta.tangent_dimension == 2
     assert mps.transfer_bond_dim == 1
     assert mps.tensor_entries == 2
+    assert mps.tangent_dimension is None
     for row in rows:
         assert np.isfinite(row.energy)
         assert np.isfinite(row.energy_error)
@@ -82,4 +84,5 @@ def test_benchmark_markdown_and_csv_include_observables_and_runtime(tmp_path):
         records = list(csv.DictReader(handle))
     assert len(records) == 1
     assert records[0]["method"] == "VULETTA"
+    assert records[0]["tangent_dimension"] == "2"
     assert float(records[0]["runtime_seconds"]) >= 0.0

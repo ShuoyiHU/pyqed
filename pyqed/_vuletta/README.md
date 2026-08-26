@@ -90,6 +90,10 @@ $$
 \texttt{stationarity_tolerance}.
 $$
 
+Armijo acceptance includes the canonical retraction itself: a trial is
+backtracked if its conditional gauge cannot be reconstructed accurately or if
+the returned canonical transfer operator is noninjective.
+
 The default LETTA bond dimension is two when neither `bond_dim` nor an initial
 state is supplied. If an initial state is supplied, its bond dimension is used
 unless an explicit, matching `bond_dim` is also given.
@@ -166,8 +170,10 @@ $$
 
 Thus normalization, projective phase, and all physical-dependent virtual gauge
 directions are absent from the active coordinates. Full conditioned transfer
-support is required by the optimizer; `canonical_rcond` controls its numerical
-rank threshold.
+support is required to construct the canonical gauge. If the right tangent
+metric subsequently loses numerical rank, its pseudoinverse drops only the
+unsupported directions; `reduced_dimension` reports the remaining active
+coordinates. `canonical_rcond` controls both rank thresholds.
 
 ## Ising comparison
 

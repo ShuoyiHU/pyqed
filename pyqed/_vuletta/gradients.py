@@ -77,6 +77,7 @@ def conditional_tangent_direction(
     )
     complements = []
     inverse_metric_sqrts = []
+    supported_dimension = 0
 
     for current in range(physical_dim):
         left_matrix = canonical_state.TL[:, :, current, :].transpose(
@@ -96,10 +97,7 @@ def conditional_tangent_direction(
             right_block,
             rcond,
         )
-        if rank < bond_dim:
-            raise ValueError(
-                "conditional tangent whitening requires full right-metric support."
-            )
+        supported_dimension += complement_dimension * rank
         coordinate_gradient = (
             complement.conj().T @ gradient_matrix @ inverse_sqrt
         )
@@ -117,7 +115,7 @@ def conditional_tangent_direction(
         direction = np.real_if_close(direction, tol=1000)
         reduced_gradient = np.real_if_close(reduced_gradient, tol=1000)
     residual_norm = float(np.linalg.norm(reduced_gradient))
-    reduced_dimension = int(reduced_gradient.size)
+    reduced_dimension = int(supported_dimension)
     if not real:
         reduced_dimension *= 2
     return ConditionalTangentData(

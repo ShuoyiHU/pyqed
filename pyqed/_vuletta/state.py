@@ -424,7 +424,7 @@ def conditional_canonicalize(
         TC = np.real_if_close(TC, tol=1000)
         centers = np.real_if_close(centers, tol=1000)
 
-    return ConditionalCanonicalLETTA(
+    canonical = ConditionalCanonicalLETTA(
         TL=TL,
         C=centers,
         TR=TR,
@@ -433,6 +433,11 @@ def conditional_canonicalize(
         left_conditioned_ranks=tuple(left_ranks),
         right_conditioned_ranks=tuple(right_ranks),
     )
+    transfer_data(
+        canonical.state,
+        injectivity_tolerance=injectivity_tolerance,
+    )
+    return canonical
 
 
 def random_uniform_letta(physical_dim, bond_dim, *, seed=None, real=False):

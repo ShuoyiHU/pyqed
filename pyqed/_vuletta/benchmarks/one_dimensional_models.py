@@ -75,6 +75,7 @@ class BenchmarkRow:
     bond_dim: int
     transfer_bond_dim: int
     tensor_entries: int
+    tangent_dimension: int | None
     energy: float
     reference_energy: float
     energy_error: float
@@ -270,6 +271,7 @@ def run_one_dimensional_benchmark(
                     bond_dim=bond_dim,
                     transfer_bond_dim=2 * bond_dim,
                     tensor_entries=4 * bond_dim * bond_dim,
+                    tangent_dimension=result.reduced_dimension,
                     energy=float(result.energy),
                     reference_energy=float(model.reference_energy),
                     energy_error=abs(float(result.energy) - model.reference_energy),
@@ -305,6 +307,7 @@ def run_one_dimensional_benchmark(
                     bond_dim=bond_dim,
                     transfer_bond_dim=bond_dim,
                     tensor_entries=2 * bond_dim * bond_dim,
+                    tangent_dimension=None,
                     energy=float(result.energy),
                     reference_energy=float(model.reference_energy),
                     energy_error=abs(float(result.energy) - model.reference_energy),
@@ -324,9 +327,9 @@ def format_benchmark_markdown(rows):
     """Return a compact Markdown table for benchmark rows."""
 
     lines = [
-        "| model | method | D | transfer | entries | converged | iterations | "
-        "energy | |dE| | observables | residual | runtime_s |",
-        "|---|---:|---:|---:|---:|:---:|---:|---:|---:|---|---:|---:|",
+        "| model | method | D | transfer | entries | tangent dim | converged | "
+        "iterations | energy | abs(dE) | observables | residual | runtime_s |",
+        "|---|---:|---:|---:|---:|---:|:---:|---:|---:|---:|---|---:|---:|",
     ]
     for row in rows:
         observables = "; ".join(
@@ -336,6 +339,7 @@ def format_benchmark_markdown(rows):
         lines.append(
             f"| {row.model} | {row.method} | {row.bond_dim} | "
             f"{row.transfer_bond_dim} | {row.tensor_entries} | "
+            f"{row.tangent_dimension if row.tangent_dimension is not None else '-'} | "
             f"{row.converged} | {row.iterations} | {row.energy:.12g} | "
             f"{row.energy_error:.3e} | {observables} | "
             f"{row.residual:.3e} | {row.runtime_seconds:.6f} |"
@@ -354,6 +358,7 @@ def write_benchmark_csv(rows, path):
         "bond_dim",
         "transfer_bond_dim",
         "tensor_entries",
+        "tangent_dimension",
         "energy",
         "reference_energy",
         "energy_error",

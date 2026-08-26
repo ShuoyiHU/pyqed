@@ -32,6 +32,15 @@ def _tfim_bond(coupling=1.0, field=1.5):
     )
 
 
+def _heisenberg_bond():
+    x = np.array([[0.0, 1.0], [1.0, 0.0]])
+    y = np.array([[0.0, -1.0j], [1.0j, 0.0]])
+    z = np.array([[1.0, 0.0], [0.0, -1.0]])
+    return 0.25 * (
+        np.kron(x, x) + np.kron(y, y) + np.kron(z, z)
+    )
+
+
 def test_structured_mps_amplitude_equals_periodic_letta_amplitude():
     rng = np.random.default_rng(4)
     tensor = rng.normal(size=(2, 2, 2, 2)) + 1j * rng.normal(
@@ -489,6 +498,121 @@ def test_conditional_solver_does_not_construct_the_dense_tangent_gram(monkeypatc
     assert result.canonical_state.left_isometry_error() < 1.0e-10
     assert result.canonical_state.right_isometry_error() < 1.0e-10
     assert result.canonical_state.center_error() < 1.0e-10
+
+
+def test_conditional_solver_rejects_numerically_uncanonical_trial_and_backtracks():
+    options = VULETTAOptions(
+        max_iterations=30,
+        tolerance=1.0e-7,
+        stationarity_tolerance=1.0e-7,
+    )
+    product_result = vuletta(
+        _heisenberg_bond(),
+        bond_dim=1,
+        seed=3,
+        real=True,
+        options=options,
+    )
+    initial = expand_uniform_letta(
+        product_result.state,
+        2,
+        seed=2021,
+        relative_noise=3.0e-2,
+    )
+
+    result = vuletta(
+        _heisenberg_bond(),
+        bond_dim=2,
+        initial=initial,
+        seed=3,
+        real=True,
+        options=VULETTAOptions(
+            max_iterations=1,
+            tolerance=1.0e-7,
+            stationarity_tolerance=1.0e-7,
+        ),
+    )
+
+    assert result.iterations == 1
+    assert result.history[0].step_size < 1.0
+    assert result.energy < product_result.energy
+    assert result.canonical_residual_norm < 1.0e-8
+
+
+def test_conditional_solver_uses_supported_subspace_when_tangent_metric_loses_rank():
+    options = VULETTAOptions(
+        max_iterations=30,
+        tolerance=1.0e-7,
+        stationarity_tolerance=1.0e-7,
+    )
+    product_result = vuletta(
+        _heisenberg_bond(),
+        bond_dim=1,
+        seed=3,
+        real=True,
+        options=options,
+    )
+    initial = expand_uniform_letta(
+        product_result.state,
+        2,
+        seed=2021,
+        relative_noise=3.0e-2,
+    )
+
+    result = vuletta(
+        _heisenberg_bond(),
+        bond_dim=2,
+        initial=initial,
+        seed=3,
+        real=True,
+        options=VULETTAOptions(
+            max_iterations=6,
+            tolerance=1.0e-7,
+            stationarity_tolerance=1.0e-7,
+        ),
+    )
+
+    assert result.reduced_dimension == 6
+    assert np.isfinite(result.residual_norm)
+    assert result.canonical_residual_norm < 1.0e-8
+
+
+def test_conditional_solver_does_not_accept_noninjective_canonical_retraction():
+    options = VULETTAOptions(
+        max_iterations=30,
+        tolerance=1.0e-7,
+        stationarity_tolerance=1.0e-7,
+    )
+    product_result = vuletta(
+        _heisenberg_bond(),
+        bond_dim=1,
+        seed=3,
+        real=True,
+        options=options,
+    )
+    initial = expand_uniform_letta(
+        product_result.state,
+        2,
+        seed=2021,
+        relative_noise=3.0e-2,
+    )
+
+    result = vuletta(
+        _heisenberg_bond(),
+        bond_dim=2,
+        initial=initial,
+        seed=3,
+        real=True,
+        options=VULETTAOptions(
+            max_iterations=60,
+            tolerance=1.0e-7,
+            stationarity_tolerance=1.0e-7,
+        ),
+    )
+
+    assert np.isfinite(result.energy)
+    assert transfer_data(result.state).spectral_gap > 1.0e-10
+    assert result.canonical_residual_norm < 1.0e-8
 
 
 def test_legacy_dense_natural_gradient_path_remains_available():
