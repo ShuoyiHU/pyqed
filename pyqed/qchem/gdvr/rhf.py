@@ -1345,6 +1345,7 @@ class RHF:
             self.dm = np.asarray(P, float)
             self.info = dict(info)
             E_history.append(self.e_tot)
+            self.dstack = d_stack.copy()
 
             if verbose:
                 print(f"   [SCF] E = {self.e_tot:.12f} Eh  ΔE={E_history[-1] - E_history[-2]:+.3e}")

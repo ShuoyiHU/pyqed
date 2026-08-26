@@ -1693,7 +1693,7 @@ def abelian_state_averaged_two_site_svd_from_permuted_data(
     data_list = tuple(data_list or ())
     if not data_list:
         return AbelianTwoSiteSVDResult({}, {}, {}, [], 0.0, 0)
-    weights = tuple(float(weight) for weight in tuple(weights or ()))
+    weights = () if weights is None else tuple(float(weight) for weight in weights)
     if len(weights) != len(data_list):
         raise ValueError("state-averaged SVD weights must match state count")
     direction = str(direction)

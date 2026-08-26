@@ -124,6 +124,34 @@ def _global_symmetric_mpo_cache_key(
         _site_qn_maps_cache_signature(site_qn_maps),
     )
 
+
+def _mpo_factor_list(mpo):
+    return mpo.factors if hasattr(mpo, "factors") else mpo
+
+
+def _mpo_has_abelian_site_tensors(mpo):
+    factors = _mpo_factor_list(mpo)
+    return len(factors) > 0 and all(hasattr(site, "qns") for site in factors)
+
+
+def _mpo_has_native_abelian_site_tensors(mpo):
+    factors = _mpo_factor_list(mpo)
+    return len(factors) > 0 and all(
+        type(site).__name__ == "AbelianSiteTensorData" for site in factors
+    )
+
+
+def _take_tensor_dmrg_runtime_options(kwargs):
+    """Remove low-level sweep/checkpoint controls from a qchem run argument map."""
+    defaults = {
+        "sweep_callback": None,
+        "checkpoint_path": None,
+        "resume_from": None,
+        "checkpoint_interval": 1,
+        "recenter_final": True,
+    }
+    return {name: kwargs.pop(name, default) for name, default in defaults.items()}
+
 from pyqed.qchem.jordan_wigner.spinful import SpinHalfFermionOperators
 
 # from numba import vectorize, float64, jit
@@ -1714,6 +1742,120 @@ def build_mps_from_configs(
     return mps
 
 
+def build_hf_seeded_sector_mps(
+    sym_mgr,
+    reference_config,
+    target_qn,
+    *,
+    noise_scale=1.0e-2,
+    seed=7,
+    native_site_storage=False,
+):
+    """Build an HF-dominant Abelian MPS containing every reachable sector."""
+    reference_config = tuple(int(occupation) for occupation in reference_config)
+    nsites = len(reference_config)
+    if any(occupation not in (0, 1) for occupation in reference_config):
+        raise ValueError("The reference occupation configuration must contain only 0 and 1.")
+    if not 0.0 < noise_scale < 1.0:
+        raise ValueError("noise_scale must lie strictly between 0 and 1.")
+
+    vacuum = sym_mgr.get_vac_qn()
+    physical_qns = [
+        (
+            sym_mgr.get_phys_qn(site, "emp"),
+            sym_mgr.get_phys_qn(site, "occ"),
+        )
+        for site in range(nsites)
+    ]
+
+    forward = [{vacuum}]
+    for site in range(nsites):
+        forward.append(
+            {
+                sym_mgr.combine(left_qn, physical_qn)
+                for left_qn in forward[-1]
+                for physical_qn in physical_qns[site]
+            }
+        )
+    if target_qn not in forward[-1]:
+        raise ValueError(
+            f"Target sector {target_qn!r} is unreachable on {nsites} sites."
+        )
+
+    reference_trajectory = [vacuum]
+    for site, occupation in enumerate(reference_config):
+        state = "occ" if occupation else "emp"
+        reference_trajectory.append(
+            sym_mgr.combine(
+                reference_trajectory[-1],
+                sym_mgr.get_phys_qn(site, state),
+            )
+        )
+    if reference_trajectory[-1] != target_qn:
+        raise ValueError(
+            "The reference occupation configuration does not reach the target sector."
+        )
+
+    suffix = [set() for _ in range(nsites + 1)]
+    suffix[-1] = {vacuum}
+    for site in range(nsites - 1, -1, -1):
+        suffix[site] = {
+            sym_mgr.combine(physical_qn, right_qn)
+            for physical_qn in physical_qns[site]
+            for right_qn in suffix[site + 1]
+        }
+
+    bond_sectors = []
+    for cut in range(nsites + 1):
+        viable = {
+            left_qn
+            for left_qn in forward[cut]
+            if target_qn - left_qn in suffix[cut]
+        }
+        if not viable:
+            raise ValueError(f"No target-compatible bond sectors remain at cut {cut}.")
+        bond_sectors.append(tuple(sorted(viable)))
+
+    rng = np.random.default_rng(seed)
+    mps = []
+    for site in range(nsites):
+        left_qns = bond_sectors[site]
+        right_qns = bond_sectors[site + 1]
+        right_set = set(right_qns)
+        data = {}
+        for left_qn in left_qns:
+            for physical_qn in physical_qns[site]:
+                right_qn = sym_mgr.combine(left_qn, physical_qn)
+                if right_qn not in right_set:
+                    continue
+                key = (left_qn, right_qn, physical_qn)
+                reference_state = "occ" if reference_config[site] else "emp"
+                reference_physical_qn = sym_mgr.get_phys_qn(site, reference_state)
+                is_reference_transition = (
+                    left_qn == reference_trajectory[site]
+                    and right_qn == reference_trajectory[site + 1]
+                    and physical_qn == reference_physical_qn
+                )
+                amplitude = (
+                    1.0
+                    if is_reference_transition
+                    else noise_scale * rng.standard_normal()
+                )
+                data[key] = np.asarray([[[amplitude]]], dtype=complex)
+
+        tensor = make_abelian_site_tensor(
+            data,
+            [list(left_qns), list(right_qns), list(physical_qns[site])],
+            [-1, 1, 1],
+            native_site_storage=native_site_storage,
+        )
+        norm = tensor.norm()
+        if norm <= 1.0e-12:
+            raise ValueError(f"HF-seeded initial tensor {site} is zero.")
+        mps.append(tensor * (1.0 / norm))
+    return mps
+
+
 def _spin_config_to_spatial_config(cfg):
     """Convert interleaved spin-orbital occupations to spatial d=4 states."""
     spatial = []
@@ -2254,6 +2396,14 @@ class DMRG(CASCI):
 
         elif method == 'cisd' or method == 'random':
             configs = gen_random_cisd_configs(self.nelecas, nsites, n_states=20)
+
+        elif method in {'hf_sector_noise', 'hf-sector-noise', 'hf_seeded', 'hf-seeded'}:
+            return build_hf_seeded_sector_mps(
+                self.sym_mgr,
+                gen_hf_config(self.nelecas, nsites),
+                self.sym_mgr.get_target_qn(self.nelecas, self.spin),
+                native_site_storage=native_site_storage,
+            )
 
         else:
             # Fallback to HF
@@ -4352,6 +4502,12 @@ class DMRG(CASCI):
         native_symmetric_mpo_storage = bool(
             resolved_abelian_options.get("native_site_storage", False)
         )
+        hamiltonian_already_abelian = _mpo_has_abelian_site_tensors(self.H)
+        hamiltonian_already_native = _mpo_has_native_abelian_site_tensors(self.H)
+        if hamiltonian_already_native and not native_symmetric_mpo_storage:
+            native_symmetric_mpo_storage = True
+            resolved_abelian_options["native_site_storage"] = True
+            abelian_matvec_options["native_site_storage"] = True
         # Initialize Symmetry
         self.sym_mgr = SymmetryManager(symmetry_list, orb_sym=getattr(self, "orb_sym", None))
         if self.sym_mgr.enabled:
@@ -4466,24 +4622,34 @@ class DMRG(CASCI):
             else:
                 final_H = self._symmetric_mpo_cache.get(sym_cache_key)
                 if final_H is None:
-                    self._log(
-                        "  Converting MPO to native Abelian tensors..."
-                        if native_symmetric_mpo_storage
-                        else "  Converting MPO to legacy symmetric tensors..."
-                    )
-                    t_convert = time.perf_counter()
-                    final_H = dense_to_symmetric_mpo(
-                        self.H,
-                        site_qn_maps,
-                        native_site_storage=native_symmetric_mpo_storage,
-                    )
-                    timings = self._active_integral_build_info.setdefault(
-                        "build_timings",
-                        {},
-                    )
-                    timings["symmetric_hamiltonian_convert_s"] = float(
-                        time.perf_counter() - t_convert
-                    )
+                    if hamiltonian_already_abelian:
+                        self._log("  Reusing prebuilt Abelian MPO tensors.")
+                        final_H = _mpo_factor_list(self.H)
+                        timings = self._active_integral_build_info.setdefault(
+                            "build_timings",
+                            {},
+                        )
+                        timings["symmetric_hamiltonian_convert_s"] = 0.0
+                        timings["symmetric_hamiltonian_prebuilt_abelian"] = True
+                    else:
+                        self._log(
+                            "  Converting MPO to native Abelian tensors..."
+                            if native_symmetric_mpo_storage
+                            else "  Converting MPO to legacy symmetric tensors..."
+                        )
+                        t_convert = time.perf_counter()
+                        final_H = dense_to_symmetric_mpo(
+                            self.H,
+                            site_qn_maps,
+                            native_site_storage=native_symmetric_mpo_storage,
+                        )
+                        timings = self._active_integral_build_info.setdefault(
+                            "build_timings",
+                            {},
+                        )
+                        timings["symmetric_hamiltonian_convert_s"] = float(
+                            time.perf_counter() - t_convert
+                        )
                     self._symmetric_mpo_cache[sym_cache_key] = final_H
                     self._log(f"  MPO Converted. Sites: {len(final_H)}")
                 else:
@@ -4696,6 +4862,7 @@ class DMRG(CASCI):
             use_symmetry=use_symmetry,
             native_site_storage=native_initial_guess_storage,
         )
+        tensor_dmrg_runtime_options = _take_tensor_dmrg_runtime_options(kwargs)
         schedule = self._normalize_dmrg_schedule(self.D, nsweeps, D_schedule=D_schedule, nsweeps_schedule=nsweeps_schedule)
         t0 = time.time()
         current_guess = mps0
@@ -4733,6 +4900,7 @@ class DMRG(CASCI):
                 final_expectation=(
                     True if final_expectation is None else bool(final_expectation)
                 ),
+                **tensor_dmrg_runtime_options,
             )
             if self._active_integral_build_info is not None:
                 self._active_integral_build_info[
@@ -4744,7 +4912,10 @@ class DMRG(CASCI):
             current_guess = dmrg.ground_state.copy()
         self.dmrg = dmrg
         # Report
-        e_dmrg_total = dmrg.e_tot + self.e_core
+        if self.nstates == 1:
+            e_dmrg_total = dmrg.e_tot + self.e_core
+        else:
+            e_dmrg_total = np.asarray(dmrg.e_tot) + self.e_core
         if self.spin_purification:
             compute_s2 = True
         s2_val = self.calc_spin_square() if compute_s2 else None

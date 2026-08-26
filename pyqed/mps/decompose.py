@@ -300,7 +300,12 @@ def compress(B_list, chi_max, renormalize=True, return_singular_values=False):
         # Obtain the new values for B and l #
         invsq = np.sqrt(sum(Y[:chi2]**2))
 
-        s_list[i2] = Y[:chi2]/invsq
+        if renormalize:
+            s_list[i2] = Y[:chi2] / invsq
+        else:
+            # Preserve the amplitude (and therefore discarded-weight loss)
+            # so callers can normalize and account for it explicitly.
+            s_list[i2] = Y[:chi2]
 
         # B_list[i1] = np.reshape(W[:,:chi2],(chi1, d1, chi2))/invsq
 

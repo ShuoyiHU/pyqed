@@ -26105,8 +26105,11 @@ class MPS:
         return orders
 
     def norm(self):
-        """
-        Calculate the MPS norm :math:`N = \sqrt{<\psi|\psi>}` robustly using standard layouts.
+        r"""
+        Calculate the squared MPS norm :math:`\langle\psi|\psi\rangle`.
+
+        This historical API is named ``norm`` but returns norm squared.  Callers
+        that require :math:`\|\psi\|` must take the square root.
         """
         if self.Bs and hasattr(self.Bs[0], "qns"):
             identity = [make_identity_mpo_site_from_mps_site(site) for site in self.Bs]
@@ -26137,7 +26140,7 @@ class MPS:
 
     def normalize(self):
         """
-        normalize a MPS norm :math:`N = \sqrt{<\psi|\psi>}`
+        Rescale the MPS so ``norm()`` (the squared norm) equals one.
         """
         if self.Bs and hasattr(self.Bs[0], "qns"):
             norm2 = self.norm()
@@ -26629,8 +26632,12 @@ class MPS:
     # def apply_mpo(self):
     #     pass
 
-    def compress(self, chi_max):
-        compressed_factors = compress(self.factors, chi_max)
+    def compress(self, chi_max, *, renormalize=True):
+        compressed_factors = compress(
+            self.factors,
+            chi_max,
+            renormalize=renormalize,
+        )
         if isinstance(compressed_factors, tuple):
             compressed_factors = compressed_factors[0]
         return MPS(compressed_factors, labels=['lv','p','rv'])
@@ -29899,6 +29906,13 @@ def optimize_two_sites(
             return E[0], A, B, trunc, m
         return E, A, B, trunc, m, AA_list
 
+
+def _state_average_energy_converged(previous_by_direction, direction, energy, tol):
+    """Compare a state-average sweep energy with the same sweep direction."""
+    previous = previous_by_direction.get(direction)
+    previous_by_direction[direction] = energy
+    return previous is not None and abs(energy - previous) < tol
+
 def two_site_dmrg(
     mps,
     mpo,
@@ -30117,6 +30131,7 @@ def two_site_dmrg(
 
     # Skip dense expectation check for U1 to avoid crash
     Eold = 0.0
+    state_average_previous = {}
     converged = False
     gauge = None
 
@@ -48738,12 +48753,18 @@ def two_site_dmrg(
         )
         gauge = "Left"
 
-        if abs(e_avg - Eold) < conv:
+        if nstates > 1:
+            energy_converged = _state_average_energy_converged(
+                state_average_previous, "lr", e_avg, conv
+            )
+        else:
+            energy_converged = abs(e_avg - Eold) < conv
+        if energy_converged:
             if verbose >= 1:
                 print("DMRG Converged at sweep {}. \n average energy = {}".format(sweep, e_avg))
             converged = True
             break
-        else:
+        elif nstates == 1:
             Eold = e_avg
         if sweep * 2 + 1 >= nsweep_half:
             break
@@ -48894,12 +48915,18 @@ def two_site_dmrg(
             updates=half_updates,
         )
         gauge = "Right"
-        if abs(e_avg - Eold) < conv:
+        if nstates > 1:
+            energy_converged = _state_average_energy_converged(
+                state_average_previous, "rl", e_avg, conv
+            )
+        else:
+            energy_converged = abs(e_avg - Eold) < conv
+        if energy_converged:
             if verbose >= 1:
                 print("DMRG Converged at sweep {}. \n average energy = {}".format(sweep, e_avg))
             converged = True
             break
-        else:
+        elif nstates == 1:
             Eold = e_avg
 
     if not_conv_err == True:

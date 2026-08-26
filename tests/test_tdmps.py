@@ -9,7 +9,7 @@ from pyqed.models.impurity.sbm import SBM
 import pyqed.mps.tdvp as tdvp_module
 from pyqed.mps.decompose import decompose, tt_to_tensor
 from pyqed.mps.mps import MPS, MPO, _mpo_to_dense_operator
-from pyqed.mps.tdmps import TDMPS
+from pyqed.mps.tdmps import TDMPS, cumulative_log_norm2, norm2_from_log
 from pyqed.mps.tdvp import SymmetricTDVP, spatial_fermion_number_sz_sectors, two_site_tdvp_step
 
 
@@ -67,6 +67,127 @@ def test_tdmps_run_uses_checkpoint_times_for_tail_interval():
     np.testing.assert_allclose(td.observables[:, 0], td.observables[0, 0])
 
 
+def test_tdmps_run_keeps_log_space_normalization_ledger_at_checkpoints():
+    model = Heisenberg(L=2)
+    H = model.build_H_mpo()
+    psi0 = model.build_neel_state()
+    step_norm2 = iter((0.5, 0.2, 0.25))
+
+    td = TDMPS(H, D=8)
+    td.build_propagator = types.MethodType(lambda self, dt, order=2, scale=0: None, td)
+
+    def _fake_step(self, psi, **kwargs):
+        factor = next(step_norm2)
+        self._last_step_pre_normalization_norms = (np.sqrt(factor),)
+        self._last_step_pre_normalization_norm2 = (factor,)
+        self._last_step_normalization_sources = ("nonunitary-interaction",)
+        self._last_step_tdvp_truncation_error = 0.0
+        return psi
+
+    td.step = types.MethodType(_fake_step, td)
+    td.run(
+        psi0,
+        dt=0.1,
+        steps=3,
+        e_ops=[H],
+        interval=2,
+        track_energy=False,
+        progress=False,
+    )
+
+    expected = np.array([0.5, 0.1, 0.025])
+    np.testing.assert_allclose(td.cumulative_norm2, expected)
+    np.testing.assert_allclose(td.cumulative_log_norm2, np.log(expected))
+    np.testing.assert_allclose(td.checkpoint_norm2, expected[[1, 2]])
+    np.testing.assert_allclose(td.checkpoint_log_norm2, np.log(expected[[1, 2]]))
+    np.testing.assert_allclose(td.cumulative_nonunitary_norm2, expected)
+    np.testing.assert_allclose(
+        td.normalization_weighted_observables,
+        td.observables * expected[[1, 2], None],
+    )
+    assert td.substep_normalization_sources == (
+        ("nonunitary-interaction",),
+        ("nonunitary-interaction",),
+        ("nonunitary-interaction",),
+    )
+
+
+def test_log_norm2_ledger_remains_informative_after_linear_underflow():
+    logs = cumulative_log_norm2(np.full(1000, 0.1))
+
+    assert np.isfinite(logs[-1])
+    assert logs[-1] == pytest.approx(1000.0 * np.log(0.1))
+    assert norm2_from_log(logs)[-1] == 0.0
+
+
+def test_tdmps_run_avoids_within_step_underflow_in_log_ledger():
+    model = Heisenberg(L=2)
+    H = model.build_H_mpo()
+    psi0 = model.build_neel_state()
+    factors = (0.1,) * 1000
+
+    td = TDMPS(H, D=8)
+    td.build_propagator = types.MethodType(lambda self, dt, order=2, scale=0: None, td)
+
+    def _fake_step(self, psi, **kwargs):
+        self._last_step_pre_normalization_norms = tuple(np.sqrt(factors))
+        self._last_step_pre_normalization_norm2 = factors
+        self._last_step_normalization_sources = ("nonunitary-interaction",) * len(factors)
+        self._last_step_tdvp_truncation_error = 0.0
+        return psi
+
+    td.step = types.MethodType(_fake_step, td)
+    td.run(
+        psi0,
+        dt=0.1,
+        steps=1,
+        e_ops=[],
+        track_energy=False,
+        progress=False,
+    )
+
+    assert td.pre_normalization_norm2[0] == 0.0
+    assert td.cumulative_log_norm2[0] == pytest.approx(1000.0 * np.log(0.1))
+    assert td.cumulative_nonunitary_log_norm2[0] == pytest.approx(
+        1000.0 * np.log(0.1)
+    )
+
+
+def test_dense_nonunitary_kick_separates_physical_norm_from_compression():
+    model = Heisenberg(L=2)
+    H = model.build_H_mpo()
+    psi = model.build_neel_state().copy()
+    psi.factors[0] = 0.5 * psi.factors[0]
+    td = TDMPS(H, D=8)
+    td._last_step_pre_normalization_norms = []
+    td._last_step_pre_normalization_norm2 = []
+    td._last_step_normalization_sources = []
+
+    out = td._compress_normalize(psi, source="nonunitary-interaction")
+
+    assert td._last_step_normalization_sources == [
+        "nonunitary-interaction",
+        "compression",
+    ]
+    assert td._last_step_pre_normalization_norm2[0] == pytest.approx(0.25)
+    assert np.prod(td._last_step_pre_normalization_norm2) == pytest.approx(0.25)
+    assert out.norm() == pytest.approx(1.0)
+
+
+def test_external_kick_rejects_zero_norm_before_normalization():
+    model = Heisenberg(L=2)
+    H = model.build_H_mpo()
+    psi = model.build_neel_state().copy()
+    psi.factors[0] = np.zeros_like(psi.factors[0])
+    td = TDMPS(H, D=8)
+    td._last_step_pre_normalization_norms = []
+    td._last_step_pre_normalization_norm2 = []
+    td._last_step_normalization_sources = []
+
+    with pytest.raises(FloatingPointError, match="non-positive or non-finite norm"):
+        td._compress_normalize(psi, source="nonunitary-interaction")
+
+
 def test_sbm_tddmrg_builds_hamiltonian_before_returning():
     model = SBM(Himp=None, alpha=0.1, delta=1.0, epsilon=0.0)
     model.nmodes = 1
@@ -106,7 +227,11 @@ def test_tdmps_dynamic_run_uses_split_propagation_without_full_rebuild():
 
     np.testing.assert_allclose(td.times, np.array([0.1, 0.2, 0.3]))
     np.testing.assert_allclose(td.pre_normalization_norms, np.ones(3))
-    assert td.substep_pre_normalization_norms is None
+    assert td.substep_pre_normalization_norms == (
+        (1.0, 1.0, 1.0),
+        (1.0, 1.0, 1.0),
+        (1.0, 1.0, 1.0),
+    )
     assert td.static_energies.shape == (4,)
     assert td.energy_drift.shape == (4,)
 

@@ -7,7 +7,7 @@ Created on Wed Feb 11 17:15:58 2026
 """
 
 from pyqed.mps import MPS, MPO, fDMRG_1site_GS_OBC, two_site_dmrg, dense_to_symmetric,\
-    expect_mps
+    expect_mps, fine_grain_MPS, truncate_SVD
 from pyqed.mps.mps import (
     _abelian_data_factor_list,
     initial_E,
@@ -51,7 +51,7 @@ def _mps_norm(factors):
 def _normalize_mps_state(state):
     """Normalize an MPS in-place, including Abelian block-data carriers."""
     norm = _mps_norm(state.factors)
-    if norm <= 1.0e-14:
+    if not np.isfinite(norm) or norm <= np.finfo(float).tiny:
         raise ValueError("cannot normalize a near-zero DMRG state.")
     scale = 1.0 / np.sqrt(norm)
     state.factors[0] = state.factors[0] * scale
@@ -61,7 +61,7 @@ def _normalize_mps_state(state):
 
 def _normalize_factors_in_place(factors):
     norm = _mps_norm(factors)
-    if norm <= 1.0e-14:
+    if not np.isfinite(norm) or norm <= np.finfo(float).tiny:
         raise ValueError("cannot normalize a near-zero DMRG state.")
     factors[0] = factors[0] * (1.0 / np.sqrt(norm))
     return factors
@@ -98,6 +98,46 @@ def _normalized_mps_mpo_expectation(factors, mpo):
     energy = _contract_mps_mpo(factors, mpo) / norm
     energy = np.real_if_close(energy)
     return float(np.real(energy))
+
+
+def reconstruct_state_average_root_factors(
+    common_factors,
+    last_aa_list,
+    *,
+    last_i,
+    max_bond,
+    symmetry,
+):
+    """Reconstruct all state-average roots represented at the last sweep bond."""
+    if last_aa_list is None:
+        raise ValueError("State-average sweep payload does not contain local roots.")
+    last_i = int(last_i)
+    roots = []
+    for local_root in last_aa_list:
+        factors = [factor.copy() for factor in common_factors]
+        if symmetry:
+            U, V, S_dict, _, _ = svd_symmetric(local_root, m_max=None)
+            factors[last_i] = multiply_U_S(U, S_dict).transpose(0, 2, 1)
+            factors[last_i + 1] = V
+        else:
+            left, singular_values, right = fine_grain_MPS(
+                local_root,
+                [factors[last_i].shape[1], factors[last_i + 1].shape[1]],
+            )
+            left, singular_values, right, _, _ = truncate_SVD(
+                left,
+                singular_values,
+                right,
+                int(max_bond),
+            )
+            factors[last_i] = np.tensordot(
+                left,
+                np.diag(singular_values),
+                axes=(2, 0),
+            )
+            factors[last_i + 1] = right
+        roots.append(factors)
+    return roots
 
 
 def dmrg_matvec_options(policy="auto"):

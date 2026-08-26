@@ -1,14 +1,16 @@
+import warnings
+
 import numpy as np
 from scipy.linalg import expm
 
 from pyqed.mps import MPS
 from pyqed.mps.mps import MPO as TensorMPO
 from pyqed.mps.mps import symmetric_to_dense
-from pyqed.mps.tdmps import TDMPS
+from pyqed.mps.tdmps import TDMPS, cumulative_log_norm2, norm2_from_log
 from pyqed.mps.decompose import decompose, tt_to_tensor
 
 from ..rttdhf import gaussian_pulse
-from .dmrg import DMRG, _build_one_body_tensor_mpo, BasisSimpleElectron
+from .dmrg import DMRG, _build_one_body_tensor_mpo, _group_spin_orbital_mpo_pairs, BasisSimpleElectron
 from .overlap import _dense_exact_fock_operator, _unitary_rotation_mpo
 
 
@@ -158,6 +160,7 @@ class TDDMRG(DMRG):
         low_rank_mpo=False,
         low_rank_mpo_bond=None,
         low_rank_mpo_batch_size=4,
+        orbital_layout=None,
     ):
         super().__init__(
             mf,
@@ -171,6 +174,7 @@ class TDDMRG(DMRG):
             low_rank_mpo=low_rank_mpo,
             low_rank_mpo_bond=low_rank_mpo_bond,
             low_rank_mpo_batch_size=low_rank_mpo_batch_size,
+            orbital_layout=orbital_layout,
         )
         self.bond_dim = None
         self.tdmps = None
@@ -181,6 +185,18 @@ class TDDMRG(DMRG):
         self.pre_normalization_norms = None
         self.pre_normalization_norm2 = None
         self.substep_pre_normalization_norms = None
+        self.substep_pre_normalization_norm2 = None
+        self.substep_normalization_sources = None
+        self.cumulative_log_norm2 = None
+        self.cumulative_norm2 = None
+        self.checkpoint_log_norm2 = None
+        self.checkpoint_norm2 = None
+        self.cumulative_nonunitary_log_norm2 = None
+        self.cumulative_nonunitary_norm2 = None
+        self.checkpoint_nonunitary_log_norm2 = None
+        self.checkpoint_nonunitary_norm2 = None
+        self.normalization_weighted_observables = None
+        self.run_metadata = None
         self.energy_times = None
         self.static_energies = None
         self.energy_drift = None
@@ -194,13 +210,38 @@ class TDDMRG(DMRG):
     def _mps_bond_dim(psi):
         if not isinstance(psi, MPS) or not psi.factors:
             return None
-        dims = []
-        for factor in psi.factors:
-            shape = getattr(factor, "shape", None)
-            if shape is None or len(shape) < 3:
-                continue
-            dims.extend((int(shape[0]), int(shape[-1])))
+        dims = tuple(int(value) for value in psi.bond_orders())
         return max(dims) if dims else None
+
+    @staticmethod
+    def _mps_bond_orders(psi):
+        if not isinstance(psi, MPS) or not psi.factors:
+            return ()
+        return tuple(int(value) for value in psi.bond_orders())
+
+    def _record_run_metadata(self, *, psi_initial, integrator, requested_D, exact_dense):
+        initial_bonds = self._mps_bond_orders(psi_initial)
+        final_bonds = self._mps_bond_orders(self.final_state)
+        key = str(integrator).lower().replace("_", "-")
+        one_site = key in {
+            "tdvp",
+            "tdvp1",
+            "1tdvp",
+            "one-site-tdvp",
+            "1site-tdvp",
+        }
+        self.run_metadata = {
+            "integrator": "exact-dense" if exact_dense else key,
+            "requested_bond_dimension": int(requested_D),
+            "initial_bond_dimensions": initial_bonds,
+            "initial_max_bond_dimension": max(initial_bonds, default=1),
+            "final_bond_dimensions": final_bonds,
+            "final_max_bond_dimension": max(final_bonds, default=1),
+            "bond_growth_capable": bool(not exact_dense and key in {"tdvp2", "2tdvp", "two-site-tdvp"}),
+            "one_site_fixed_bond_layout": bool(not exact_dense and one_site),
+            "tdvp_truncation_error_is_convergence_test": False,
+            "convergence_assessed": False,
+        }
 
     def _set_bond_dim(self, D=None, *, psi=None):
         if D is not None:
@@ -293,7 +334,26 @@ class TDDMRG(DMRG):
         self.tdmps = None
         self.pre_normalization_norms = pre_norms
         self.pre_normalization_norm2 = pre_norm2
-        self.substep_pre_normalization_norms = None
+        self.substep_pre_normalization_norms = tuple((value,) for value in pre_norms)
+        self.substep_pre_normalization_norm2 = tuple((value,) for value in pre_norm2)
+        nonhermitian = not np.allclose(h_dense, h_dense.conj().T, atol=1.0e-12, rtol=1.0e-12)
+        source = "nonunitary-hamiltonian" if nonhermitian else "exact-propagator"
+        self.substep_normalization_sources = tuple((source,) for _ in range(steps))
+        self.cumulative_log_norm2 = cumulative_log_norm2(pre_norm2)
+        self.cumulative_norm2 = norm2_from_log(self.cumulative_log_norm2)
+        if nonhermitian:
+            self.cumulative_nonunitary_log_norm2 = self.cumulative_log_norm2.copy()
+            self.cumulative_nonunitary_norm2 = self.cumulative_norm2.copy()
+        else:
+            self.cumulative_nonunitary_log_norm2 = np.zeros(steps, dtype=float)
+            self.cumulative_nonunitary_norm2 = np.ones(steps, dtype=float)
+        self.checkpoint_log_norm2 = self.cumulative_log_norm2.copy()
+        self.checkpoint_norm2 = self.cumulative_norm2.copy()
+        self.checkpoint_nonunitary_log_norm2 = self.cumulative_nonunitary_log_norm2.copy()
+        self.checkpoint_nonunitary_norm2 = self.cumulative_nonunitary_norm2.copy()
+        self.normalization_weighted_observables = (
+            self.observables * self.checkpoint_norm2[:, None]
+        )
         self.energy_times = np.concatenate(([float(t0)], self.times))
         self.static_energies = np.asarray(static_energies, dtype=complex)
         self.energy_drift = self.static_energies - self.static_energies[0]
@@ -535,13 +595,19 @@ class TDDMRG(DMRG):
         if self._interaction_mpo_cache is None:
             ao_op = self.get_interaction_ao()
             basis_sites = [BasisSimpleElectron(i) for i in range(2 * self.ncas)]
+            spatial_sites = getattr(self, "site", None) == "spatial"
             mpo_list = []
             for comp in range(3):
                 spatial_matrix = self.mo_cas.conj().T @ ao_op[comp] @ self.mo_cas
                 if not np.any(np.abs(spatial_matrix) > 1e-14):
-                    mpo = self._zero_mpo(2 * self.ncas, dtype=np.asarray(spatial_matrix).dtype)
+                    if spatial_sites:
+                        mpo = self._zero_mpo(self.ncas, phys_dim=4, dtype=np.asarray(spatial_matrix).dtype)
+                    else:
+                        mpo = self._zero_mpo(2 * self.ncas, dtype=np.asarray(spatial_matrix).dtype)
                 else:
                     mpo, _ = _build_one_body_tensor_mpo(basis_sites, np.asarray(spatial_matrix))
+                    if spatial_sites:
+                        mpo = _group_spin_orbital_mpo_pairs(mpo)
                 mpo_list.append(mpo)
             self._interaction_mpo_cache = tuple(mpo_list)
 
@@ -728,6 +794,7 @@ class TDDMRG(DMRG):
         measure_observables=True,
         track_energy=True,
         progress=True,
+        progress_every=None,
         D=None,
     ):
         if dt is None:
@@ -748,8 +815,36 @@ class TDDMRG(DMRG):
         if interaction_mpo is None and field is not None:
             interaction_mpo = self.get_interaction_mpo()
 
-        if self._use_exact_dense_td():
-            return self._run_exact_dense_td(
+        exact_dense = self._use_exact_dense_td()
+        initial_max_bond = self._mps_bond_dim(psi)
+        integrator_key = str(integrator).lower().replace("_", "-")
+        one_site = integrator_key in {
+            "tdvp",
+            "tdvp1",
+            "1tdvp",
+            "one-site-tdvp",
+            "1site-tdvp",
+        }
+        if (
+            D is not None
+            and not exact_dense
+            and one_site
+            and initial_max_bond is not None
+            and int(bond_dim) != int(initial_max_bond)
+        ):
+            direction = "grow" if int(bond_dim) > int(initial_max_bond) else "truncate"
+            warnings.warn(
+                "One-site TDVP cannot "
+                f"{direction} the existing MPS bond layout: requested D={bond_dim}, "
+                f"initial actual max bond={initial_max_bond}. Prepare a D-specific "
+                "initial state (or use two-site TDVP where supported) before treating "
+                "this as a bond-dimension scan.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+        if exact_dense:
+            result = self._run_exact_dense_td(
                 psi,
                 dt=dt,
                 steps=steps,
@@ -757,6 +852,13 @@ class TDDMRG(DMRG):
                 field=field,
                 t0=t0,
             )
+            self._record_run_metadata(
+                psi_initial=psi,
+                integrator=integrator,
+                requested_D=bond_dim,
+                exact_dense=True,
+            )
+            return result
 
         sector_kwargs = {}
         if tdvp_projection_backend is not None and hasattr(self, "_tdvp_sector_settings"):
@@ -795,6 +897,7 @@ class TDDMRG(DMRG):
             measure_observables=measure_observables,
             track_energy=track_energy,
             progress=progress,
+            progress_every=progress_every,
         )
         self.times = self.tdmps.times
         self.observables = self.tdmps.observables
@@ -803,10 +906,47 @@ class TDDMRG(DMRG):
         self.pre_normalization_norms = getattr(self.tdmps, "pre_normalization_norms", None)
         self.pre_normalization_norm2 = getattr(self.tdmps, "pre_normalization_norm2", None)
         self.substep_pre_normalization_norms = getattr(self.tdmps, "substep_pre_normalization_norms", None)
+        self.substep_pre_normalization_norm2 = getattr(self.tdmps, "substep_pre_normalization_norm2", None)
+        self.substep_normalization_sources = getattr(self.tdmps, "substep_normalization_sources", None)
+        self.cumulative_log_norm2 = getattr(self.tdmps, "cumulative_log_norm2", None)
+        self.cumulative_norm2 = getattr(self.tdmps, "cumulative_norm2", None)
+        self.checkpoint_log_norm2 = getattr(self.tdmps, "checkpoint_log_norm2", None)
+        self.checkpoint_norm2 = getattr(self.tdmps, "checkpoint_norm2", None)
+        self.cumulative_nonunitary_log_norm2 = getattr(
+            self.tdmps,
+            "cumulative_nonunitary_log_norm2",
+            None,
+        )
+        self.cumulative_nonunitary_norm2 = getattr(
+            self.tdmps,
+            "cumulative_nonunitary_norm2",
+            None,
+        )
+        self.checkpoint_nonunitary_log_norm2 = getattr(
+            self.tdmps,
+            "checkpoint_nonunitary_log_norm2",
+            None,
+        )
+        self.checkpoint_nonunitary_norm2 = getattr(
+            self.tdmps,
+            "checkpoint_nonunitary_norm2",
+            None,
+        )
+        self.normalization_weighted_observables = getattr(
+            self.tdmps,
+            "normalization_weighted_observables",
+            None,
+        )
         self.energy_times = getattr(self.tdmps, "energy_times", None)
         self.static_energies = getattr(self.tdmps, "static_energies", None)
         self.energy_drift = getattr(self.tdmps, "energy_drift", None)
         self.tdvp_truncation_errors = getattr(self.tdmps, "tdvp_truncation_errors", None)
+        self._record_run_metadata(
+            psi_initial=psi,
+            integrator=integrator,
+            requested_D=bond_dim,
+            exact_dense=False,
+        )
         return self
 
     def time_reversal_error(

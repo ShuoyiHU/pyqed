@@ -11,6 +11,7 @@ from pyqed.qchem.dmrg.tddmrg import TDDMRG as BaseTDDMRG, _mpo_site_to_dense_fac
 from pyqed.qchem.dmrg.dmrg import (
     _accumulate_symbolic_term,
     _build_spatial_active_hamiltonian_matrix,
+    _build_spatial_s2_term_map,
     _build_tensor_mpo_from_symbolic_terms,
     _group_spin_orbital_mpo_pairs,
     _materialize_symbolic_terms,
@@ -409,7 +410,14 @@ def _build_spatial_abelian_mpo_from_symbolic_terms(
     return TensorMPO(factors, homogenous=False), len(terms)
 
 
-def build_gdvr_spatial_hamiltonian_mpo(mol, *, cutoff=1.0e-12, symbolic_algo="qr"):
+def build_gdvr_spatial_hamiltonian_mpo(
+    mol,
+    *,
+    cutoff=1.0e-12,
+    symbolic_algo="qr",
+    spin_purification=False,
+    shift=None,
+):
     """Build the GDVR electronic Hamiltonian MPO on d=4 spatial sites."""
     if mol.hcore is None or mol.eri_j is None or mol.shapes is None:
         raise ValueError("Build the GDVR molecule before building a GDVR MPO.")
@@ -424,6 +432,24 @@ def build_gdvr_spatial_hamiltonian_mpo(mol, *, cutoff=1.0e-12, symbolic_algo="qr
         m,
         cutoff=cutoff,
     )
+    spin_term_count = 0
+    if spin_purification:
+        if shift is None:
+            raise ValueError("A spin-purification shift is required.")
+        spin_terms = _build_spatial_s2_term_map(
+            nspatial,
+            scale=float(shift),
+            cutoff=cutoff,
+        )
+        spin_term_count = len(spin_terms)
+        for (symbol, dofs), factor in spin_terms.items():
+            accumulate_spatial_symbolic_term(
+                term_map,
+                symbol,
+                list(dofs),
+                factor,
+                tol=cutoff,
+            )
     mpo, term_count = _build_spatial_abelian_mpo_from_symbolic_terms(
         basis_sites,
         term_map,
@@ -435,6 +461,7 @@ def build_gdvr_spatial_hamiltonian_mpo(mol, *, cutoff=1.0e-12, symbolic_algo="qr
         "pipeline": "gdvr_collocated_blocks->spatial_d4_autompo->native_abelian_mpo",
         "native_abelian_mpo": True,
         "symbolic_terms": int(term_count),
+        "spin_penalty_terms": int(spin_term_count),
         "mpo_max_bond": int(max(mpo.bond_orders())),
         "site": "spatial",
         "physical_dim": 4,
@@ -2556,6 +2583,31 @@ class TDDMRG(BaseTDDMRG):
         self._cap_mpo = None
         self._local_cap_values = None
         self.cap_settings = None
+        self.cap_run_metadata = None
+        self.cap_survival_probability = None
+        self.cap_log_survival_probability = None
+        self.cap_combined_norm_weight = None
+        self.cap_combined_log_norm_weight = None
+        self.cap_nonabsorber_norm2 = None
+        self.cap_nonabsorber_log_norm2 = None
+        self.cap_survival_above_warning_threshold = None
+        self.cap_no_jump_observables = None
+
+    def _gdvr_cap_settings(self, *, source, width, strength, order):
+        z = np.asarray(self.gdvr_mf.mol.z, dtype=float).reshape(-1)
+        zmin = float(np.min(z))
+        zmax = float(np.max(z))
+        width = float(width)
+        return {
+            "source": str(source),
+            "width": width,
+            "strength": float(strength),
+            "order": int(order),
+            "grid_min": zmin,
+            "grid_max": zmax,
+            "left_onset": zmin + width,
+            "right_onset": zmax - width,
+        }
 
     def set_cap(self, cap=True, **kwargs):
         """Attach a complex absorbing potential to subsequent real-time runs."""
@@ -2565,8 +2617,12 @@ class TDDMRG(BaseTDDMRG):
         if hasattr(cap, "factors"):
             if kwargs:
                 raise ValueError("Do not pass CAP keyword settings with a CAP MPO.")
+            self._local_cap_values = None
             self._cap_mpo = TensorMPO([np.asarray(w).copy() for w in cap.factors], homogenous=False)
-            self.cap_settings = {"source": "mpo"}
+            self.cap_settings = {
+                "source": "mpo",
+                "number_conserving": None,
+            }
             return self
 
         settings = {}
@@ -2575,18 +2631,20 @@ class TDDMRG(BaseTDDMRG):
         elif cap is not True:
             raise TypeError("cap must be None, True, a settings dict, or an MPO-like object.")
         settings.update(kwargs)
+        self._local_cap_values = None
         self._cap_mpo = cap_mpo(
             self.gdvr_mf.mol,
             cutoff=self.gdvr_mpo_cutoff,
             symbolic_algo=self.gdvr_symbolic_algo,
             **settings,
         )
-        self.cap_settings = {
-            "source": "gdvr",
-            "width": float(settings.get("width", 2.0)),
-            "strength": float(settings.get("strength", 0.005)),
-            "order": int(settings.get("order", 2)),
-        }
+        self.cap_settings = self._gdvr_cap_settings(
+            source="gdvr-hamiltonian",
+            width=settings.get("width", 2.0),
+            strength=settings.get("strength", 0.005),
+            order=settings.get("order", 2),
+        )
+        self.cap_settings["number_conserving"] = True
         return self
 
     def clear_cap(self):
@@ -2598,9 +2656,7 @@ class TDDMRG(BaseTDDMRG):
 
     def _set_local_cap(self, cap=True):
         if cap is None or cap is False:
-            self._local_cap_values = None
-            self.cap_settings = None
-            return self
+            return self.clear_cap()
         if hasattr(cap, "factors"):
             raise TypeError("MPO CAPs must use cap_mode='hamiltonian'.")
         settings = {}
@@ -2608,12 +2664,14 @@ class TDDMRG(BaseTDDMRG):
             settings.update(cap)
         elif cap is not True:
             raise TypeError("cap must be None, True, a settings dict, or an MPO-like object.")
-        self.cap_settings = {
-            "source": "gdvr-local-phase",
-            "width": float(settings.get("width", 2.0)),
-            "strength": float(settings.get("strength", 0.005)),
-            "order": int(settings.get("order", 2)),
-        }
+        self._cap_mpo = None
+        self.cap_settings = self._gdvr_cap_settings(
+            source="gdvr-local-phase",
+            width=settings.get("width", 2.0),
+            strength=settings.get("strength", 0.005),
+            order=settings.get("order", 2),
+        )
+        self.cap_settings["number_conserving"] = True
         self._local_cap_values = cap_profile(
             self.gdvr_mf.mol,
             width=self.cap_settings["width"],
@@ -2675,6 +2733,12 @@ class TDDMRG(BaseTDDMRG):
         )
 
     def _tdvp_sector_settings(self):
+        """Fixed charge/Sz sector used by the number-conserving GDVR Hamiltonian.
+
+        The diagonal CAP ``-i sum_p W_p n_p`` also commutes with both charges.
+        Norm loss therefore remains inside this sector and represents the
+        no-absorption branch weight; it is not leakage rejected by U(1).
+        """
         labels = ("charge", "sz")
         local_sectors = [
             AbelianSector(labels, (0, 0)),
@@ -2713,6 +2777,8 @@ class TDDMRG(BaseTDDMRG):
             self.gdvr_mf.mol,
             cutoff=self.gdvr_mpo_cutoff,
             symbolic_algo=self.gdvr_symbolic_algo,
+            spin_purification=self.spin_purification,
+            shift=self.shift,
         )
         self.H_raw = tensor_mpo.factors
         self.H = tensor_mpo.factors
@@ -2721,6 +2787,8 @@ class TDDMRG(BaseTDDMRG):
             id(self.gdvr_mf.mol),
             self.gdvr_mpo_cutoff,
             self.gdvr_symbolic_algo,
+            bool(self.spin_purification),
+            None if self.shift is None else float(self.shift),
         )
         self._symmetric_mpo_cache = {}
         self._active_integral_build_info = {
@@ -2742,7 +2810,9 @@ class TDDMRG(BaseTDDMRG):
                 homogenous=False,
             )
         absorber = TensorMPO([np.asarray(w).copy() for w in self._cap_mpo.factors], homogenous=False)
-        return hamiltonian + absorber
+        hamiltonian = hamiltonian + absorber
+        hamiltonian.preserves_norm = False
+        return hamiltonian
 
     def build_interaction_unitary_mpo(self, dt, time=0.0, field=None, order=4, scale=0):
         del order, scale
@@ -2799,26 +2869,76 @@ class TDDMRG(BaseTDDMRG):
             return np.zeros((self.ncas, self.ncas))
         return gdvr_z_operator(self.gdvr_mf.mol, electronic=True)
 
-    def run(self, *args, cap=None, cap_mode="local-phase", gdvr_interaction_mode="local-phase", **kwargs):
+    def run(
+        self,
+        *args,
+        cap=None,
+        cap_mode="local-phase",
+        gdvr_interaction_mode="local-phase",
+        cap_survival_warning_threshold=1.0e-8,
+        **kwargs,
+    ):
+        """Run GDVR-TDDMRG and retain explicit CAP/no-jump diagnostics.
+
+        The state is normalized at propagation substeps for numerical stability.
+        With the built-in number-conserving CAP, ``cap_survival_probability``
+        stores the separately accumulated no-absorption weight and
+        ``observables`` remain conditional expectations of the normalized
+        fixed-N branch. ``cap_no_jump_observables`` equals ``S * observables``;
+        it does not include post-absorption N-1 ionic sectors.
+
+        For a non-exact Hamiltonian-mode CAP, the TDVP normalization factor
+        cannot isolate absorber loss from projection/integrator norm error.
+        In that mode only ``cap_combined_norm_weight`` is populated; it is not
+        labelled as a physical survival probability.
+
+        ``cap_survival_warning_threshold`` controls a one-time warning when the
+        no-jump branch becomes too small for its normalized observables to be
+        interpreted without qualification.  Pass ``None`` to disable the
+        warning; this does not change propagation.
+        """
+        if cap_survival_warning_threshold is not None:
+            cap_survival_warning_threshold = float(cap_survival_warning_threshold)
+            if (
+                not np.isfinite(cap_survival_warning_threshold)
+                or cap_survival_warning_threshold < 0.0
+                or cap_survival_warning_threshold > 1.0
+            ):
+                raise ValueError(
+                    "cap_survival_warning_threshold must lie in [0, 1] or be None."
+                )
         old_cap = self._cap_mpo
         old_local_cap = self._local_cap_values
         old_settings = self.cap_settings
-        use_local_cap = cap is not None and str(cap_mode).lower().replace("_", "-") in {
+        cap_mode_key = str(cap_mode).lower().replace("_", "-")
+        interaction_mode_key = str(gdvr_interaction_mode).lower().replace("_", "-")
+        use_local_cap = cap is not None and cap_mode_key in {
             "local",
             "local-phase",
             "split",
         }
-        use_local_interaction = str(gdvr_interaction_mode).lower().replace("_", "-") in {
+        use_local_interaction = interaction_mode_key in {
             "local",
             "local-phase",
             "split",
         }
+        if use_local_cap and not self._use_exact_dense_td() and not use_local_interaction:
+            raise ValueError(
+                "A local-phase CAP requires gdvr_interaction_mode='local-phase'; "
+                "otherwise the local absorber is not part of the TDVP step."
+            )
         if cap is not None:
             if use_local_cap and not self._use_exact_dense_td():
                 self._set_local_cap(cap)
             else:
                 self.set_cap(cap)
-        if self._cap_mpo is not None and "krylov_method" not in kwargs:
+        if self._cap_mpo is not None:
+            krylov_method = str(kwargs.get("krylov_method", "arnoldi")).lower().replace("_", "-")
+            if krylov_method != "arnoldi":
+                raise ValueError(
+                    "Hamiltonian-mode CAP is non-Hermitian and requires "
+                    "krylov_method='arnoldi'."
+                )
             kwargs["krylov_method"] = "arnoldi"
         if use_local_interaction:
             kwargs.setdefault("tdvp_split_dynamic_block_sparse", True)
@@ -2826,7 +2946,141 @@ class TDDMRG(BaseTDDMRG):
         if self._local_cap_values is not None and kwargs.get("field") is None:
             kwargs["field"] = lambda _time: np.zeros(3, dtype=float)
         try:
-            return super().run(*args, **kwargs)
+            active_settings = None if self.cap_settings is None else dict(self.cap_settings)
+            result = super().run(*args, **kwargs)
+            cap_active = active_settings is not None
+            target_charge = int(sum(self.nelecas)) if isinstance(self.nelecas, (tuple, list)) else int(self.nelecas)
+            fixed_number = bool(
+                cap_active
+                and active_settings.get("number_conserving") is True
+            )
+            run_integrator = None if self.run_metadata is None else self.run_metadata.get("integrator")
+            local_cap_split = bool(
+                cap_active and active_settings.get("source") == "gdvr-local-phase"
+            )
+            exact_dense = run_integrator == "exact-dense"
+            survival_separated = bool(local_cap_split or (cap_active and exact_dense))
+            if not cap_active:
+                survival_source = None
+            elif local_cap_split:
+                survival_source = "tagged_local_cap_substeps"
+            elif exact_dense:
+                survival_source = "exact_nonhermitian_propagation"
+            else:
+                survival_source = "combined_nonhermitian_hamiltonian_step"
+            self.cap_run_metadata = {
+                "active": cap_active,
+                "settings": active_settings,
+                "commutes_with_particle_number": (
+                    active_settings.get("number_conserving")
+                    if cap_active
+                    else None
+                ),
+                "fixed_number_no_jump_branch": fixed_number,
+                "number_sector_enforced_by_symmetry": bool(
+                    kwargs.get("tdvp_projection_backend") is not None
+                ),
+                "target_charge": target_charge,
+                "state_representation": (
+                    "normalized_conditional_no_absorption" if cap_active else "normalized"
+                ),
+                "observables": (
+                    "conditional_no_absorption" if cap_active else "normalized_expectation"
+                ),
+                "represents_particle_loss_sectors": False,
+                "survival_source": survival_source,
+                "survival_separated_from_other_norm_factors": survival_separated,
+                "survival_probability_available": survival_separated,
+                "survival_warning_threshold": cap_survival_warning_threshold,
+                "survival_warning_applied": bool(
+                    survival_separated
+                    and cap_survival_warning_threshold is not None
+                ),
+                "convergence_assessed": False,
+                "run": None if self.run_metadata is None else dict(self.run_metadata),
+            }
+            if cap_active:
+                self.cap_combined_log_norm_weight = np.asarray(
+                    self.checkpoint_nonunitary_log_norm2,
+                    dtype=float,
+                ).copy()
+                self.cap_combined_norm_weight = np.asarray(
+                    self.checkpoint_nonunitary_norm2,
+                    dtype=float,
+                ).copy()
+                if survival_separated:
+                    self.cap_log_survival_probability = (
+                        self.cap_combined_log_norm_weight.copy()
+                    )
+                    self.cap_survival_probability = (
+                        self.cap_combined_norm_weight.copy()
+                    )
+                    total_log_norm2 = np.asarray(
+                        self.checkpoint_log_norm2,
+                        dtype=float,
+                    )
+                    self.cap_nonabsorber_log_norm2 = (
+                        total_log_norm2 - self.cap_log_survival_probability
+                    )
+                    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+                        self.cap_nonabsorber_norm2 = np.exp(
+                            self.cap_nonabsorber_log_norm2
+                        )
+                    observable_array = np.asarray(self.observables)
+                    survival_shape = (self.cap_survival_probability.size,) + (1,) * max(
+                        observable_array.ndim - 1,
+                        0,
+                    )
+                    self.cap_no_jump_observables = (
+                        observable_array
+                        * self.cap_survival_probability.reshape(survival_shape)
+                    )
+                    if cap_survival_warning_threshold is None:
+                        survival_mask = np.ones(
+                            self.cap_survival_probability.shape,
+                            dtype=bool,
+                        )
+                    else:
+                        survival_mask = (
+                            np.isfinite(self.cap_survival_probability)
+                            & (
+                                self.cap_survival_probability
+                                >= cap_survival_warning_threshold
+                            )
+                        )
+                    self.cap_survival_above_warning_threshold = survival_mask
+                    below = np.flatnonzero(~survival_mask)
+                    if below.size:
+                        first = int(below[0])
+                        time_suffix = ""
+                        if self.times is not None and first < len(self.times):
+                            time_suffix = f" (t={float(self.times[first]):.8g})"
+                        warnings.warn(
+                            "CAP no-jump survival fell below "
+                            f"{cap_survival_warning_threshold!r} at checkpoint "
+                            f"{first}{time_suffix}; observables at and after this "
+                            "point are normalized conditional no-absorption "
+                            "expectations with small survival weight.",
+                            RuntimeWarning,
+                            stacklevel=2,
+                        )
+                else:
+                    self.cap_log_survival_probability = None
+                    self.cap_survival_probability = None
+                    self.cap_nonabsorber_log_norm2 = None
+                    self.cap_nonabsorber_norm2 = None
+                    self.cap_survival_above_warning_threshold = None
+                    self.cap_no_jump_observables = None
+            else:
+                self.cap_log_survival_probability = None
+                self.cap_survival_probability = None
+                self.cap_combined_log_norm_weight = None
+                self.cap_combined_norm_weight = None
+                self.cap_nonabsorber_log_norm2 = None
+                self.cap_nonabsorber_norm2 = None
+                self.cap_survival_above_warning_threshold = None
+                self.cap_no_jump_observables = None
+            return result
         finally:
             if cap is not None:
                 self._cap_mpo = old_cap

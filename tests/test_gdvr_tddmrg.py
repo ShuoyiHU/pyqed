@@ -614,7 +614,195 @@ def test_gdvr_tddmrg_cap_is_real_time_only_and_temporary():
     assert td.cap_settings is None
     assert td._cap_mpo is None
     assert not np.allclose(td.pre_normalization_norms, np.ones_like(td.pre_normalization_norms))
+    assert td.cap_run_metadata["active"] is True
+    assert td.cap_run_metadata["commutes_with_particle_number"] is True
+    assert td.cap_run_metadata["represents_particle_loss_sectors"] is False
+    np.testing.assert_allclose(td.cap_survival_probability, td.checkpoint_norm2)
+    np.testing.assert_allclose(td.cap_log_survival_probability, td.checkpoint_log_norm2)
+    np.testing.assert_allclose(
+        td.cap_no_jump_observables,
+        td.observables * td.cap_survival_probability[:, None],
+    )
     np.testing.assert_allclose(_mpo_to_dense_matrix(td._get_td_hamiltonian()), h0, atol=1.0e-12)
+
+
+def test_block_sparse_fixed_charge_cap_loses_survival_without_leaving_sector():
+    td = TDDMRG(_ToyGDVRRHF()).build()
+    td._use_exact_dense_td = lambda: False
+
+    td.run(
+        dt=0.1,
+        steps=2,
+        e_ops=["mu_z"],
+        cap={"width": 0.5, "strength": 0.4, "order": 2},
+        integrator="tdvp",
+        tdvp_projection_backend="block-sparse",
+        track_energy=False,
+        progress=False,
+        D=4,
+    )
+
+    assert hasattr(td.final_state.factors[0], "qns")
+    assert td.cap_run_metadata["fixed_number_no_jump_branch"] is True
+    assert td.cap_run_metadata["target_charge"] == 2
+    assert np.all(np.diff(td.cap_survival_probability) < 0.0)
+    assert 0.0 < td.cap_survival_probability[-1] < 1.0
+    assert td.substep_normalization_sources == (
+        ("nonunitary-interaction", "tdvp", "nonunitary-interaction"),
+        ("nonunitary-interaction", "tdvp", "nonunitary-interaction"),
+    )
+    factors = np.asarray(td.substep_pre_normalization_norm2)
+    np.testing.assert_allclose(factors[:, 1], np.ones(2), atol=1.0e-12)
+    np.testing.assert_allclose(
+        td.cap_survival_probability,
+        np.cumprod(factors[:, 0] * factors[:, 2]),
+        atol=1.0e-12,
+    )
+    assert td.cap_run_metadata["survival_separated_from_other_norm_factors"] is True
+
+
+def test_first_block_sparse_tdvp_step_recanonicalizes_after_cap_kick(monkeypatch):
+    import pyqed.mps.tdvp as tdvp_module
+
+    calls = {"count": 0}
+    original = tdvp_module.abelian_right_canonicalize_site_tensors
+
+    def _counting_canonicalize(factors):
+        calls["count"] += 1
+        return original(factors)
+
+    monkeypatch.setattr(
+        tdvp_module,
+        "abelian_right_canonicalize_site_tensors",
+        _counting_canonicalize,
+    )
+    td = TDDMRG(_ToyGDVRRHF()).build()
+    td._use_exact_dense_td = lambda: False
+
+    td.run(
+        dt=0.1,
+        steps=1,
+        e_ops=[],
+        cap={"width": 0.5, "strength": 0.4, "order": 2},
+        integrator="tdvp",
+        tdvp_projection_backend="block-sparse",
+        measure_observables=False,
+        track_energy=False,
+        progress=False,
+        D=4,
+    )
+
+    assert calls["count"] >= 1
+
+
+def test_gdvr_cap_modes_are_mutually_exclusive():
+    td = TDDMRG(_ToyGDVRRHF()).build()
+
+    td._set_local_cap({"width": 0.5, "strength": 0.4, "order": 2})
+    assert td._local_cap_values is not None
+    assert td._cap_mpo is None
+
+    td.set_cap({"width": 0.5, "strength": 0.4, "order": 2})
+    assert td._cap_mpo is not None
+    assert td._local_cap_values is None
+
+    td._set_local_cap({"width": 0.5, "strength": 0.4, "order": 2})
+    assert td._local_cap_values is not None
+    assert td._cap_mpo is None
+
+
+def test_local_cap_rejects_interaction_mode_that_would_omit_it():
+    td = TDDMRG(_ToyGDVRRHF()).build()
+    td._use_exact_dense_td = lambda: False
+
+    with pytest.raises(ValueError, match="local-phase CAP requires"):
+        td.run(
+            dt=0.1,
+            steps=1,
+            e_ops=[],
+            cap={"width": 0.5, "strength": 0.4, "order": 2},
+            cap_mode="local-phase",
+            gdvr_interaction_mode="midpoint",
+            integrator="tdvp",
+            tdvp_projection_backend="block-sparse",
+            track_energy=False,
+            progress=False,
+            D=4,
+        )
+
+
+def test_cap_warns_and_marks_checkpoints_below_survival_threshold():
+    td = TDDMRG(_ToyGDVRRHF()).build()
+    td._use_exact_dense_td = lambda: False
+
+    with pytest.warns(RuntimeWarning, match="conditional"):
+        td.run(
+            dt=0.1,
+            steps=1,
+            e_ops=[],
+            cap={"width": 0.5, "strength": 0.4, "order": 2},
+            cap_survival_warning_threshold=0.9,
+            integrator="tdvp",
+            tdvp_projection_backend="block-sparse",
+            measure_observables=False,
+            track_energy=False,
+            progress=False,
+            D=4,
+        )
+
+    np.testing.assert_array_equal(td.cap_survival_above_warning_threshold, [False])
+
+
+def test_hamiltonian_cap_does_not_mislabel_combined_tdvp_norm_as_survival():
+    td = TDDMRG(_ToyGDVRRHF()).build()
+    td._use_exact_dense_td = lambda: False
+
+    td.run(
+        dt=0.1,
+        steps=1,
+        e_ops=[],
+        cap={"width": 0.5, "strength": 0.4, "order": 2},
+        cap_mode="hamiltonian",
+        integrator="tdvp",
+        tdvp_projection_backend="block-sparse",
+        measure_observables=False,
+        track_energy=False,
+        progress=False,
+        D=4,
+    )
+
+    assert td.cap_run_metadata["survival_separated_from_other_norm_factors"] is False
+    assert td.cap_survival_probability is None
+    assert td.cap_log_survival_probability is None
+    assert td.cap_no_jump_observables is None
+    assert td.cap_combined_norm_weight.shape == (1,)
+    assert td.cap_combined_log_norm_weight.shape == (1,)
+
+
+def test_one_site_tdvp_warns_when_requested_D_cannot_change_bond_layout():
+    td = TDDMRG(_ToyGDVRRHF()).build()
+    td._use_exact_dense_td = lambda: False
+
+    with pytest.warns(RuntimeWarning, match="One-site TDVP cannot grow"):
+        td.run(
+            dt=0.01,
+            steps=1,
+            e_ops=[],
+            integrator="tdvp",
+            tdvp_projection_backend="block-sparse",
+            measure_observables=False,
+            track_energy=False,
+            progress=False,
+            D=8,
+        )
+
+    assert td.run_metadata["requested_bond_dimension"] == 8
+    assert td.run_metadata["initial_max_bond_dimension"] < 8
+    assert td.run_metadata["final_max_bond_dimension"] == td.run_metadata[
+        "initial_max_bond_dimension"
+    ]
+    assert td.run_metadata["bond_growth_capable"] is False
+    assert td.run_metadata["convergence_assessed"] is False
 
 
 def test_gdvr_tddmrg_omitted_psi0_is_rhf_determinant_and_init_guess_is_not_public():

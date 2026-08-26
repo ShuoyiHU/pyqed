@@ -236,6 +236,14 @@ def _mpo_factors(H):
     return H.factors if isinstance(H, MPO) else list(H)
 
 
+def _tdvp_mpo_factors(H):
+    factors = _mpo_factors(H)
+    return [
+        site.copy() if hasattr(site, "qns") else np.asarray(site)
+        for site in factors
+    ]
+
+
 def _standard_mps_factors(psi):
     return [np.asarray(psi._get_std_B(i), dtype=complex).copy() for i in range(psi.L)]
 
@@ -2559,7 +2567,7 @@ class TDVPEngine:
             self.integrator = "tdvp2"
         else:
             raise ValueError("integrator must be 'tdvp' or 'tdvp2'.")
-        self.mpo = [np.asarray(w) for w in _mpo_factors(H)]
+        self.mpo = _tdvp_mpo_factors(H)
         self.max_bond = max_bond
         self.cutoff = cutoff
         self.krylov_dim = krylov_dim
@@ -2643,7 +2651,7 @@ class SymmetricTDVP:
             raise ValueError("SymmetricTDVP currently supports the one-site TDVP integrator only.")
         self.integrator = "tdvp"
         self._mpo_source = H
-        self.mpo = [np.asarray(w) for w in _mpo_factors(H)]
+        self.mpo = _tdvp_mpo_factors(H)
         self.local_sectors = local_sectors
         self.target_sector = target_sector
         self.max_bond = max_bond
@@ -2684,9 +2692,11 @@ class SymmetricTDVP:
         self._block_sparse_cpp_moving_environment = None
         self._block_sparse_cpp_moving_environment_disabled = False
         self._block_sparse_env_plan_prefix = "symtdvp-block"
+        self._force_canonicalize = False
 
-    def reset(self):
+    def reset(self, *, canonicalize=False):
         self._prepared = False
+        self._force_canonicalize = self._force_canonicalize or bool(canonicalize)
 
     def _block_sparse_moving_environment(self):
         if self._block_sparse_cpp_moving_environment_disabled:
@@ -2730,7 +2740,7 @@ class SymmetricTDVP:
     def update_mpo_source(self, H):
         """Refresh the source MPO for affine Hamiltonians without rebuilding the engine."""
         self._mpo_source = H
-        self.mpo = [np.asarray(w) for w in _mpo_factors(H)]
+        self.mpo = _tdvp_mpo_factors(H)
 
     def sector_mask(self, shape):
         shape = tuple(int(dim) for dim in shape)
@@ -2857,7 +2867,12 @@ class SymmetricTDVP:
         return (out, info) if return_info else out
 
     def step(self, psi, dt, *, normalize=True, return_info=True):
-        canonicalize = self.canonicalize_each_step or (self.canonicalize_first and not self._prepared)
+        canonicalize = (
+            self.canonicalize_each_step
+            or self._force_canonicalize
+            or (self.canonicalize_first and not self._prepared)
+        )
+        self._force_canonicalize = False
         if self.projection_backend == "block-sparse":
             phys_dims, site_qn_maps, target_qn = self._block_sparse_sector_data(psi)
             block_mpo = self._block_sparse_cached_mpo(phys_dims, site_qn_maps)

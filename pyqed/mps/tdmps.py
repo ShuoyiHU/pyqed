@@ -43,6 +43,40 @@ def _normalize_integrator(integrator):
     return aliases[key]
 
 
+def cumulative_log_norm2(step_norm2):
+    """Return ``log(prod(step_norm2[:i]))`` without forming the product first.
+
+    A zero factor produces ``-inf`` from that step onward.  Negative or
+    non-finite factors are retained as ``nan`` so a corrupted normalization
+    ledger cannot silently look like a physical probability.
+    """
+    values = np.asarray(step_norm2, dtype=float)
+    logs = np.full(values.shape, np.nan, dtype=float)
+    positive = np.isfinite(values) & (values > 0.0)
+    zero = np.isfinite(values) & (values == 0.0)
+    logs[positive] = np.log(values[positive])
+    logs[zero] = -np.inf
+    return np.cumsum(logs)
+
+
+def norm2_from_log(log_norm2):
+    """Convert log norm-squared weights back to linear scale when representable."""
+    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+        return np.exp(np.asarray(log_norm2, dtype=float))
+
+
+def _log_norm2_product(norm2_factors):
+    """Return the log of a factor product without forming that product."""
+    factors = np.asarray(norm2_factors, dtype=float)
+    if factors.size == 0:
+        return 0.0
+    if np.any(~np.isfinite(factors)) or np.any(factors < 0.0):
+        return np.nan
+    if np.any(factors == 0.0):
+        return -np.inf
+    return float(np.sum(np.log(factors)))
+
+
 class TDMPS:
     def __init__(
         self,
@@ -93,6 +127,17 @@ class TDMPS:
         self.pre_normalization_norms = None
         self.pre_normalization_norm2 = None
         self.substep_pre_normalization_norms = None
+        self.substep_pre_normalization_norm2 = None
+        self.substep_normalization_sources = None
+        self.cumulative_log_norm2 = None
+        self.cumulative_norm2 = None
+        self.checkpoint_log_norm2 = None
+        self.checkpoint_norm2 = None
+        self.cumulative_nonunitary_log_norm2 = None
+        self.cumulative_nonunitary_norm2 = None
+        self.checkpoint_nonunitary_log_norm2 = None
+        self.checkpoint_nonunitary_norm2 = None
+        self.normalization_weighted_observables = None
         self.energy_times = None
         self.static_energies = None
         self.energy_drift = None
@@ -100,9 +145,11 @@ class TDMPS:
         self.tdvp_truncation_errors = None
         self._last_step_pre_normalization_norms = ()
         self._last_step_pre_normalization_norm2 = ()
+        self._last_step_normalization_sources = ()
         self._last_step_tdvp_truncation_error = 0.0
         self._affine_hamiltonian_cache = {}
         self._tdvp_engine_cache = {}
+        self._force_tdvp_canonicalize_once = False
         self._symmetric_observable_cache = {}
         self._block_sparse_site_qn_maps_cache = {}
 
@@ -157,23 +204,67 @@ class TDMPS:
             "norm2_target": norm2_target,
         }
 
-    def _compress_normalize(self, psi):
+    @staticmethod
+    def _operator_normalization_source(operator):
+        preserves_norm = getattr(operator, "preserves_norm", None)
+        if preserves_norm is True:
+            return "unitary-interaction"
+        if preserves_norm is False:
+            return "nonunitary-interaction"
+        return "interaction-or-compression"
+
+    def _compress_normalize(self, psi, *, source="compression"):
         if psi.factors and hasattr(psi.factors[0], "qns"):
-            norm2_value = psi.norm()
-            self._record_pre_normalization_norm2(norm2_value)
+            norm2_value = self._validated_norm2(psi.norm(), source=source)
+            self._record_pre_normalization_norm2(norm2_value, source=source)
             return psi.normalize()
-        psi = psi.compress(self.D)
-        norm2_value = psi.norm()
-        self._record_pre_normalization_norm2(norm2_value)
+
+        if str(source).startswith("nonunitary-"):
+            # The local CAP is exact before compression.  Record its physical
+            # damping first, then attribute any dense-SVD loss separately.
+            physical_norm2 = self._validated_norm2(psi.norm(), source=source)
+            self._record_pre_normalization_norm2(physical_norm2, source=source)
+            psi = psi.compress(self.D, renormalize=False)
+            compressed_norm2 = self._validated_norm2(
+                psi.norm(),
+                source="compression",
+            )
+            compression_ratio = self._validated_norm2(
+                compressed_norm2 / physical_norm2,
+                source="compression",
+            )
+            self._record_pre_normalization_norm2(
+                compression_ratio,
+                source="compression",
+            )
+            return psi.normalize()
+
+        psi = psi.compress(self.D, renormalize=False)
+        norm2_value = self._validated_norm2(psi.norm(), source=source)
+        self._record_pre_normalization_norm2(norm2_value, source=source)
         return psi.normalize()
 
-    def _record_pre_normalization_norm2(self, norm2_value):
-        norm2 = float(np.real(norm2_value))
-        if norm2 < 0.0 and abs(norm2) < 1.0e-14:
-            norm2 = 0.0
-        norm = float(np.sqrt(max(norm2, 0.0)))
+    @staticmethod
+    def _validated_norm2(norm2_value, *, source):
+        values = np.asarray(np.real(norm2_value), dtype=float).reshape(-1)
+        if values.size != 1:
+            raise FloatingPointError(
+                f"{source} produced an invalid non-scalar norm-squared value."
+            )
+        norm2 = float(values[0])
+        if not np.isfinite(norm2) or norm2 <= 0.0:
+            raise FloatingPointError(
+                f"{source} produced a non-positive or non-finite norm squared "
+                f"({norm2!r}); the normalized propagation branch is undefined."
+            )
+        return norm2
+
+    def _record_pre_normalization_norm2(self, norm2_value, *, source="unspecified"):
+        norm2 = self._validated_norm2(norm2_value, source=source)
+        norm = float(np.sqrt(norm2))
         self._last_step_pre_normalization_norm2.append(norm2)
         self._last_step_pre_normalization_norms.append(norm)
+        self._last_step_normalization_sources.append(str(source))
 
     def _tdvp_evolve(
         self,
@@ -193,6 +284,8 @@ class TDMPS:
         canonicalize_each_step=False,
     ):
         H_eff = self.H if H_mpo is None else H_mpo
+        force_canonicalize = self._force_tdvp_canonicalize_once
+        self._force_tdvp_canonicalize_once = False
         sector_backend = None
         if self.tdvp_projection_backend is not None:
             sector_backend = str(self.tdvp_projection_backend).lower().replace("_", "-")
@@ -234,6 +327,7 @@ class TDMPS:
                         krylov_tol=krylov_tol,
                         krylov_method=krylov_method,
                         diagonal_fast_path=diagonal_fast_path,
+                        canonicalize_first=True if force_canonicalize else None,
                         projection_backend=sector_backend,
                         canonicalize_each_step=canonicalize_each_step,
                     )
@@ -279,6 +373,7 @@ class TDMPS:
                 krylov_tol=krylov_tol,
                 krylov_method=krylov_method,
                 diagonal_fast_path=diagonal_fast_path,
+                canonicalize_first=True if force_canonicalize else None,
                 projection_backend=sector_backend,
                 canonicalize_each_step=canonicalize_each_step,
             )
@@ -295,13 +390,27 @@ class TDMPS:
                 normalize=True,
                 return_info=True,
             )
-        self._record_pre_normalization_norm2(info["pre_normalization_norm2"])
+        source = (
+            "nonunitary-hamiltonian"
+            if getattr(H_eff, "preserves_norm", None) is False
+            else "tdvp"
+        )
+        self._record_pre_normalization_norm2(
+            info["pre_normalization_norm2"],
+            source=source,
+        )
         self._last_step_tdvp_truncation_error += float(info.get("truncation_error", 0.0))
         return psi
 
-    def _reset_tdvp_engines(self):
+    def _reset_tdvp_engines(self, *, canonicalize=False):
+        self._force_tdvp_canonicalize_once = (
+            self._force_tdvp_canonicalize_once or bool(canonicalize)
+        )
         for engine in self._tdvp_engine_cache.values():
-            engine.reset()
+            try:
+                engine.reset(canonicalize=canonicalize)
+            except TypeError:
+                engine.reset()
 
     def _ensure_block_sparse_state(self, psi):
         if psi.factors and hasattr(psi.factors[0], "qns"):
@@ -680,6 +789,7 @@ class TDMPS:
         integrator = _normalize_integrator(integrator)
         self._last_step_pre_normalization_norms = []
         self._last_step_pre_normalization_norm2 = []
+        self._last_step_normalization_sources = []
         self._last_step_tdvp_truncation_error = 0.0
         if integrator in {"tdvp", "tdvp2"}:
             if dt is None:
@@ -725,8 +835,11 @@ class TDMPS:
                         )
                     psi = self._ensure_block_sparse_state(psi)
                     psi = U_half @ psi
-                    psi = self._compress_normalize(psi)
-                    self._reset_tdvp_engines()
+                    interaction_source = self._operator_normalization_source(U_half)
+                    psi = self._compress_normalize(psi, source=interaction_source)
+                    self._reset_tdvp_engines(
+                        canonicalize=interaction_source == "nonunitary-interaction",
+                    )
                     psi = self._tdvp_evolve(
                         psi,
                         dt,
@@ -741,7 +854,7 @@ class TDMPS:
                         canonicalize_each_step=canonicalize_each_step,
                     )
                     psi = U_half @ psi
-                    return self._compress_normalize(psi)
+                    return self._compress_normalize(psi, source=interaction_source)
 
                 if dynamic_mode in {"midpoint", "mid-point", "full", "combined"}:
                     return self._tdvp_evolve(
@@ -797,8 +910,11 @@ class TDMPS:
                     canonicalize_each_step=canonicalize_each_step,
                 )
                 psi = U_int @ psi
-                psi = self._compress_normalize(psi)
-                self._reset_tdvp_engines()
+                interaction_source = self._operator_normalization_source(U_int)
+                psi = self._compress_normalize(psi, source=interaction_source)
+                self._reset_tdvp_engines(
+                    canonicalize=interaction_source == "nonunitary-interaction",
+                )
                 return self._tdvp_evolve(
                     psi,
                     0.5 * dt,
@@ -840,14 +956,17 @@ class TDMPS:
             )
             if U_int is None:
                 psi = self.U_static @ psi
-                return self._compress_normalize(psi)
+                return self._compress_normalize(psi, source="static-propagator")
 
             psi = self.U_static_half @ psi
-            psi = self._compress_normalize(psi)
+            psi = self._compress_normalize(psi, source="static-propagator")
             psi = U_int @ psi
-            psi = self._compress_normalize(psi)
+            psi = self._compress_normalize(
+                psi,
+                source=self._operator_normalization_source(U_int),
+            )
             psi = self.U_static_half @ psi
-            return self._compress_normalize(psi)
+            return self._compress_normalize(psi, source="static-propagator")
 
         if dt is not None:
             self.build_propagator(dt, order=order, scale=scale, time=time, field=field)
@@ -856,7 +975,10 @@ class TDMPS:
         # psi = propagate(self.U.factors, psi)
         
         psi = self.U @ psi
-        return self._compress_normalize(psi)
+        return self._compress_normalize(
+            psi,
+            source=self._operator_normalization_source(self.U),
+        )
 
     def propagate_state(
         self,
@@ -1042,6 +1164,7 @@ class TDMPS:
         measure_observables=True,
         track_energy=True,
         progress=True,
+        progress_every=None,
     ):
         """
         Run time evolution.
@@ -1067,6 +1190,11 @@ class TDMPS:
             raise ValueError("steps must be non-negative.")
         if interval <= 0:
             raise ValueError("interval must be a positive integer.")
+        if progress_every is None:
+            progress_every = max(1, int(steps) // 20) if steps else 1
+        progress_every = int(progress_every)
+        if progress_every <= 0:
+            raise ValueError("progress_every must be a positive integer.")
         if e_ops is None:
             e_ops = []
             
@@ -1099,6 +1227,11 @@ class TDMPS:
         )
         pre_norms = np.empty(steps, dtype=float)
         pre_norm2 = np.empty(steps, dtype=float)
+        step_log_norm2 = np.empty(steps, dtype=float)
+        nonunitary_step_log_norm2 = np.zeros(steps, dtype=float)
+        substep_norms = []
+        substep_norm2 = []
+        substep_sources = []
         tdvp_truncation_errors = np.zeros(steps, dtype=float)
         energy_times = [float(t0)]
             
@@ -1151,16 +1284,46 @@ class TDMPS:
                 else:
                     psi = self.step(psi, integrator=integrator)
                 step_norm2 = tuple(getattr(self, "_last_step_pre_normalization_norm2", ()))
+                step_norms = tuple(getattr(self, "_last_step_pre_normalization_norms", ()))
+                step_sources = tuple(getattr(self, "_last_step_normalization_sources", ()))
+                if len(step_sources) != len(step_norm2):
+                    step_sources = tuple("unspecified" for _ in step_norm2)
+                substep_norm2.append(step_norm2)
+                substep_norms.append(step_norms)
+                substep_sources.append(step_sources)
                 if step_norm2:
-                    full_step_norm2 = float(np.prod(step_norm2))
-                    pre_norm2[total_step] = full_step_norm2
-                    pre_norms[total_step] = float(np.sqrt(max(full_step_norm2, 0.0)))
+                    full_step_log_norm2 = _log_norm2_product(step_norm2)
+                    step_log_norm2[total_step] = full_step_log_norm2
+                    pre_norm2[total_step] = float(
+                        norm2_from_log(full_step_log_norm2)
+                    )
+                    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+                        pre_norms[total_step] = float(
+                            np.exp(0.5 * full_step_log_norm2)
+                        )
+                    nonunitary_factors = [
+                        factor
+                        for factor, source in zip(step_norm2, step_sources)
+                        if source.startswith("nonunitary-")
+                    ]
+                    if nonunitary_factors:
+                        nonunitary_step_log_norm2[total_step] = _log_norm2_product(
+                            nonunitary_factors
+                        )
                 else:
                     pre_norms[total_step] = np.nan
                     pre_norm2[total_step] = np.nan
+                    step_log_norm2[total_step] = np.nan
                 tdvp_truncation_errors[total_step] = getattr(self, "_last_step_tdvp_truncation_error", 0.0)
                 time += dt
                 total_step += 1
+                if progress and (total_step == steps or total_step % progress_every == 0):
+                    print(
+                        f"  TD step {total_step}/{steps}, t={time:.6f}, "
+                        f"norm2={pre_norm2[total_step - 1]:.6e}, "
+                        f"tdvp_err={tdvp_truncation_errors[total_step - 1]:.6e}",
+                        flush=True,
+                    )
             completed_steps = checkpoint
 
             if measure_observables:
@@ -1186,7 +1349,29 @@ class TDMPS:
         self.fields = fields
         self.pre_normalization_norms = pre_norms
         self.pre_normalization_norm2 = pre_norm2
-        self.substep_pre_normalization_norms = None
+        self.substep_pre_normalization_norms = tuple(substep_norms)
+        self.substep_pre_normalization_norm2 = tuple(substep_norm2)
+        self.substep_normalization_sources = tuple(substep_sources)
+        self.cumulative_log_norm2 = np.cumsum(step_log_norm2)
+        self.cumulative_norm2 = norm2_from_log(self.cumulative_log_norm2)
+        self.cumulative_nonunitary_log_norm2 = np.cumsum(
+            nonunitary_step_log_norm2
+        )
+        self.cumulative_nonunitary_norm2 = norm2_from_log(
+            self.cumulative_nonunitary_log_norm2,
+        )
+        checkpoint_indices = np.asarray(checkpoints, dtype=int) - 1
+        self.checkpoint_log_norm2 = self.cumulative_log_norm2[checkpoint_indices]
+        self.checkpoint_norm2 = self.cumulative_norm2[checkpoint_indices]
+        self.checkpoint_nonunitary_log_norm2 = self.cumulative_nonunitary_log_norm2[
+            checkpoint_indices
+        ]
+        self.checkpoint_nonunitary_norm2 = self.cumulative_nonunitary_norm2[
+            checkpoint_indices
+        ]
+        self.normalization_weighted_observables = (
+            observables * self.checkpoint_norm2[:, None]
+        )
         self.tdvp_truncation_errors = tdvp_truncation_errors
         self.energy_times = np.asarray(energy_times, dtype=float)
         self.static_energies = np.asarray(static_energies, dtype=complex)
