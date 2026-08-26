@@ -2,8 +2,10 @@ import numpy as np
 import pytest
 
 from pyqed._vuletta import (
+    ConditionalCanonicalLETTA,
     UniformLETTA,
     VULETTAOptions,
+    conditional_canonicalize,
     energy_density,
     energy_gradient,
     expand_uniform_letta,
@@ -41,6 +43,96 @@ def test_structured_mps_amplitude_equals_periodic_letta_amplitude():
         product = product @ structured[:, physical, :]
 
     np.testing.assert_allclose(np.trace(product), direct, atol=1.0e-12)
+
+
+def test_shifted_structured_mps_amplitude_equals_periodic_letta_amplitude():
+    state = random_uniform_letta(physical_dim=2, bond_dim=2, seed=40)
+    configuration = (0, 1, 1, 0, 1)
+
+    product = np.eye(state.effective_bond_dim, dtype=complex)
+    shifted = state.shifted_structured_mps_tensor()
+    for physical in configuration:
+        product = product @ shifted[:, physical, :]
+
+    np.testing.assert_allclose(
+        np.trace(product),
+        state.periodic_amplitude(configuration),
+        atol=1.0e-12,
+    )
+
+
+@pytest.mark.parametrize("real", [True, False])
+def test_conditional_canonicalize_preserves_state_and_sector_isometries(real):
+    state = random_uniform_letta(
+        physical_dim=2,
+        bond_dim=2,
+        seed=41,
+        real=real,
+    )
+
+    canonical = conditional_canonicalize(state)
+
+    assert isinstance(canonical, ConditionalCanonicalLETTA)
+    assert canonical.TL.shape == state.tensor.shape
+    assert canonical.TR.shape == state.tensor.shape
+    assert canonical.TC.shape == state.tensor.shape
+    assert canonical.C.shape == (
+        state.physical_dim,
+        state.bond_dim,
+        state.bond_dim,
+    )
+    assert canonical.left_isometry_error() < 1.0e-10
+    assert canonical.right_isometry_error() < 1.0e-10
+    assert canonical.center_error() < 1.0e-10
+    canonical.validate()
+
+    hamiltonian = _tfim_bond()
+    x = np.array([[0.0, 1.0], [1.0, 0.0]])
+    z = np.array([[1.0, 0.0], [0.0, -1.0]])
+    np.testing.assert_allclose(
+        energy_density(canonical.state, hamiltonian),
+        energy_density(state, hamiltonian),
+        atol=1.0e-10,
+    )
+    np.testing.assert_allclose(
+        one_site_expectation(canonical.state, x),
+        one_site_expectation(state, x),
+        atol=1.0e-10,
+    )
+    np.testing.assert_allclose(
+        two_site_expectation(canonical.state, np.kron(z, z)),
+        two_site_expectation(state, np.kron(z, z)),
+        atol=1.0e-10,
+    )
+
+    for configuration in ((0, 0, 1), (0, 1, 1, 0)):
+        np.testing.assert_allclose(
+            canonical.state.periodic_amplitude(configuration),
+            state.periodic_amplitude(configuration)
+            * canonical.amplitude_scale(len(configuration)),
+            atol=1.0e-10,
+        )
+
+
+def test_conditional_center_relations_hold_blockwise():
+    canonical = conditional_canonicalize(
+        random_uniform_letta(physical_dim=3, bond_dim=2, seed=42)
+    )
+
+    for previous in range(canonical.physical_dim):
+        for current in range(canonical.physical_dim):
+            left_center = (
+                canonical.TL[:, previous, current, :] @ canonical.C[current]
+            )
+            right_center = (
+                canonical.C[previous] @ canonical.TR[:, previous, current, :]
+            )
+            np.testing.assert_allclose(
+                canonical.TC[:, previous, current, :],
+                left_center,
+                atol=1.0e-10,
+            )
+            np.testing.assert_allclose(left_center, right_center, atol=1.0e-10)
 
 
 def test_uniform_letta_is_invariant_under_physical_dependent_virtual_gauge():

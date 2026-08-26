@@ -19,10 +19,17 @@ from .solver import (
     VULETTAResult,
     vuletta,
 )
-from .state import UniformLETTA, expand_uniform_letta, random_uniform_letta
+from .state import (
+    ConditionalCanonicalLETTA,
+    UniformLETTA,
+    conditional_canonicalize,
+    expand_uniform_letta,
+    random_uniform_letta,
+)
 
 __all__ = [
     "LETTATransferData",
+    "ConditionalCanonicalLETTA",
     "UniformLETTA",
     "VULETTAIteration",
     "VULETTAOptions",
@@ -30,6 +37,7 @@ __all__ = [
     "energy_density",
     "energy_and_gradient",
     "energy_gradient",
+    "conditional_canonicalize",
     "expand_uniform_letta",
     "natural_gradient",
     "one_site_expectation",
