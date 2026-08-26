@@ -3,12 +3,15 @@ import pytest
 
 from pyqed._vuletta import (
     ConditionalCanonicalLETTA,
+    ConditionalTangentData,
     UniformLETTA,
     VULETTAOptions,
     conditional_canonicalize,
+    conditional_tangent_direction,
     energy_density,
     energy_gradient,
     expand_uniform_letta,
+    natural_gradient,
     one_site_expectation,
     random_uniform_letta,
     tangent_gram_matrix,
@@ -133,6 +136,101 @@ def test_conditional_center_relations_hold_blockwise():
                 atol=1.0e-10,
             )
             np.testing.assert_allclose(left_center, right_center, atol=1.0e-10)
+
+
+@pytest.mark.parametrize("real", [True, False])
+def test_conditional_tangent_direction_is_horizontal_and_descending(real):
+    canonical = conditional_canonicalize(
+        random_uniform_letta(
+            physical_dim=2,
+            bond_dim=2,
+            seed=43,
+            real=real,
+        )
+    )
+    gradient = energy_gradient(canonical.state, _tfim_bond())
+
+    tangent = conditional_tangent_direction(canonical, gradient, real=real)
+
+    assert isinstance(tangent, ConditionalTangentData)
+    expected_dimension = 8 if real else 16
+    assert tangent.reduced_dimension == expected_dimension
+    if real:
+        assert not np.iscomplexobj(tangent.direction)
+    for current in range(canonical.physical_dim):
+        horizontal = np.zeros(
+            (canonical.bond_dim, canonical.bond_dim),
+            dtype=np.result_type(canonical.TL.dtype, tangent.direction.dtype),
+        )
+        for previous in range(canonical.physical_dim):
+            horizontal += (
+                canonical.TL[:, previous, current, :].conj().T
+                @ tangent.direction[:, previous, current, :]
+            )
+        np.testing.assert_allclose(horizontal, 0.0, atol=1.0e-10)
+    slope = float(np.real(np.vdot(gradient, tangent.direction)))
+    np.testing.assert_allclose(
+        slope,
+        -(tangent.residual_norm**2),
+        rtol=1.0e-9,
+        atol=1.0e-11,
+    )
+
+
+@pytest.mark.parametrize("real", [True, False])
+def test_conditional_tangent_residual_matches_dense_gram_oracle(real):
+    canonical = conditional_canonicalize(
+        random_uniform_letta(
+            physical_dim=2,
+            bond_dim=2,
+            seed=44,
+            real=real,
+        )
+    )
+    gradient = energy_gradient(canonical.state, _tfim_bond())
+    tangent = conditional_tangent_direction(canonical, gradient, real=real)
+    packed_gradient = (
+        np.real(gradient).reshape(-1)
+        if real
+        else np.concatenate(
+            [np.real(gradient).reshape(-1), np.imag(gradient).reshape(-1)]
+        )
+    )
+    metric = tangent_gram_matrix(canonical.state, real=real)
+    _dense_direction, dense_residual, dense_rank = natural_gradient(
+        packed_gradient,
+        metric,
+    )
+
+    assert dense_rank == tangent.reduced_dimension
+    np.testing.assert_allclose(
+        tangent.residual_norm,
+        dense_residual,
+        rtol=2.0e-7,
+        atol=2.0e-9,
+    )
+
+
+def test_conditional_tangent_residual_is_gauge_invariant():
+    rng = np.random.default_rng(45)
+    state = random_uniform_letta(physical_dim=2, bond_dim=2, seed=45)
+    gauges = []
+    for _physical in range(state.physical_dim):
+        matrix = rng.normal(size=(2, 2)) + 1j * rng.normal(size=(2, 2))
+        gauges.append(matrix + 3.0 * np.eye(2))
+    transformed = state.gauge_transform(np.asarray(gauges))
+
+    residuals = []
+    slopes = []
+    for candidate in (state, transformed):
+        canonical = conditional_canonicalize(candidate)
+        gradient = energy_gradient(canonical.state, _tfim_bond())
+        tangent = conditional_tangent_direction(canonical, gradient)
+        residuals.append(tangent.residual_norm)
+        slopes.append(float(np.real(np.vdot(gradient, tangent.direction))))
+
+    np.testing.assert_allclose(residuals[0], residuals[1], rtol=2.0e-8, atol=1.0e-10)
+    np.testing.assert_allclose(slopes[0], slopes[1], rtol=2.0e-8, atol=1.0e-10)
 
 
 def test_uniform_letta_is_invariant_under_physical_dependent_virtual_gauge():

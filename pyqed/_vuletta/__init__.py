@@ -8,6 +8,8 @@ from .operators import (
     two_site_expectation,
 )
 from .gradients import (
+    ConditionalTangentData,
+    conditional_tangent_direction,
     energy_and_gradient,
     energy_gradient,
     natural_gradient,
@@ -30,6 +32,7 @@ from .state import (
 __all__ = [
     "LETTATransferData",
     "ConditionalCanonicalLETTA",
+    "ConditionalTangentData",
     "UniformLETTA",
     "VULETTAIteration",
     "VULETTAOptions",
@@ -38,6 +41,7 @@ __all__ = [
     "energy_and_gradient",
     "energy_gradient",
     "conditional_canonicalize",
+    "conditional_tangent_direction",
     "expand_uniform_letta",
     "natural_gradient",
     "one_site_expectation",

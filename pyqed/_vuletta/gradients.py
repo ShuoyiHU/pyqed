@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 
 from .operators import (
@@ -9,7 +11,124 @@ from .operators import (
     _dense_transfer_matrix,
     transfer_data,
 )
-from .state import UniformLETTA
+from .state import (
+    ConditionalCanonicalLETTA,
+    UniformLETTA,
+    _conditioned_positive_sqrt,
+)
+
+
+@dataclass(frozen=True)
+class ConditionalTangentData:
+    """Horizontal, right-metric-whitened conditional tangent data."""
+
+    canonical_state: ConditionalCanonicalLETTA
+    complements: tuple[np.ndarray, ...]
+    inverse_right_metric_sqrts: tuple[np.ndarray, ...]
+    reduced_gradient: np.ndarray
+    direction: np.ndarray
+    residual_norm: float
+    reduced_dimension: int
+
+
+def conditional_tangent_direction(
+    canonical_state,
+    gradient,
+    *,
+    real=None,
+    rcond=1.0e-12,
+):
+    """Return steepest descent in the conditional horizontal coordinates."""
+
+    if not isinstance(canonical_state, ConditionalCanonicalLETTA):
+        raise TypeError("canonical_state must be a ConditionalCanonicalLETTA.")
+    canonical_state.validate()
+    gradient = np.asarray(gradient)
+    if gradient.shape != canonical_state.TL.shape:
+        raise ValueError("gradient must have the same shape as TL.")
+    if not np.all(np.isfinite(gradient)):
+        raise ValueError("gradient must contain only finite values.")
+    if real is None:
+        real = not np.iscomplexobj(canonical_state.TL)
+    real = bool(real)
+    if real and (
+        np.max(np.abs(np.imag(canonical_state.TL))) > 1.0e-12
+        or np.max(np.abs(np.imag(gradient))) > 1.0e-12
+    ):
+        raise ValueError("complex canonical data cannot use real tangent coordinates.")
+
+    data = transfer_data(canonical_state.state)
+    bond_dim = canonical_state.bond_dim
+    physical_dim = canonical_state.physical_dim
+    blocked_right = data.right_fixed_point.reshape(
+        bond_dim,
+        physical_dim,
+        bond_dim,
+        physical_dim,
+    )
+    complement_dimension = bond_dim * (physical_dim - 1)
+    reduced_gradient = np.empty(
+        (physical_dim, complement_dimension, bond_dim),
+        dtype=np.result_type(gradient.dtype, canonical_state.TL.dtype, np.complex128),
+    )
+    direction = np.zeros_like(
+        canonical_state.TL,
+        dtype=np.result_type(gradient.dtype, canonical_state.TL.dtype, np.complex128),
+    )
+    complements = []
+    inverse_metric_sqrts = []
+
+    for current in range(physical_dim):
+        left_matrix = canonical_state.TL[:, :, current, :].transpose(
+            1,
+            0,
+            2,
+        ).reshape(physical_dim * bond_dim, bond_dim)
+        full_isometry, _triangular = np.linalg.qr(left_matrix, mode="complete")
+        complement = full_isometry[:, bond_dim:]
+        gradient_matrix = gradient[:, :, current, :].transpose(
+            1,
+            0,
+            2,
+        ).reshape(physical_dim * bond_dim, bond_dim)
+        right_block = blocked_right[:, current, :, current]
+        _sqrt, inverse_sqrt, rank = _conditioned_positive_sqrt(
+            right_block,
+            rcond,
+        )
+        if rank < bond_dim:
+            raise ValueError(
+                "conditional tangent whitening requires full right-metric support."
+            )
+        coordinate_gradient = (
+            complement.conj().T @ gradient_matrix @ inverse_sqrt
+        )
+        descent_matrix = -complement @ coordinate_gradient @ inverse_sqrt
+        direction[:, :, current, :] = descent_matrix.reshape(
+            physical_dim,
+            bond_dim,
+            bond_dim,
+        ).transpose(1, 0, 2)
+        reduced_gradient[current] = coordinate_gradient
+        complements.append(complement)
+        inverse_metric_sqrts.append(inverse_sqrt)
+
+    if real:
+        direction = np.real_if_close(direction, tol=1000)
+        reduced_gradient = np.real_if_close(reduced_gradient, tol=1000)
+    residual_norm = float(np.linalg.norm(reduced_gradient))
+    reduced_dimension = int(reduced_gradient.size)
+    if not real:
+        reduced_dimension *= 2
+    return ConditionalTangentData(
+        canonical_state=canonical_state,
+        complements=tuple(complements),
+        inverse_right_metric_sqrts=tuple(inverse_metric_sqrts),
+        reduced_gradient=reduced_gradient,
+        direction=direction,
+        residual_norm=residual_norm,
+        reduced_dimension=reduced_dimension,
+    )
 
 
 def _structured_direction(direction):
