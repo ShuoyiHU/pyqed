@@ -23,6 +23,8 @@ from pyqed.qchem.basis import (
     _compute_one_electron_shellblocked_cython,
     _compute_pair_bounds,
     _compute_three_center_pair_tensor_from_signatures,
+    _contiguous_shell_blocks_from_signatures,
+    _make_contraction_signatures,
     _shell,
     make_contractions,
     parse_gbs,
@@ -450,6 +452,70 @@ def test_cpp_ri_tensor_matches_python_reference():
         assert skipped_cpp == skipped_ref
         np.testing.assert_allclose(metric_cpp, metric_ref, atol=1e-12, rtol=1e-12)
         np.testing.assert_allclose(j3_cpp, j3_ref, atol=1e-11, rtol=1e-11)
+
+
+def test_generalized_cartesian_contractions_are_contiguous_by_contracted_shell():
+    basis_dict = {
+        "H": [
+            (
+                1,
+                np.asarray([2.0, 0.5]),
+                np.asarray([[0.7, -0.2], [0.3, 0.8]]),
+            )
+        ]
+    }
+    coords = np.zeros((1, 3))
+
+    basis = make_contractions(basis_dict, ["H"], coords, coord_types="c")
+    signatures = _make_contraction_signatures(
+        basis_dict, ["H"], coords, coord_types="c"
+    )
+
+    assert _cart_shell_blocks(basis) == [(0, 3, 1), (3, 6, 1)]
+    assert _contiguous_shell_blocks_from_signatures(signatures) == [(0, 3), (3, 6)]
+
+
+def test_cpp_shell_blocked_ri_keeps_underflowed_primitive_pair_indices():
+    if _integrals_cpp is None:
+        return
+
+    cc_pvdz = parse_gbs(_basis_path("cc-pvdz"))
+    fe_l, fe_exps, fe_coeffs = cc_pvdz["Fe"][0]
+    c_l, c_exps, c_coeffs = cc_pvdz["C"][0]
+    basis_dict = {
+        "Fe": [
+            (fe_l, fe_exps, np.asarray(fe_coeffs)[:, :1]),
+            (1, np.asarray([1.0]), np.asarray([[1.0]])),
+        ],
+        "C": [(c_l, c_exps, np.asarray(c_coeffs)[:, :1])],
+    }
+    coords = np.asarray([[0.0, 0.0, 0.0], [0.0, 0.0, 3.3779758802]])
+    basis = make_contractions(basis_dict, ["Fe", "C"], coords, coord_types="c")
+    signatures = tuple(_basis_signature(fn) for fn in basis)
+    aux_basis = make_contractions(
+        {"C": [(0, np.asarray([1.0]), np.asarray([[1.0]]))]},
+        ["C"],
+        coords[1:2],
+        coord_types="c",
+    )
+    aux_signatures = tuple(_basis_signature(fn) for fn in aux_basis)
+    pair_bounds = _compute_pair_bounds(signatures)
+
+    cpp = _compute_native_ri_pair_tensors_cpp(
+        signatures, aux_signatures, pair_bounds, 0.0
+    )
+    assert cpp is not None
+    _metric_cpp, j3_cpp, _computed_cpp, _skipped_cpp = cpp
+    j3_ref, _computed_ref, _skipped_ref = (
+        _compute_three_center_pair_tensor_from_signatures(
+            signatures,
+            aux_signatures,
+            pair_bounds=pair_bounds,
+            ri_screen_tol=0.0,
+        )
+    )
+
+    np.testing.assert_allclose(j3_cpp, j3_ref, atol=1.0e-10, rtol=1.0e-10)
 
 
 def test_builtin_ri_accepts_cpp_tensor_backend_request():

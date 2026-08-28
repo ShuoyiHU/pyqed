@@ -4237,6 +4237,7 @@ int precompute_primitive_pair_geom(
     const double aby = A[1] - B[1];
     const double abz = A[2] - B[2];
     const double ab2 = abx * abx + aby * aby + abz * abz;
+    // Keep the full Cartesian-product order: downstream kernels recover ip/iq from idx.
     for (std::int64_t ip = 0; ip < nprim[p]; ++ip) {
         const double a = exps[p * max_prim + ip];
         for (std::int64_t iq = 0; iq < nprim[q]; ++iq) {
@@ -4246,9 +4247,6 @@ int precompute_primitive_pair_geom(
             const double pair_weight = weight_out != nullptr
                 ? weights[p * max_prim + ip] * weights[q * max_prim + iq]
                 : 1.0;
-            if (pair_decay == 0.0 || pair_weight == 0.0) {
-                continue;
-            }
             a_out[idx] = a;
             b_out[idx] = b;
             p_out[idx] = pexp;
@@ -5276,6 +5274,10 @@ bool compute_shell_triplet_vrr_hrr_into_j3(
     const double QC[3] = {0.0, 0.0, 0.0};
 
     for (int idx_pq = 0; idx_pq < npq; ++idx_pq) {
+        // Underflowed pairs retain their index slot but make no contribution.
+        if (pq_k[idx_pq] == 0.0) {
+            continue;
+        }
         const int ip = idx_pq / static_cast<int>(nprim[q0]);
         const int iq = idx_pq - ip * static_cast<int>(nprim[q0]);
         for (std::int64_t iap = 0; iap < aux_nprim[a0]; ++iap) {
