@@ -81,6 +81,10 @@ class AbelianSector(tuple):
     def __reduce__(self):
         return (AbelianSector, (self.labels, self.components))
 
+    @property
+    def is_abelian(self):
+        return True
+
 
 class Sector(tuple):
     """Generic labelled product sector, including ``charge x SU(2)``."""
@@ -111,6 +115,12 @@ class Sector(tuple):
                 values = (left + right,)
             partial = [prefix + (value,) for prefix in partial for value in values]
         return tuple(Sector(self.labels, components) for components in partial)
+
+    @property
+    def is_abelian(self):
+        """Whether every factor in this product sector is Abelian."""
+
+        return "su2" not in self.labels
 
     def __repr__(self):
         return f"Sector({self.labels!r}, {self.components!r})"

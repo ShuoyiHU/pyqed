@@ -2189,19 +2189,12 @@ def _solve_tensor_davidson(
         if norm_op is not None
         else None
     )
-    def H_packed(vector):
-        state = state_layout.from_packed(vector)
-        return H(state).to_packed(dtype=complex)
-
-    def N_packed(vector):
-        state = state_layout.from_packed(vector)
-        return N(state).to_packed(dtype=complex)
-
-    theta, vec_packed, objective = _solve_packed_generalized_davidson(
-        guess_state.to_packed(dtype=complex),
-        H_packed,
+    theta, optimized_state, objective = _solve_reduced_generalized_davidson(
+        guess_state,
+        H,
+        state_layout=state_layout,
         h_diag=h_diag,
-        N=N_packed if N is not None else None,
+        N=N,
         n_diag=n_diag,
         tol=tol,
         itermax=itermax,
@@ -2212,7 +2205,7 @@ def _solve_tensor_davidson(
         use_block_preconditioner=use_block_preconditioner,
         profile=profile,
     )
-    optimized = _reduced_state_to_tensor(state_layout.from_packed(vec_packed), template)
+    optimized = _reduced_state_to_tensor(optimized_state, template)
     objective["energy"] = float(theta)
     objective["operator_representation"] = (
         "reduced" if (op.reduced_matvec is not None or op.packed_matvec is not None) else "tensor"

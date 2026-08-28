@@ -14,6 +14,11 @@ from .solver import (
     letta_two_site_dmrg,
 )
 from .truncation import LETTAMetricRefinement, metric_als_refine
+from .reduced_solver import (
+    ReducedPairProblem,
+    ReducedPairSplit,
+    reduced_pair_problem,
+)
 
 __all__ = [
     "IdentityPairEnvironmentCache",
@@ -26,8 +31,11 @@ __all__ = [
     "LETTATwoSiteOptions",
     "LETTATwoSiteResult",
     "LETTATwoSiteSweep",
+    "ReducedPairProblem",
+    "ReducedPairSplit",
     "conditional_svd_split",
     "energy_refine_split",
     "letta_two_site_dmrg",
     "metric_als_refine",
+    "reduced_pair_problem",
 ]

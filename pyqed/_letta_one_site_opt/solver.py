@@ -28,7 +28,10 @@ class LETTADMROptions:
     gauge_mode: str = "qr"
     environment_granularity: str = "site"
     use_sparse_mpo: bool = True
-    matrix_free: bool = False
+    matrix_free: bool = True
+    eigensolver_tolerance: float = 1.0e-10
+    eigensolver_max_iterations: int = 300
+    dense_solver_threshold: int = 64
     boundary_bond_dim: int | None = None
     boundary_cutoff: float = 1.0e-12
     bond_dimension_schedule: tuple[int, ...] | None = None
@@ -537,7 +540,10 @@ def _update_from_cached_environments(
         site,
     )
     indices = _active_local_indices(state, site)
-    if options.matrix_free:
+    active_dimension = (
+        state.tensors[site].size if indices is None else int(indices.size)
+    )
+    if options.matrix_free and active_dimension > options.dense_solver_threshold:
         if indices is None:
             action = lambda vector: hamiltonian_cache.effective_action(
                 hamiltonian_left,
@@ -1070,8 +1076,13 @@ def letta_dmrg(
         options.tolerance <= 0.0
         or options.metric_tolerance <= 0.0
         or options.energy_increase_tolerance < 0.0
+        or options.eigensolver_tolerance <= 0.0
     ):
         raise ValueError("solver tolerances must be positive.")
+    if options.eigensolver_max_iterations <= 0:
+        raise ValueError("eigensolver_max_iterations must be positive.")
+    if options.dense_solver_threshold <= 0:
+        raise ValueError("dense_solver_threshold must be positive.")
     if options.gauge_mode not in {"qr", "scalar", "none"}:
         raise ValueError("gauge_mode must be 'qr', 'scalar', or 'none'.")
     if options.environment_granularity not in {"site", "column"}:
@@ -1082,6 +1093,32 @@ def letta_dmrg(
         raise ValueError("boundary_cutoff must be nonnegative.")
     if options.bond_expansion_noise < 0.0:
         raise ValueError("bond_expansion_noise must be nonnegative.")
+    from .reduced_state import ReducedLatticeLETTA
+    from .reduced_symmetry import ReducedSymmetry
+
+    if isinstance(state, ReducedLatticeLETTA) or isinstance(symmetry, ReducedSymmetry):
+        from .reduced_solver import reduced_letta_dmrg
+
+        if state is None:
+            if lattice_shape is None:
+                raise ValueError("lattice_shape is required when reduced state is omitted.")
+            if not isinstance(symmetry, ReducedSymmetry):
+                raise TypeError("reduced LETTA construction requires ReducedSymmetry.")
+            if bond_charges is not None:
+                raise ValueError("use reduced bond sectors instead of Abelian bond_charges.")
+            state = ReducedLatticeLETTA.random(
+                lattice_shape,
+                symmetry=symmetry,
+                multiplets_per_sector=bond_dim,
+                seed=seed,
+                real=real,
+                coordinates=coordinates,
+            )
+        elif symmetry is not None and state.symmetry != symmetry:
+            raise ValueError("supplied reduced state and symmetry do not match.")
+        if options.bond_dimension_schedule is not None:
+            raise ValueError("reduced SU(2) bond schedules are not implemented yet.")
+        return reduced_letta_dmrg(hamiltonian, state=state, options=options)
     schedule = _validated_bond_schedule(options, bond_dim, state)
     if schedule is not None:
         return _letta_dmrg_with_bond_schedule(

@@ -10,6 +10,7 @@ import numpy as np
 
 from .coupling import normalize_coupling_scheme, reduced_bond_space
 from pyqed.mps.su2 import SpinChargeSector, fuse_charge_spin_sectors
+from pyqed.mps.symmetry import Sector
 from .tensor import FusionLeg, FusionPipe, FusionPipeEntry, NonabelianTensor
 
 
@@ -148,10 +149,25 @@ def tensordot(A, B, axes):
             "right_metadata": B.metadata.copy(),
         }
     if contracted_channels:
-        metadata["contracted_channels"] = {
-            key: tuple(sorted(channels))
-            for key, channels in contracted_channels.items()
-        }
+        flatten_single_axis = (
+            len(a_ax) == 1
+            and len(b_ax) == 1
+            and all(
+                isinstance(channel[0], Sector)
+                for channels in contracted_channels.values()
+                for channel in channels
+            )
+        )
+        if flatten_single_axis:
+            metadata["contracted_channels"] = {
+                key: tuple(channel[0] for channel in sorted(channels))
+                for key, channels in contracted_channels.items()
+            }
+        else:
+            metadata["contracted_channels"] = {
+                key: tuple(sorted(channels))
+                for key, channels in contracted_channels.items()
+            }
         if len(a_ax) == 1 and len(b_ax) == 1:
             fused_sectors = tuple(
                 sorted(

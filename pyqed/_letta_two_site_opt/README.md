@@ -109,6 +109,60 @@ result = letta_two_site_dmrg(
 `LETTAPairUpdate.local_dimension` reports the charge-reduced pair dimension;
 `full_local_dimension` reports the unrestricted value.
 
+### Exact reduced SU(2) pair sweeps
+
+The two-site entry point also accepts `ReducedLatticeLETTA` and the same
+`ReducedMPOHamiltonian` used by the one-site solver:
+
+```python
+from pyqed._letta_one_site_opt import (
+    ReducedLatticeLETTA,
+    ReducedPhysicalBasis,
+    ReducedSymmetry,
+    su2_heisenberg_mpo,
+)
+from pyqed._letta_two_site_opt import (
+    LETTATwoSiteOptions,
+    letta_two_site_dmrg,
+)
+
+n = 8
+basis = ReducedPhysicalBasis.spin_half()
+state = ReducedLatticeLETTA.random(
+    (1, n),
+    symmetry=ReducedSymmetry.su2(basis, target_two_j=0),
+    multiplets_per_sector=3,
+    seed=7,
+)
+result = letta_two_site_dmrg(
+    su2_heisenberg_mpo(n, physical_basis=basis),
+    state=state,
+    # bond_dim counts complete reduced multiplets, not magnetic states
+    bond_dim=max(len(bond) for bond in state.bond_sectors),
+    options=LETTATwoSiteOptions(
+        max_sweeps=8,
+        tolerance=1.0e-9,
+        split_method="conditional-svd",
+        gauge_mode="scalar",
+        matrix_free=True,
+        dense_solver_threshold=64,
+    ),
+)
+```
+
+The pair problem restores only local Clebsch--Gordan component spaces. Its SVD
+is performed independently in each intermediate-irrep block, retains or drops
+whole multiplets, and weights discarded norm by the irrep dimension $2j+1$.
+The reduced path currently requires `split_method="conditional-svd"`; it
+rejects `metric-als` and `energy-refined` rather than silently treating those
+dense-LETTA algorithms as irrep-aware.
+The current splitter uses the bond sectors allocated when the state is built:
+it can reduce retained multiplicities within those capacities, but does not yet
+discover a previously absent intermediate irrep during a sweep.
+Use enough initial capacity (three copies per reachable sector is the benchmark
+default) before comparing energies. A larger `bond_dim` cannot create copies
+that were absent from `state.bond_sectors`.
+
 Run the reproducible with/without-symmetry comparison with
 
 ```bash
@@ -123,6 +177,40 @@ python -m pyqed._letta_two_site_opt.benchmarks.ising_symmetry \
 The JSON output includes energies, convergence, sweep counts, wall times,
 parity leakage, allowed/dense parameter counts, local dimensions, a dense
 operator-memory proxy, and a cubic local-solver work proxy for every raw run.
+
+Run the none/U(1)/exact-SU(2) Heisenberg comparison for both optimizers with
+
+```bash
+PYTHONPATH=. \
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+VECLIB_MAXIMUM_THREADS=1 NUMEXPR_NUM_THREADS=1 \
+python -m pyqed._letta_two_site_opt.benchmarks.heisenberg_symmetry \
+  --nsites 6 --multiplets-per-sector 3 --repeats 3 \
+  --json-output /private/tmp/letta_heisenberg_symmetry.json
+```
+
+For the speed crossover, run
+
+```bash
+python -m pyqed._letta_two_site_opt.benchmarks.heisenberg_symmetry \
+  --nsites 8 --multiplets-per-sector 3 \
+  --solver one-site --repeats 3
+```
+
+The unrestricted and U(1) runs share one
+componentwise-identical initial state; SU(2) uses the same random seed and
+comparable expanded bond capacity, but its reduced parametrization means that
+an identical coefficient array is not meaningful. Compare converged energies,
+symmetry leakage, parameter/storage counts, local dimensions, and median time
+together rather than timing alone.
+The runner uses the same scalar-gauge policy for all three methods, times an
+untraced solve, and measures peak allocations in a separate `tracemalloc`
+replay. Its `agreement.efficiency_comparison_valid` flag is false when the
+energies differ beyond `energy_match_tolerance`; do not interpret speed ratios
+from such an under-capacity run.
+The checked N=8 one-site and N=6 two-site results, including commands and
+machine details, are recorded in
+`docs/benchmarks/2026-08-28-letta-u1-su2.md`.
 
 `conditional-svd` remains available as a cheaper diagnostic split method.
 `metric-als` is the default because it minimizes truncation error in the

@@ -631,6 +631,25 @@ def letta_two_site_dmrg(
 
     options = LETTATwoSiteOptions() if options is None else options
     _validate_options(options)
+    from .._letta_one_site_opt.reduced_operators import ReducedMPOHamiltonian
+    from .._letta_one_site_opt.reduced_state import ReducedLatticeLETTA
+
+    if isinstance(hamiltonian, ReducedMPOHamiltonian) or isinstance(
+        state, ReducedLatticeLETTA
+    ):
+        if state is None:
+            raise ValueError(
+                "state is required for reduced two-site optimization so the "
+                "user-defined SU(2) basis and multiplet allocation are explicit"
+            )
+        from .reduced_solver import reduced_two_site_dmrg
+
+        return reduced_two_site_dmrg(
+            hamiltonian,
+            state=state,
+            bond_dim=bond_dim,
+            options=options,
+        )
     if not isinstance(hamiltonian, LatticeMPO):
         raise TypeError("hamiltonian must be a LatticeMPO.")
     bond_dim = int(bond_dim)
