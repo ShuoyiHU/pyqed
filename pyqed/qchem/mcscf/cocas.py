@@ -313,6 +313,15 @@ def _wguess(src, dst, state=0):
         return
 
 
+def _make_orbital_rdm12(mc, state_id, *, with_core):
+    """Request the RDM convention used by the restricted orbital objective."""
+
+    orbital_rdm = getattr(mc, "make_orbital_rdm12", None)
+    if orbital_rdm is not None:
+        return orbital_rdm(state_id, with_core=with_core)
+    return mc.make_rdm12(state_id, with_core=with_core)
+
+
 def _cap(cap0, tr):
     if tr is None:
         return cap0
@@ -608,6 +617,25 @@ def energy(U, h1e, eri, dm1, dm2):
     return e
 
 
+def _notify_macro_callback(
+    callback, *, macro, casci, mo_coeff, energy, energy_history, diagnostic
+):
+    """Report an accepted CO macro state with its matching orbitals."""
+    if callback is None:
+        return
+    callback(
+        {
+            "macro": int(macro),
+            "accepted": True,
+            "casci": casci,
+            "mo_coeff": np.asarray(mo_coeff).copy(),
+            "energy": float(np.real(np.asarray(energy).reshape(-1)[0])),
+            "energy_history": tuple(energy_history),
+            "diagnostic": dict(diagnostic),
+        }
+    )
+
+
 
 def kernel(mc, U0, nelecas, ncas, C0, h1e, eri, max_cycles=30, tol=1e-6,
            optimizer='RCG', optimizer_history=7, optimizer_tol=1.0e-4,
@@ -620,7 +648,7 @@ def kernel(mc, U0, nelecas, ncas, C0, h1e, eri, max_cycles=30, tol=1e-6,
            macro_trust_min=1.0e-4, macro_trust_max=1.0,
            macro_trust_shrink=0.5, macro_trust_grow=1.5,
            warm_start_dmrg=True,
-           raise_on_nonconvergence=True, **kwargs):
+           raise_on_nonconvergence=True, macro_callback=None, **kwargs):
     r"""
     complete active space orbital optimization with orthonomality constraint
 
@@ -661,7 +689,7 @@ def kernel(mc, U0, nelecas, ncas, C0, h1e, eri, max_cycles=30, tol=1e-6,
     else:
         with_core = False
 
-    dm1, dm2 = mc.make_rdm12(0, with_core=with_core)
+    dm1, dm2 = _make_orbital_rdm12(mc, 0, with_core=with_core)
 
     # eri = mc.eri_so[0, 0] # for spin-restricted calculation
     # nmo = self.nmo
@@ -743,6 +771,15 @@ def kernel(mc, U0, nelecas, ncas, C0, h1e, eri, max_cycles=30, tol=1e-6,
         row = {"macro": k + 1, "energy": e_now, "dE": de, "gn": gn, "tr": tr, "rej": rej}
         row.update(_sdiag(current_mc))
         diag.append(row)
+        _notify_macro_callback(
+            macro_callback,
+            macro=k + 1,
+            casci=current_mc,
+            mo_coeff=mo_coeff,
+            energy=e_now,
+            energy_history=e_history,
+            diagnostic=row,
+        )
         if e_now < best_e:
             best_e = e_now
             best_mc = current_mc
@@ -764,7 +801,7 @@ def kernel(mc, U0, nelecas, ncas, C0, h1e, eri, max_cycles=30, tol=1e-6,
         e_old = mc.e_tot
 
 
-        dm1, dm2 = mc.make_rdm12(0, with_core=with_core)
+        dm1, dm2 = _make_orbital_rdm12(mc, 0, with_core=with_core)
         gn = _gn(U_acc, h1e, eri, dm1, dm2)
 
         U = opt_u(U_acc, dm1, dm2, 1.0, _cap(cap0, tr))
@@ -831,7 +868,8 @@ def kernel_state_average(mc, weights, U0, nelecas, ncas, C0, h1e, eri,
                          macro_trust_min=1.0e-4, macro_trust_max=1.0,
                          macro_trust_shrink=0.5, macro_trust_grow=1.5,
                          warm_start_dmrg=True,
-                         raise_on_nonconvergence=True, **kwargs):
+                         raise_on_nonconvergence=True, macro_callback=None,
+                         **kwargs):
 
     if mc.ncore > 0:
         with_core = True
@@ -848,7 +886,11 @@ def kernel_state_average(mc, weights, U0, nelecas, ncas, C0, h1e, eri,
     dm1 = 0
     dm2 = 0
     for n in range(nstates):
-        _dm1, _dm2 = mc.make_rdm12(n, with_core=with_core)
+        _dm1, _dm2 = _make_orbital_rdm12(
+            mc,
+            n,
+            with_core=with_core,
+        )
         dm1 += _dm1 * weights[n]
         dm2 += _dm2 * weights[n]
 
@@ -930,6 +972,15 @@ def kernel_state_average(mc, weights, U0, nelecas, ncas, C0, h1e, eri,
         row = {"macro": k + 1, "energy": e_now, "dE": de, "gn": gn, "tr": tr, "rej": rej}
         row.update(_sdiag(current_mc))
         diag.append(row)
+        _notify_macro_callback(
+            macro_callback,
+            macro=k + 1,
+            casci=current_mc,
+            mo_coeff=mo_coeff,
+            energy=e_now,
+            energy_history=e_history,
+            diagnostic=row,
+        )
         if e_now < best_e:
             best_e = e_now
             best_mc = current_mc
@@ -954,7 +1005,11 @@ def kernel_state_average(mc, weights, U0, nelecas, ncas, C0, h1e, eri,
         dm1 = 0
         dm2 = 0
         for n in range(nstates):
-            _dm1, _dm2 = mc.make_rdm12(n, with_core=with_core)
+            _dm1, _dm2 = _make_orbital_rdm12(
+                mc,
+                n,
+                with_core=with_core,
+            )
             dm1 += _dm1 * weights[n]
             dm2 += _dm2 * weights[n]
         gn = _gn(U_acc, h1e, eri, dm1, dm2)

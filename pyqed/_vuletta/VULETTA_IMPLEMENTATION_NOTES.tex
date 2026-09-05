@@ -1,0 +1,2103 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=24mm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb,mathtools,bm}
+\usepackage{booktabs,longtable,array}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{hyperref}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!55!black,
+  urlcolor=blue!55!black,
+  citecolor=blue!55!black,
+  pdftitle={Detailed Implementation Notes for VULETTA and VUMPS in pyqed}
+}
+
+\lstdefinestyle{pyqedpython}{
+  language=Python,
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue!60!black},
+  commentstyle=\color{green!40!black},
+  stringstyle=\color{red!55!black},
+  showstringspaces=false,
+  breaklines=true,
+  columns=fullflexible,
+  frame=single,
+  framerule=0.3pt
+}
+
+\newcommand{\Id}{\mathbb{I}}
+\newcommand{\CC}{\mathbb{C}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathcal{E}}
+\newcommand{\Htwo}{\mathcal{H}}
+\newcommand{\Res}{\mathcal{R}}
+\newcommand{\Proj}{\mathcal{P}}
+\newcommand{\Qproj}{\mathcal{Q}}
+\newcommand{\Tr}{\operatorname{Tr}}
+\newcommand{\rank}{\operatorname{rank}}
+\newcommand{\diag}{\operatorname{diag}}
+\newcommand{\vecop}{\operatorname{vec}}
+\newcommand{\reshape}{\operatorname{reshape}}
+\newcommand{\normalize}{\operatorname{normalize}}
+\newcommand{\RePart}{\operatorname{Re}}
+\newcommand{\argmin}{\operatorname*{arg\,min}}
+\newcommand{\norm}[1]{\left\lVert #1\right\rVert}
+\newcommand{\inner}[2]{\left\langle #1,#2\right\rangle}
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+
+\title{Detailed Implementation Notes for the Current \texttt{pyqed} VULETTA Solver\\
+\large Exact LETTA--MPS Embeddings, Conditional Gauge Fixing, Analytic Gradients,
+Tangent Updates, and Comparison with VUMPS}
+\author{Code-grounded technical documentation}
+\date{Source state: 27 August 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This note documents the implementation in \path{pyqed/_vuletta} and compares it
+line by line with the one-site VUMPS implementation in \path{pyqed/_vumps}.
+The current VULETTA algorithm is a direct variational optimizer for a uniform
+nearest-neighbor leg-tied tensor.  It uses an exact sparse MPS embedding only
+to contract the infinite state.  It does not optimize an unrestricted MPS and
+does not project an MPS back into the LETTA manifold.  The active solver first
+constructs a physical-sector-conditioned mixed-canonical form, removes the
+sector-dependent virtual gauge from the tangent space, whitens the remaining
+tangent coordinates with the supported right metric, evaluates an analytic
+transfer-response gradient, and performs an Armijo step whose retraction must
+remain canonical and injective.  By contrast, the VUMPS implementation
+optimizes an unrestricted one-site MPS through center-tensor and center-matrix
+eigenproblems followed by polar gauge matching.  Every formula below is tied
+to the current source code; this is an implementation description, not a
+claim that the LETTA paper itself derived this optimizer.
+\end{abstract}
+
+\tableofcontents
+\clearpage
+
+\section{Purpose, scope, and the most important distinction}
+
+Consider an infinite one-dimensional Hamiltonian with a translation-invariant
+nearest-neighbor density,
+\begin{equation}
+  H=\sum_{n\in\mathbb{Z}} h_{n,n+1},
+  \qquad
+  h_{ij,kl}=\langle i,j|h|k,l\rangle,
+  \label{eq:hamiltonian}
+\end{equation}
+where every local physical index takes values in
+$\{0,\ldots,d-1\}$.  Both solvers minimize the thermodynamic energy density
+\begin{equation}
+  e=\lim_{N\rightarrow\infty}
+  \frac{\langle\Psi_N|H_N|\Psi_N\rangle}
+       {N\langle\Psi_N|\Psi_N\rangle}.
+  \label{eq:energy-density-definition}
+\end{equation}
+They differ in the variational manifold and in the stationarity equation.
+
+The current VULETTA implementation optimizes only
+\begin{equation}
+  T\in\CC^{D\times d\times d\times D},
+  \qquad T^{p,q}_{\alpha\beta}
+  =\code{tensor[alpha,p,q,beta]}.
+  \label{eq:letta-shape}
+\end{equation}
+The two physical legs $p$ and $q$ are tied to neighboring sites.  The exact
+MPS tensor introduced below is a contraction identity for this $T$; its zero
+pattern is never released.  Therefore the algorithm is not VUMPS with a
+larger bond dimension, and it is not an optimize-then-project scheme.
+
+The VUMPS implementation instead optimizes an ordinary uniform MPS tensor
+\begin{equation}
+  A\in\CC^{D\times d\times D},
+  \qquad A^s_{\alpha\beta}=\code{A[alpha,s,beta]},
+  \label{eq:mps-shape}
+\end{equation}
+using mixed-canonical center equations.  Sections~\ref{sec:vuletta}--
+\ref{sec:vuletta-solver} derive VULETTA; Section~\ref{sec:vumps} derives VUMPS;
+Section~\ref{sec:comparison} gives a direct comparison.
+
+\section{Notation ledger and array conventions}
+\label{sec:notation}
+
+\begingroup
+\small
+\begin{longtable}{p{0.19\textwidth}p{0.26\textwidth}p{0.47\textwidth}}
+\toprule
+Symbol & Code object or shape & Meaning \\
+\midrule
+\endhead
+$d$ & physical dimension & Number of states on one site. \\
+$D$ & LETTA bond dimension & Dimension of $\alpha,\beta$ in $T^{p,q}_{\alpha\beta}$. \\
+$\chi=dD$ & \code{effective_bond_dim} & Bond dimension of the exact structured MPS used for LETTA contractions. \\
+$p,q$ & $0,\ldots,d-1$ & Previous and current physical state in a LETTA block. \\
+$s,t,u,v$ & $0,\ldots,d-1$ & Generic MPS or Hamiltonian physical indices. \\
+$\alpha,\beta$ & $0,\ldots,D-1$ & LETTA virtual indices. \\
+$a,b,c,e$ & $0,\ldots,\chi-1$ & Composite structured-MPS virtual indices. \\
+$T^{p,q}$ & $D\times D$ & LETTA matrix block at a neighboring physical pair. \\
+$B^s,\widetilde B^s$ & $\chi\times\chi$ & Right-copy and left-copy exact MPS embeddings of $T$. \\
+$A^s$ & $D\times D$ & Ordinary MPS block in VUMPS. \\
+$l,r$ & $\chi\times\chi$ for LETTA & Dominant left and right fixed points of a normalized structured transfer map. \\
+$l_p,r_p$ & $D\times D$ & Conditioned fixed-point blocks used to canonicalize LETTA. \\
+$\rho_q$ & $D\times D$ & Right-metric block of the already left-canonical $T_L$; this is used for tangent whitening and is kept distinct from $r_p$. \\
+$T_L,T_C,T_R$ & $D\times d\times d\times D$ & Conditional left-canonical, center, and right-canonical LETTA tensors. \\
+$C_p$ & $D\times D$ & Physical-sector-conditioned LETTA center matrix. \\
+$A_L,A_C,A_R,C$ & VUMPS canonical objects & Ordinary one-site MPS mixed-canonical tensors and its single center matrix. \\
+$\langle X,Y\rangle$ & $\Tr(X^\dagger Y)$ & Hilbert--Schmidt inner product; vectorized formulas use the same convention. \\
+$\epsilon_{\mathrm{tan}}$ & \code{residual_norm} & Gauge-invariant conditional tangent residual in the default VULETTA path. \\
+$\epsilon_{\mathrm{can}}$ &
+\code{canonical_}\allowbreak\code{residual_norm} &
+Maximum conditional isometry or center-relation error. \\
+\bottomrule
+\end{longtable}
+\endgroup
+
+The rank-four Hamiltonian order in both packages is
+\begin{equation}
+  h_{s t u v}=\langle s,t|h|u,v\rangle.
+  \label{eq:h-index-order}
+\end{equation}
+A matrix of shape $(d^2,d^2)$ is reshaped into this order without a
+permutation.  This convention is important when translating the
+\code{einsum} strings into equations.
+
+\section{The uniform nearest-neighbor LETTA state}
+\label{sec:vuletta}
+
+\subsection{Finite periodic amplitude}
+
+For a periodic configuration $\bm{s}=(s_1,\ldots,s_N)$ with
+$s_{N+1}=s_1$, the implemented amplitude is
+\begin{equation}
+  \Psi_T(s_1,\ldots,s_N)
+  =\Tr\!\left[
+    T^{s_1,s_2}T^{s_2,s_3}\cdots T^{s_N,s_1}
+  \right].
+  \label{eq:letta-amplitude}
+\end{equation}
+This is exactly the loop in
+\code{UniformLETTA.periodic_amplitude}.  Each matrix block uses the physical
+state of one site and its right neighbor.  The same $T$ is repeated at every
+position, so the ansatz is one-site translation invariant despite its pair
+label.
+
+The raw tensor contains
+\begin{equation}
+  n_T=d^2D^2
+  \label{eq:letta-entry-count}
+\end{equation}
+complex scalar entries, or that many real entries when \code{real=True}.
+Frobenius normalization of $T$ changes finite-state amplitudes by a global
+length-dependent factor but leaves normalized thermodynamic observables
+unchanged.
+
+\subsection{Two exact structured-MPS embeddings}
+
+Define the composite index $(\alpha,p)$ of dimension $\chi=dD$.  The primary
+embedding is
+\begin{equation}
+  B^s_{(\alpha,p),(\beta,q)}
+  =\delta_{q,s}\,T^{p,s}_{\alpha\beta}.
+  \label{eq:right-copy-embedding}
+\end{equation}
+Only the slice whose outgoing copied state $q$ equals the physical MPS index
+$s$ is nonzero.  Matrix multiplication imposes the next incoming copied state,
+and hence
+\begin{align}
+  \Tr(B^{s_1}\cdots B^{s_N})
+  &=\sum_{\substack{\alpha_1,\ldots,\alpha_N\\
+                    p_1,\ldots,p_N}}
+    \prod_{n=1}^N
+    \delta_{p_{n+1},s_n}
+    T^{p_n,s_n}_{\alpha_n\alpha_{n+1}}
+  \notag\\
+  &=\Tr\!\left[
+    T^{s_N,s_1}T^{s_1,s_2}\cdots T^{s_{N-1},s_N}
+  \right]
+  =\Psi_T(\bm{s}),
+  \label{eq:right-copy-proof}
+\end{align}
+where cyclicity of the trace was used in the last equality.
+
+The shifted embedding in \code{shifted_structured_mps_tensor} moves the copy
+constraint to the incoming leg,
+\begin{equation}
+  \widetilde B^s_{(\alpha,p),(\beta,q)}
+  =\delta_{p,s}\,T^{p,q}_{\alpha\beta}.
+  \label{eq:left-copy-embedding}
+\end{equation}
+Now multiplication directly enforces $q_n=s_{n+1}$, giving
+\begin{equation}
+  \Tr(\widetilde B^{s_1}\cdots\widetilde B^{s_N})
+  =\Tr(T^{s_1,s_2}\cdots T^{s_N,s_1}).
+  \label{eq:left-copy-proof}
+\end{equation}
+The two embeddings represent the same amplitudes.  They are both required
+because one exposes the conditioned left fixed points and the other exposes
+the conditioned right fixed points used by the exact gauge construction.
+
+\paragraph{Crucial implementation boundary.}
+The arrays $B$ and $\widetilde B$ contain many structural zeros and have bond
+$dD$, but the optimizer never treats those entries as independent variables.
+Every objective direction is first made in $T$ and then embedded with the same
+copy rule.  The variational manifold therefore remains tied at every step.
+
+\section{Thermodynamic transfer calculus for LETTA}
+\label{sec:transfer}
+
+\subsection{Transfer maps and normalization}
+
+For either structured tensor $A^s$ (usually $A^s=B^s$ in contractions),
+define
+\begin{equation}
+  \E_A(X)=\sum_s A^sX(A^s)^\dagger,
+  \qquad
+  \E_A^\dagger(Y)=\sum_s(A^s)^\dagger YA^s.
+  \label{eq:transfer-maps}
+\end{equation}
+The dense matrix built by \code{_dense_transfer_matrix} satisfies
+\begin{equation}
+  [\bm E_A]_{(a,e),(b,c)}
+  =\sum_s A^s_{ab}(A^s_{ec})^*.
+  \label{eq:dense-transfer-index}
+\end{equation}
+It acts on $\vecop(X)$ with matrix dimension $\chi^2\times\chi^2$.
+
+Let $\lambda_0$ be the spectral radius of the unnormalized transfer matrix.
+The implementation rejects a numerically zero radius and rejects a
+noninjective state when
+\begin{equation}
+  \Delta_{\E}
+  =1-\frac{|\lambda_1|}{|\lambda_0|}
+  \leq \epsilon_{\mathrm{inj}},
+  \qquad \epsilon_{\mathrm{inj}}=10^{-10}\ \text{by default}.
+  \label{eq:injectivity-gap}
+\end{equation}
+The normalized structured tensor is
+\begin{equation}
+  A^s=\frac{B^s}{\sqrt{\lambda_0}},
+  \label{eq:normalized-structured-tensor}
+\end{equation}
+so its dominant transfer eigenvalue is one.  Positive Hermitian fixed points
+are chosen and normalized as
+\begin{equation}
+  \E_A(r)=r,
+  \qquad
+  \E_A^\dagger(l)=l,
+  \qquad
+  \Tr r=1,
+  \qquad
+  \Tr(lr)=1.
+  \label{eq:fixed-point-normalization}
+\end{equation}
+The helper \code{_positive_eigenmatrix} phase-aligns, Hermitizes, and checks the
+dominant eigenmatrix.  A significantly negative eigenvalue is an error, not
+silently clipped into a density matrix.
+
+\subsection{One-site and two-site observables}
+
+For a one-site operator $O_{st}=\langle s|O|t\rangle$, define the insertion
+map
+\begin{equation}
+  \mathcal O_A(X)=\sum_{s,t}O_{st}A^tX(A^s)^\dagger.
+  \label{eq:one-site-map}
+\end{equation}
+The thermodynamic expectation is
+\begin{equation}
+  \langle O\rangle=(l|\mathcal O_A|r)
+  =\sum_{s,t}O_{st}\Tr\!\left[l^\dagger A^t r(A^s)^\dagger\right].
+  \label{eq:one-site-expectation}
+\end{equation}
+This is the contraction in \code{one_site_expectation}.
+
+Introduce the two-site product tensor
+\begin{equation}
+  P^{st}=A^sA^t,
+  \qquad
+  P_{a,s,t,c}=\sum_b A^s_{ab}A^t_{bc}.
+  \label{eq:pair-tensor}
+\end{equation}
+For $h_{stuv}=\langle s,t|h|u,v\rangle$, the local Hamiltonian map is
+\begin{equation}
+  \Htwo_A(X)
+  =\sum_{s,t,u,v}h_{stuv}
+   A^uA^vX(A^sA^t)^\dagger.
+  \label{eq:two-site-map}
+\end{equation}
+Therefore
+\begin{equation}
+  e=(l|\Htwo_A|r)
+  =\sum_{s,t,u,v}h_{stuv}
+   \Tr\!\left[l^\dagger A^uA^v r(A^sA^t)^\dagger\right].
+  \label{eq:letta-energy}
+\end{equation}
+The same formula evaluates any two-site observable.  Hermiticity is checked
+before an energy call, and an imaginary energy above $10^{-9}$ is rejected.
+
+\section{Exact physical-sector-dependent LETTA gauge}
+\label{sec:conditional-gauge}
+
+\subsection{Gauge group and telescoping invariance}
+
+Choose one invertible virtual matrix $G_p\in\mathrm{GL}(D,\CC)$ for every
+physical state $p$.  The LETTA block transformation is
+\begin{equation}
+  T^{p,q}\longmapsto T'^{p,q}
+  =G_p^{-1}T^{p,q}G_q.
+  \label{eq:letta-gauge}
+\end{equation}
+Substitution into Eq.~\eqref{eq:letta-amplitude} gives
+\begin{align}
+  \Psi_{T'}(\bm{s})
+  &=\Tr\!\left[
+    G_{s_1}^{-1}T^{s_1,s_2}G_{s_2}
+    G_{s_2}^{-1}T^{s_2,s_3}G_{s_3}\cdots
+    G_{s_N}^{-1}T^{s_N,s_1}G_{s_1}
+  \right]
+  \notag\\
+  &=\Psi_T(\bm{s}).
+  \label{eq:gauge-telescope}
+\end{align}
+This is implemented by \code{UniformLETTA.gauge_transform}.  It is strictly
+larger than the ordinary MPS gauge $A^s\mapsto G^{-1}A^sG$ because $G_p$ may
+depend on the shared physical state.
+
+For infinitesimal generators $K_p$, Eq.~\eqref{eq:letta-gauge} gives the null
+direction
+\begin{equation}
+  \delta_K T^{p,q}=-K_pT^{p,q}+T^{p,q}K_q.
+  \label{eq:infinitesimal-gauge}
+\end{equation}
+The analytic gradient tests verify
+\begin{equation}
+  \RePart\sum_{p,q}\Tr\!\left[(g^{p,q})^\dagger
+  \delta_KT^{p,q}\right]=0.
+  \label{eq:gradient-gauge-null}
+\end{equation}
+
+\subsection{Why the transfer fixed points split into sectors}
+
+Let
+\begin{equation}
+  T_0^{p,q}=\frac{T^{p,q}}{\sqrt{\lambda_0}}
+  \label{eq:T0}
+\end{equation}
+be normalized by the right-copy transfer radius.  The copy constraints force
+the relevant structured fixed points to be block diagonal in the shared
+physical index.  Write those $D\times D$ blocks as $l_p$ and $r_p$.  They obey
+\begin{equation}
+  l_q=\sum_p(T_0^{p,q})^\dagger l_pT_0^{p,q},
+  \label{eq:left-sector-fixed}
+\end{equation}
+from the left fixed point of the right-copy embedding, and
+\begin{equation}
+  r_p=\sum_qT_0^{p,q}r_q(T_0^{p,q})^\dagger,
+  \label{eq:right-sector-fixed}
+\end{equation}
+from the right fixed point of the shifted embedding.  The code explicitly
+checks that off-diagonal physical blocks are negligible before extracting
+these sectors.
+
+For each positive semidefinite block $x$, the helper
+\code{_conditioned_positive_sqrt} diagonalizes
+\begin{equation}
+  x=U\diag(\sigma_1,\ldots,\sigma_D)U^\dagger,
+  \label{eq:positive-diagonalization}
+\end{equation}
+and constructs
+\begin{align}
+  x^{1/2}&=U\diag(\sqrt{\sigma_i})U^\dagger,\\
+  x^{-1/2}_{+}&=U\diag\!\left(
+    \mathbf 1_{\sigma_i>\tau\sigma_{\max}}\sigma_i^{-1/2}
+  \right)U^\dagger,
+  \label{eq:pseudoinverse-sqrt}
+\end{align}
+where $\tau=\code{canonical_rcond}=10^{-12}$ by default.  A negative
+eigenvalue below the numerical allowance is rejected.  Active canonicalization
+requires every $l_p$ and $r_p$ to have rank $D$ unless
+\code{allow_rank_deficient=True} is explicitly requested.
+
+\subsection{Conditional mixed-canonical construction}
+
+The implemented canonical tensors are
+\begin{align}
+  T_L^{p,q}&=l_p^{1/2}T_0^{p,q}l_q^{-1/2},
+  \label{eq:TL}\\
+  T_R^{p,q}&=r_p^{-1/2}T_0^{p,q}r_q^{1/2}.
+  \label{eq:TR}
+\end{align}
+Using Eqs.~\eqref{eq:left-sector-fixed} and
+\eqref{eq:right-sector-fixed}, one obtains the sectorwise isometries
+\begin{align}
+  \sum_p(T_L^{p,q})^\dagger T_L^{p,q}&=\Id_D
+  &&\text{for every }q,
+  \label{eq:left-conditional-isometry}\\
+  \sum_qT_R^{p,q}(T_R^{p,q})^\dagger&=\Id_D
+  &&\text{for every }p.
+  \label{eq:right-conditional-isometry}
+\end{align}
+
+Define unnormalized sector centers
+\begin{equation}
+  \widehat C_p=l_p^{1/2}r_p^{1/2},
+  \qquad
+  \mathcal N_C=
+  \left(\sum_p\norm{\widehat C_p}_F^2\right)^{1/2},
+  \qquad
+  C_p=\widehat C_p/\mathcal N_C.
+  \label{eq:conditional-centers}
+\end{equation}
+The center tensor is
+\begin{equation}
+  T_C^{p,q}=T_L^{p,q}C_q.
+  \label{eq:TC-definition}
+\end{equation}
+The two center factorizations agree exactly in full support,
+\begin{align}
+  T_L^{p,q}C_q
+  &=\frac{1}{\mathcal N_C}
+    l_p^{1/2}T_0^{p,q}r_q^{1/2}
+  \notag\\
+  &=C_pT_R^{p,q}.
+  \label{eq:center-relation-proof}
+\end{align}
+Thus
+\begin{equation}
+  T_C^{p,q}=T_L^{p,q}C_q=C_pT_R^{p,q}.
+  \label{eq:center-relation}
+\end{equation}
+Moreover, Eq.~\eqref{eq:left-conditional-isometry} implies
+\begin{equation}
+  \norm{T_C}_F^2
+  =\sum_q\Tr\!\left[
+    C_q^\dagger\left(\sum_p(T_L^{p,q})^\dagger T_L^{p,q}\right)C_q
+  \right]
+  =\sum_q\norm{C_q}_F^2=1.
+  \label{eq:TC-norm}
+\end{equation}
+
+The normalized $T_L$ differs from the input by the transfer normalization and
+a telescoping gauge.  Consequently a length-$N$ periodic amplitude obeys
+\begin{equation}
+  \Psi_{T_L}(\bm{s})
+  =\lambda_0^{-N/2}\Psi_T(\bm{s}).
+  \label{eq:amplitude-scale}
+\end{equation}
+This factor is returned by \code{ConditionalCanonicalLETTA.amplitude_scale}.
+All normalized thermodynamic observables are invariant.
+
+\subsection{Canonical validation and numerical boundary}
+
+The class \code{ConditionalCanonicalLETTA} validates
+\begin{equation}
+  \epsilon_L=\max_q\norm{
+    \sum_p(T_L^{p,q})^\dagger T_L^{p,q}-\Id}_F,
+  \label{eq:left-error}
+\end{equation}
+\begin{equation}
+  \epsilon_R=\max_p\norm{
+    \sum_qT_R^{p,q}(T_R^{p,q})^\dagger-\Id}_F,
+  \label{eq:right-error}
+\end{equation}
+and
+\begin{equation}
+  \epsilon_C=\max_{p,q}\left\{
+  \norm{T_C^{p,q}-T_L^{p,q}C_q}_F,
+  \norm{T_L^{p,q}C_q-C_pT_R^{p,q}}_F
+  \right\}.
+  \label{eq:center-error}
+\end{equation}
+The default validation tolerance is $10^{-8}$.  It also checks
+$\norm{C}_F=\norm{T_C}_F=1$.  Finally, canonicalization recomputes transfer
+data for the returned $T_L$.  This last check matters near an injectivity
+boundary: a raw trial and its ill-conditioned gauge transform can straddle the
+numerical spectral-gap threshold.  Such a retraction is rejected rather than
+passed into the reduced resolvent.
+
+\section{Analytic transfer-response gradient}
+\label{sec:gradient}
+
+\subsection{Transfer variations}
+
+Let $A$ denote the normalized structured MPS tensor of
+Eq.~\eqref{eq:normalized-structured-tensor}, and let $V$ be a structured
+variation induced by a variation of $T$.  The full first-order transfer
+variation is
+\begin{equation}
+  \delta\E_{A,V}(X)
+  =\sum_s\left[
+    V^sX(A^s)^\dagger+A^sX(V^s)^\dagger
+  \right].
+  \label{eq:transfer-variation}
+\end{equation}
+The implementation also separates the ket and bra pieces,
+\begin{align}
+  \mathcal K_V(X)&=\sum_sV^sX(A^s)^\dagger,
+  \label{eq:ket-variation}\\
+  \mathcal B_V(X)&=\sum_sA^sX(V^s)^\dagger,
+  \label{eq:bra-variation}
+\end{align}
+so $\delta\E_{A,V}=\mathcal K_V+\mathcal B_V$.  A double insertion used by
+the dense tangent metric is
+\begin{equation}
+  \mathcal D_{U,V}(X)=\sum_sV^sX(U^s)^\dagger.
+  \label{eq:double-variation}
+\end{equation}
+Four private direction helpers implement, respectively, the full transfer
+variation, its ket part, its bra part, and the double insertion.
+
+The two-site tensor varies as
+\begin{equation}
+  \delta P^{st}=V^sA^t+A^sV^t.
+  \label{eq:pair-variation}
+\end{equation}
+Substitution into Eq.~\eqref{eq:two-site-map} produces
+\begin{align}
+  \delta\Htwo_{A,V}(X)
+  =\sum_{s,t,u,v}h_{stuv}\big[&
+    \delta P^{uv}X(P^{st})^\dagger
+    +P^{uv}X(\delta P^{st})^\dagger
+  \big].
+  \label{eq:two-site-variation}
+\end{align}
+
+\subsection{Removing the dominant transfer mode}
+
+Use vectorized fixed points $|r)$ and $(l|$ with $(l|r)=1$.  Define
+\begin{equation}
+  \Proj=|r)(l|,
+  \qquad
+  \Qproj=\Id-\Proj.
+  \label{eq:PQ}
+\end{equation}
+The reduced resolvent is
+\begin{equation}
+  \Res
+  =\Qproj(\Id-\E_A)^{-1}\Qproj
+  =(\Id-\bm E_A+\Proj)^{-1}-\Proj.
+  \label{eq:reduced-resolvent}
+\end{equation}
+The second equality is the dense formula implemented in
+\code{_reduced_resolvent}.  It removes the singular eigenvalue-one mode and
+sums all connected transfer responses.  Injectivity is required so that no
+other unit-modulus eigenmode makes this inverse singular.
+
+\subsection{Normalization derivative for a raw LETTA coordinate}
+
+The energy is invariant under an overall nonzero scaling of $T$, but the
+structured contraction tensor is explicitly normalized by $\lambda_0(T)$.
+For a raw embedded direction $\delta B$, first define
+\begin{equation}
+  V_{\mathrm{raw}}=\frac{\delta B}{\sqrt{\lambda_0}}.
+  \label{eq:raw-normalized-direction}
+\end{equation}
+The relative spectral-radius change evaluated by the code is
+\begin{equation}
+  \eta=(l|\delta\E_{A,V_{\mathrm{raw}}}|r)
+  =\frac{\delta\lambda_0}{\lambda_0}.
+  \label{eq:relative-eigenvalue-change}
+\end{equation}
+The direction of the normalized structured tensor is therefore
+\begin{equation}
+  V=V_{\mathrm{raw}}-\frac{1}{2}\RePart(\eta)A.
+  \label{eq:spectral-normalization-direction}
+\end{equation}
+This correction removes the radial transfer-growth direction before any
+energy response is evaluated.
+
+\subsection{Directional energy derivative}
+
+Let
+\begin{equation}
+  U=\Htwo_A(r),
+  \qquad
+  L_H=\Res U,
+  \qquad
+  R_V=\Res\,\delta\E_{A,V}(r).
+  \label{eq:gradient-environments}
+\end{equation}
+Differentiating Eq.~\eqref{eq:letta-energy}, including both fixed-point
+responses, gives the implemented expression
+\begin{align}
+  \delta e[V]
+  ={}&(l|\delta\Htwo_{A,V}|r)
+  +(l|\delta\E_{A,V}\Res\Htwo_A|r)
+  +(l|\Htwo_A\Res\delta\E_{A,V}|r)
+  \notag\\
+  ={}&(l|\delta\Htwo_{A,V}(r))
+  +(l|\delta\E_{A,V}(L_H))
+  +(l|\Htwo_A(R_V)).
+  \label{eq:directional-energy-gradient}
+\end{align}
+This is \code{_directional_energy_derivative}.  The first term differentiates
+the local two-site insertion.  The second and third terms account for the
+semi-infinite left and right transfer responses.  The code rejects an
+imaginary component above $10^{-8}$ for a Hermitian Hamiltonian.
+
+\subsection{Assembly of the tensor gradient}
+
+For every LETTA scalar coordinate $n$, the code creates a basis direction
+$E_n$ in $T$, embeds it using exactly the sparse rule
+Eq.~\eqref{eq:right-copy-embedding}, applies
+Eq.~\eqref{eq:spectral-normalization-direction}, and evaluates
+Eq.~\eqref{eq:directional-energy-gradient}.  For real $T$,
+\begin{equation}
+  g_n=\delta e[E_n].
+  \label{eq:real-gradient-coordinate}
+\end{equation}
+For complex $T$, it separately evaluates $E_n$ and $iE_n$ and stores
+\begin{equation}
+  g_n=\delta e[E_n]+i\,\delta e[iE_n].
+  \label{eq:complex-gradient-coordinate}
+\end{equation}
+The convention is
+\begin{equation}
+  \delta e=\RePart\langle g,\delta T\rangle_F
+  =\RePart\sum_{p,q}\Tr\!\left[(g^{p,q})^\dagger\delta T^{p,q}\right].
+  \label{eq:complex-gradient-convention}
+\end{equation}
+Central-difference tests cover real coordinates and both real and imaginary
+directions of complex coordinates.
+
+\paragraph{Meaning of an analytic gradient in this code.}
+No energy finite difference is used in \code{energy_and_gradient}.  The code
+does loop over the $d^2D^2$ independent tied tensor entries, but every
+coordinate derivative is computed from the same transfer eigensystem and the
+same reduced resolvent.  The implementation is analytic but not yet organized
+as a single reverse-mode tensor contraction.
+
+\section{Gauge-fixed conditional tangent space}
+\label{sec:tangent}
+
+\subsection{Left-horizontal condition}
+
+For each current physical state $q$, stack the left-canonical blocks into
+\begin{equation}
+  M_q=
+  \begin{bmatrix}
+    T_L^{0,q}\\T_L^{1,q}\\\vdots\\T_L^{d-1,q}
+  \end{bmatrix}
+  \in\CC^{dD\times D}.
+  \label{eq:Mq}
+\end{equation}
+Equation~\eqref{eq:left-conditional-isometry} is simply
+\begin{equation}
+  M_q^\dagger M_q=\Id_D.
+  \label{eq:Mq-isometry}
+\end{equation}
+An active variation $X^{p,q}$ must satisfy
+\begin{equation}
+  \sum_p(T_L^{p,q})^\dagger X^{p,q}=0
+  \quad\Longleftrightarrow\quad
+  M_q^\dagger X_q=0
+  \qquad\text{for each }q,
+  \label{eq:horizontal-condition}
+\end{equation}
+where $X_q$ stacks $X^{p,q}$ in the same way as $M_q$.  This is the conditional
+analogue of the usual left-gauge tangent condition for an MPS.
+
+A complete QR factorization produces
+\begin{equation}
+  [M_q\;N_q]\ \text{unitary},
+  \qquad
+  N_q^\dagger M_q=0,
+  \qquad
+  N_q\in\CC^{dD\times(d-1)D}.
+  \label{eq:Nq}
+\end{equation}
+All horizontal variations can be written as $X_q=N_qY_q$.
+
+\subsection{Right metric and whitened coordinates}
+
+Recompute the right transfer fixed point of the structured MPS represented by
+$T_L$, reshape it as
+\begin{equation}
+  r_{(\alpha,q),(\beta,q')},
+  \label{eq:TL-right-fixed}
+\end{equation}
+and extract its diagonal blocks
+\begin{equation}
+  \rho_q=r_{(\alpha,q),(\beta,q)}.
+  \label{eq:rhoq}
+\end{equation}
+These $\rho_q$ are tangent-metric blocks.  They are not merely renamed copies
+of the shifted-embedding $r_p$ in the canonicalization derivation.
+
+The implementation whitens the horizontal coordinate on the right,
+\begin{equation}
+  X_q=N_qZ_q\rho_q^{-1/2,+},
+  \qquad
+  Z_q\in\CC^{(d-1)D\times D}.
+  \label{eq:whitened-tangent}
+\end{equation}
+The superscript $+$ denotes the numerical pseudoinverse square root with the
+same \code{canonical_}\allowbreak\code{rcond} threshold.  If $\rho_q$ loses
+numerical rank, only its supported eigenspace remains active.
+
+\subsection{Gradient pullback, descent, and residual}
+
+Stack the tensor gradient at fixed $q$ into $g_q\in\CC^{dD\times D}$.  Pulling
+Eq.~\eqref{eq:complex-gradient-convention} back through
+Eq.~\eqref{eq:whitened-tangent} gives
+\begin{equation}
+  g_{Z_q}=N_q^\dagger g_q\rho_q^{-1/2,+}.
+  \label{eq:reduced-gradient}
+\end{equation}
+Steepest descent in the whitened coordinate chooses
+\begin{equation}
+  \delta Z_q=-g_{Z_q},
+  \qquad
+  X_q=-N_qg_{Z_q}\rho_q^{-1/2,+}.
+  \label{eq:conditional-descent}
+\end{equation}
+The energy slope is exactly
+\begin{align}
+  \RePart\langle g,X\rangle_F
+  &= -\sum_q\Tr(g_{Z_q}^\dagger g_{Z_q})
+  \notag\\
+  &=-\epsilon_{\mathrm{tan}}^2,
+  \label{eq:slope-residual}
+\end{align}
+where the reported residual is
+\begin{equation}
+  \epsilon_{\mathrm{tan}}
+  =\left(\sum_q\norm{g_{Z_q}}_F^2\right)^{1/2}.
+  \label{eq:tangent-residual}
+\end{equation}
+This identity is directly tested for real and complex states.
+
+If every $\rho_q$ has full rank, the complex tangent dimension is
+\begin{equation}
+  n_{\mathrm{tan}}^{\CC}=d(d-1)D^2.
+  \label{eq:full-complex-tangent-dim}
+\end{equation}
+For a real calculation this is also the real coordinate count.  For a complex
+calculation represented by real and imaginary parts, the reported real count is
+\begin{equation}
+  n_{\mathrm{tan}}^{\R}=2d(d-1)D^2.
+  \label{eq:full-real-tangent-dim}
+\end{equation}
+With numerical sector ranks $r_q=\rank(\rho_q)$, the implementation reports
+\begin{equation}
+  n_{\mathrm{supported}}^{\CC}
+  =\sum_q(d-1)D\,r_q,
+  \label{eq:supported-tangent-dim}
+\end{equation}
+and doubles this value for complex real-packed coordinates.
+
+\subsection{Why this removes scale, phase, and gauge}
+
+The raw complex parameter count is $d^2D^2$.  A generic projective LETTA state
+has the sector-dependent gauge of Eq.~\eqref{eq:letta-gauge}, plus overall
+complex scaling.  The gauge generators contain $dD^2$ complex entries, but
+the common scalar generator is trivial; adding projective scale restores a
+total redundancy of $dD^2$.  Thus the expected generic quotient dimension is
+\begin{equation}
+  d^2D^2-dD^2=d(d-1)D^2,
+  \label{eq:dimension-count-quotient}
+\end{equation}
+matching Eq.~\eqref{eq:full-complex-tangent-dim}.  The horizontal complement
+implements this quotient without explicitly building or inverting all gauge
+generators.
+
+\section{Dense connected tangent metric: legacy path and oracle}
+\label{sec:dense-gram}
+
+The implementation retains a dense connected Gram matrix for validation and
+the legacy natural-gradient update.  It is not called by the default
+conditional-canonical solver.
+
+Let $V_\mu$ be normalized structured parameter directions, including
+Frobenius normalization of raw $T$ and the spectral correction in
+Eq.~\eqref{eq:spectral-normalization-direction}.  Define
+\begin{align}
+  K_\nu&=\mathcal K_{V_\nu}(r),
+  &B_\mu&=\mathcal B_{V_\mu}(r),
+  \label{eq:KB-sources}\\
+  k_\nu&=(l|K_\nu),
+  &b_\mu&=(l|B_\mu).
+  \label{eq:KB-parallel}
+\end{align}
+The unsymmetrized connected overlap used by the code is
+\begin{align}
+  \widetilde G_{\mu\nu}
+  ={}&(l|\mathcal D_{V_\mu,V_\nu}(r))
+  -b_\mu k_\nu
+  \notag\\
+  &+(l|\mathcal B_{V_\mu}(\Res K_\nu))
+  +(l|\mathcal K_{V_\nu}(\Res B_\mu)).
+  \label{eq:connected-gram}
+\end{align}
+The returned real metric is
+\begin{equation}
+  G=\frac{1}{2}\left[
+    \RePart\widetilde G+(\RePart\widetilde G)^T
+  \right].
+  \label{eq:symmetrized-gram}
+\end{equation}
+Radial, phase, and virtual-gauge variations appear as numerical null modes.
+
+For a packed real coordinate gradient $g$, \code{natural_gradient} diagonalizes
+\begin{equation}
+  G=U\diag(\gamma_i)U^T
+  \label{eq:metric-eigendecomposition}
+\end{equation}
+and retains $\gamma_i>\max(\tau\gamma_{\max},\epsilon_{\mathrm{mach}})$.  It
+returns
+\begin{equation}
+  \eta=G^+g,
+  \qquad
+  \epsilon_G=\sqrt{g^TG^+g},
+  \qquad
+  r_G=\rank_{\tau}(G).
+  \label{eq:dense-natural-gradient}
+\end{equation}
+The legacy solver uses $-\eta$ as its descent.  For small systems the tests
+verify that
+\begin{equation}
+  \epsilon_G=\epsilon_{\mathrm{tan}}
+  \label{eq:oracle-equality}
+\end{equation}
+and that the rank agrees with the conditional coordinate count.  This is the
+main numerical evidence that the direct conditional construction fully uses
+the LETTA gauge rather than merely imposing parameter normalization.
+
+\section{The default VULETTA optimization algorithm}
+\label{sec:vuletta-solver}
+
+\subsection{Inputs, normalization, and the three update paths}
+
+The public entry point is \code{solver.vuletta}.  It accepts a Hermitian
+nearest-neighbor operator either as a matrix of shape $d^2\times d^2$ or as
+$h_{stuv}$ of shape $d\times d\times d\times d$.  The convention is
+\begin{equation}
+  h_{stuv}=\langle s,t|\widehat h|u,v\rangle.
+  \label{eq:h-index-convention}
+\end{equation}
+The current optimizer has three update methods:
+\begin{enumerate}
+  \item \code{conditional_canonical}, the default and the method whose gauge
+        geometry is derived in Sections~\ref{sec:conditional-gauge} and
+        \ref{sec:tangent};
+  \item \code{natural_gradient}, the dense connected-metric implementation of
+        Section~\ref{sec:dense-gram};
+  \item \code{lbfgs}, an ordinary Euclidean L-BFGS-B optimization of normalized
+        tensor coordinates, kept as a baseline.
+\end{enumerate}
+The first two paths require the analytic gradient.  The L-BFGS path may use
+either that gradient or a two- or three-point finite difference.
+
+The helper \code{_unpack_tensor} normalizes every raw L-BFGS parameter vector:
+\begin{equation}
+  T(x)=\frac{\operatorname{unpack}(x)}
+             {\norm{\operatorname{unpack}(x)}_F}.
+  \label{eq:unpack-normalization}
+\end{equation}
+For complex optimization, real and imaginary parts are packed consecutively.
+For \code{real=True}, only real coordinates are retained and a complex initial
+tensor is rejected.
+
+\subsection{One conditional-canonical iteration}
+
+Let $T_k$ already be represented by a valid
+\code{ConditionalCanonicalLETTA}.  One default iteration performs the
+following operations.
+
+\paragraph{1. Evaluate the physical objective and its tensor gradient.}
+\begin{equation}
+  (e_k,g_k)=\operatorname{energy\_and\_gradient}(T_k,h),
+  \qquad
+  \delta e_k=\RePart\langle g_k,\delta T\rangle_F .
+  \label{eq:solver-energy-gradient}
+\end{equation}
+
+\paragraph{2. Pull the gradient to horizontal conditional coordinates.}
+For each output sector $q$, the construction of
+Eq.~\eqref{eq:reduced-gradient} gives $g_{Z_q}$.  The reported tangent
+residual is
+\begin{equation}
+  \epsilon_k
+  =
+  \left(\sum_q\norm{g_{Z_q}}_F^2\right)^{1/2}.
+  \label{eq:solver-tangent-residual}
+\end{equation}
+The unscaled descent $X_k$ is Eq.~\eqref{eq:conditional-descent}, and hence
+\begin{equation}
+  m_k
+  \equiv
+  \RePart\langle g_k,X_k\rangle_F
+  =-\epsilon_k^2<0
+  \label{eq:exact-descent-slope}
+\end{equation}
+unless the state is stationary on the supported tangent space.
+
+\paragraph{3. Check both kinds of stationarity.}
+The canonical residual stored by the solver is
+\begin{equation}
+  c_k
+  =
+  \max\left\{
+    \epsilon_L,\epsilon_R,\epsilon_C
+  \right\},
+  \label{eq:combined-canonical-residual}
+\end{equation}
+where the three terms are the left-isometry, right-isometry, and center
+compatibility errors of
+Eqs.~\eqref{eq:left-conditional-isometry},
+\eqref{eq:right-conditional-isometry}, and
+\eqref{eq:center-relation}.  Convergence is declared only when
+\begin{equation}
+  \epsilon_k\leq\tau_{\mathrm{stat}}
+  \quad\text{and}\quad
+  c_k\leq\tau_{\mathrm{stat}}.
+  \label{eq:two-part-convergence}
+\end{equation}
+This is important: a small physical gradient does not excuse a badly
+canonicalized representative, and a perfect gauge does not imply an energy
+stationary point.
+
+\paragraph{4. Cap the whitened-coordinate step.}
+The code uses $\epsilon_k$ as the coordinate norm of the natural descent.  If
+$\epsilon_k>\Delta_{\max}$ it rescales
+\begin{equation}
+  X_k\leftarrow
+  \frac{\Delta_{\max}}{\epsilon_k}X_k.
+  \label{eq:step-cap}
+\end{equation}
+The directional slope is then recomputed from the actual scaled $X_k$.  A
+nonfinite or nonnegative slope terminates the iteration rather than sending
+an invalid direction to line search.
+
+\paragraph{5. Armijo line search with canonical retraction.}
+Starting at $a=1$, the trial tensor is
+\begin{equation}
+  T_{\mathrm{raw}}(a)=T_k+aX_k.
+  \label{eq:raw-trial-tensor}
+\end{equation}
+It first has to satisfy
+\begin{equation}
+  e\!\left(T_{\mathrm{raw}}(a)\right)
+  \leq e_k+c_{\mathrm A}a\,m_k,
+  \qquad 0<c_{\mathrm A}<1.
+  \label{eq:armijo}
+\end{equation}
+The trial is then passed through \code{conditional_canonicalize}.  Thus
+canonicalization is the retraction back to the chosen gauge section:
+\begin{equation}
+  T_{k+1}
+  =
+  \operatorname{Canon}\!\left[T_k+aX_k\right].
+  \label{eq:conditional-retraction}
+\end{equation}
+If the energy evaluation, injectivity test, matrix square root, rank test, or
+canonical validation fails, the trial is rejected.  The step is halved,
+$a\leftarrow a/2$, until accepted or until the line-search/evaluation budget
+is exhausted.  Retraction is therefore part of the acceptance rule rather
+than a cosmetic postprocessing operation.
+
+\subsection{Compact pseudocode}
+
+\begin{enumerate}
+  \item Build or validate $T_0$, normalize its Frobenius norm, and compute
+        $\mathcal C_0=\operatorname{Canon}(T_0)$.
+  \item For $k=0,\ldots,K_{\max}-1$:
+    \begin{enumerate}
+      \item evaluate $(e_k,g_k)$;
+      \item construct the conditional horizontal tangent, residual
+            $\epsilon_k$, and dimension;
+      \item compute $c_k$ and stop if Eq.~\eqref{eq:two-part-convergence}
+            holds;
+      \item cap $X_k$ by Eq.~\eqref{eq:step-cap};
+      \item backtrack until Eqs.~\eqref{eq:armijo} and
+            \eqref{eq:conditional-retraction} both succeed;
+      \item append energy, energy change, residuals, and step size to the
+            immutable iteration record.
+    \end{enumerate}
+  \item Re-evaluate the final analytic gradient and conditional tangent.
+        The final convergence flag is based on these fresh residuals, not
+        merely on the reason the loop exited.
+\end{enumerate}
+
+\subsection{Default numerical parameters}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Defaults in \code{VULETTAOptions}.}
+  \label{tab:vuletta-options}
+  \begin{tabular}{@{}lll@{}}
+    \toprule
+    Option & Default & Meaning \\
+    \midrule
+    \code{max_iterations} & $200$ & accepted outer iterations \\
+    \code{max_function_evaluations} & automatic & total energy/gradient budget \\
+    \code{tolerance} & $10^{-8}$ & L-BFGS gradient tolerance \\
+    \code{energy_tolerance} & $10^{-13}$ & L-BFGS relative objective tolerance \\
+    \code{update_method} & \code{conditional_canonical} & update geometry \\
+    \code{gradient_method} & \code{analytic} & derivative implementation \\
+    \code{finite_difference_scheme} & \code{3-point} & optional L-BFGS stencil \\
+    \code{max_line_search_steps} & $30$ & backtracking budget \\
+    \code{max_parameter_step} & $2$ & whitened-coordinate trust cap \\
+    \code{metric_rcond} & $10^{-10}$ & dense metric cutoff \\
+    \code{canonical_rcond} & $10^{-12}$ & sector inverse/root cutoff \\
+    \code{armijo_coefficient} & $10^{-4}$ & $c_{\mathrm A}$ in Eq.~\eqref{eq:armijo} \\
+    \code{stationarity_tolerance} & $10^{-6}$ & physical and gauge residual target \\
+    \code{verbosity} & $0$ & progress printing \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Source-code map: where each equation lives}
+\label{sec:source-map}
+
+\begingroup
+\small
+\begin{longtable}{@{}p{0.24\linewidth}p{0.30\linewidth}p{0.38\linewidth}@{}}
+  \caption{Implementation map for the formulas in this note.}
+  \label{tab:source-map}\\
+  \toprule
+  File & Main object or function & Mathematical responsibility \\
+  \midrule
+  \endfirsthead
+  \toprule
+  File & Main object or function & Mathematical responsibility \\
+  \midrule
+  \endhead
+  \path{_vuletta/state.py}
+    & \code{UniformLETTA}
+    & validates $T_{\alpha p q\beta}$, constructs the two exact structured
+      MPS embeddings, and evaluates finite periodic amplitudes \\
+  \path{_vuletta/state.py}
+    & \code{ConditionalCanonical}\allowbreak\code{LETTA}
+    & stores $T_L,T_R,T_C,\{C_p\}$ and evaluates isometry/center residuals \\
+  \path{_vuletta/state.py}
+    & \code{conditional_canonicalize}
+    & transfer normalization, injectivity check, sector fixed points, positive
+      roots/inverses, Eqs.~\eqref{eq:TL}--%
+      \eqref{eq:conditional-centers}, and final validation \\
+  \path{_vuletta/state.py}
+    & \code{expand_uniform_letta}
+    & bond continuation in Eq.~\eqref{eq:bond-continuation} \\
+  \path{_vuletta/operators.py}
+    & \code{transfer_data}
+    & dense transfer eigensystem, spectral gap, positive fixed points, and
+      normalization in Eqs.~\eqref{eq:dense-transfer-index}--%
+      \eqref{eq:fixed-point-normalization} \\
+  \path{_vuletta/operators.py}
+    & observable functions
+    & one- and two-site contractions in
+      Eqs.~\eqref{eq:one-site-expectation} and
+      \eqref{eq:letta-energy} \\
+  \path{_vuletta/gradients.py}
+    & transfer variation helpers
+    & $\mathcal K_V,\mathcal B_V,\mathcal D_{V,W}$ and the normalized
+      direction $V$ \\
+  \path{_vuletta/gradients.py}
+    & \code{energy_and_gradient}
+    & reduced resolvent and
+      Eq.~\eqref{eq:directional-energy-gradient}, assembled by real/imaginary
+      basis directions \\
+  \path{_vuletta/gradients.py}
+    & \code{conditional_tangent_}\allowbreak\code{direction}
+    & QR complements, supported right metric, whitened $Z_q$, horizontal
+      descent, residual, and dimension \\
+  \path{_vuletta/gradients.py}
+    & \code{tangent_gram_matrix}, \code{natural_gradient}
+    & dense connected metric and pseudoinverse oracle in
+      Eqs.~\eqref{eq:connected-gram}--\eqref{eq:dense-natural-gradient} \\
+  \path{_vuletta/solver.py}
+    & \code{vuletta}
+    & the three update paths, convergence contracts, Armijo backtracking,
+      canonical retraction, histories, and result diagnostics \\
+  \path{_vuletta/benchmarks/one_dimensional_models.py}
+    & benchmark driver
+    & common models, references, continuation, repeated timing, observables,
+      Markdown, CSV, and JSON serialization \\
+  \path{_vumps/state.py}
+    & \code{CanonicalMPS}, \code{canonicalize}
+    & ordinary mixed-canonical equations and fixed-point roots \\
+  \path{_vumps/operators.py}
+    & environment/effective operators
+    & Eqs.~\eqref{eq:vumps-environment-equation},
+      \eqref{eq:vumps-effective-center}, and
+      \eqref{eq:vumps-effective-bond} \\
+  \path{_vumps/solver.py}
+    & \code{vumps}
+    & lowest eigenpairs, phase alignment, polar gauge matching, and
+      fixed-point residuals \\
+  \path{tests/test_vuletta.py}
+    & focused VULETTA tests
+    & embeddings, gauge, canonicalization, gradients, tangent oracle,
+      retraction safety, and solver behavior \\
+  \path{tests/test_vumps.py}
+    & focused VUMPS tests
+    & tensor order, environments, covariance, effective operators, canonical
+      validation, and matrix-free paths \\
+  \bottomrule
+\end{longtable}
+\endgroup
+
+\subsection{Array axes and mathematical indices}
+
+The most common source of implementation mistakes is silently permuting
+physical and virtual axes.  The exact dictionary is
+\begin{align}
+  \code{T[a, p, q, b]}
+  &\longleftrightarrow T^{p,q}_{\alpha\beta},
+  &&(a,p,q,b)=(\alpha,p,q,\beta),
+  \label{eq:axis-map-T}\\
+  \code{A[a, s, b]}
+  &\longleftrightarrow A^s_{\alpha\beta},
+  &&(a,s,b)=(\alpha,s,\beta).
+  \label{eq:axis-map-A}
+\end{align}
+For the right-copy embedding, the flattened virtual indices are
+\begin{equation}
+  i=\alpha d+p,
+  \qquad
+  j=\beta d+q,
+  \label{eq:flattened-copy-index}
+\end{equation}
+and the assignment is exactly
+\begin{equation}
+  B[i,s,j]
+  =
+  \delta_{q,s}T[a,p,s,b].
+  \label{eq:array-right-copy}
+\end{equation}
+The dense transfer builder's contraction can be written
+\begin{equation}
+  (\mathbf E_A)_{(a,d),(b,c)}
+  =
+  \sum_s A_{a s b}\overline{A_{d s c}},
+  \label{eq:dense-transfer-indices}
+\end{equation}
+so that vectorizing $X_{bc}$ produces
+\begin{equation}
+  (\mathbf E_A\vecop X)_{(a,d)}
+  =
+  \left(\sum_sA^sX A^{s\dagger}\right)_{ad}.
+  \label{eq:dense-transfer-vectorization}
+\end{equation}
+This fixes both the conjugation and row-major reshape conventions.
+
+\section{Numerical assumptions, limitations, and failure meanings}
+\label{sec:limitations}
+
+\begin{enumerate}
+  \item \textbf{Injectivity is required.}
+        The dominant transfer eigenvalue must be unique, and the required
+        fixed-point blocks must have supported positive rank.  Cat states,
+        exactly symmetry-broken noninjective tensors, and strictly padded
+        bond enlargements are rejected.
+  \item \textbf{The unit cell is one site.}
+        Both solvers documented here assume one-site translation invariance.
+        A physical state requiring a two-site pattern may appear as a
+        fixed-point cycle rather than a solution.
+  \item \textbf{The Hamiltonian is nearest neighbor.}
+        All energy and gradient formulas use a two-site $h$.  Longer-range
+        terms need either an MPO formulation or additional insertion maps.
+  \item \textbf{The canonical representative is not globally unique.}
+        Residual sector-unitary rotations can change $T_L,T_R,C_p$ while
+        leaving the state invariant.  Energies, observables, amplitudes, and
+        tangent norms should be compared, not raw canonical entries.
+  \item \textbf{Rank cutoffs define the supported geometry.}
+        Near rank loss, changing
+        \code{canonical_}\allowbreak\code{rcond} can change the active
+        coordinate count in Eq.~\eqref{eq:supported-tangent-dim}.
+        A small reported residual then means stationarity on the retained
+        support, not along discarded singular directions.
+  \item \textbf{VULETTA remains a local optimizer.}
+        Armijo descent makes accepted steps locally safe but does not remove
+        local minima or guarantee the global ground state.  Multiple seeds
+        and bond continuation remain useful.
+  \item \textbf{Dense transfer scaling is currently severe.}
+        Equations~\eqref{eq:dense-transfer-memory} and
+        \eqref{eq:dense-transfer-time} limit practical $D$ well before the
+        structured parameter count itself becomes large.
+  \item \textbf{Real optimization is a restricted manifold.}
+        With \code{real=True}, imaginary tangent directions are omitted.
+        This is appropriate only when a real representative of the desired
+        solution is expected.
+  \item \textbf{A nonconverged result is still labeled nonconverged.}
+        Small energy error is not substituted for the tangent/canonical
+        contract.  Conversely, a stationary point can be physically poor, as
+        the $D=1$ Heisenberg LETTA row demonstrates.
+  \item \textbf{The present VUMPS comparison has a known Heisenberg failure.}
+        The nonconverged rows in Table~\ref{tab:heisenberg-benchmark} must not
+        be used to rank ansatz quality.
+\end{enumerate}
+
+\section{Practical reading and debugging checklist}
+\label{sec:checklist}
+
+When a VULETTA calculation behaves unexpectedly, inspect quantities in this
+order:
+\begin{enumerate}
+  \item Confirm $h_{stuv}$ follows Eq.~\eqref{eq:h-index-convention} and is
+        Hermitian after flattening.
+  \item Check the transfer spectral gap and fixed-point positivity before
+        interpreting any observable.
+  \item Verify $\epsilon_L,\epsilon_R,\epsilon_C$ separately; their maximum
+        alone does not identify which canonical identity failed.
+  \item Compare the analytic gradient with a few random directional finite
+        differences using Eq.~\eqref{eq:complex-gradient-convention}.
+  \item Confirm $\RePart\langle g,X\rangle_F<0$ and compare it with the
+        predicted $-\epsilon_{\mathrm{tan}}^2$ before step capping.
+  \item Inspect the accepted Armijo step and whether rejected trials failed
+        energy decrease or canonical/injective retraction.
+  \item At small $d,D$, compare the conditional residual and dimension with
+        the dense Gram oracle.
+  \item Only after these algebraic checks compare energies and observables
+        against model references.
+\end{enumerate}
+
+\section{Derivation of gauge annihilation by the exact gradient}
+\label{app:gauge-annihilation}
+
+For infinitesimal generators $K_p$, the vertical direction is
+\begin{equation}
+  (\delta_KT)^{p,q}
+  =
+  -K_pT^{p,q}+T^{p,q}K_q.
+  \label{eq:vertical-direction-appendix}
+\end{equation}
+For a finite periodic chain, differentiating the amplitude gives
+\begin{align}
+  \delta_K\Psi_T
+  &=
+  \sum_{n=1}^N
+  \Tr\!\left[
+    T^{s_1,s_2}\cdots
+    \left(
+      -K_{s_n}T^{s_n,s_{n+1}}
+      +T^{s_n,s_{n+1}}K_{s_{n+1}}
+    \right)
+    \cdots T^{s_N,s_1}
+  \right].
+  \label{eq:gauge-amplitude-derivative}
+\end{align}
+The positive $K_{s_{n+1}}$ term at site $n$ cancels the negative
+$K_{s_{n+1}}$ term at site $n+1$ after cyclic rearrangement of the trace.
+Therefore
+\begin{equation}
+  \delta_K\Psi_T=0,
+  \qquad
+  \delta_Ke=0,
+  \qquad
+  \RePart\langle g,\delta_KT\rangle_F=0.
+  \label{eq:gauge-gradient-annihilation}
+\end{equation}
+The finite-difference and analytic-gradient tests check the last identity
+numerically.  The horizontal construction enforces it geometrically by never
+including $\delta_KT$ among the $Z_q$ coordinates.
+
+\section{Why the reduced resolvent has the regularized-inverse form}
+\label{app:reduced-resolvent}
+
+With the normalization $(l|r)=1$, define
+\begin{equation}
+  \Proj=|r)(l|,
+  \qquad
+  \Qproj=I-\Proj.
+  \label{eq:projectors-appendix}
+\end{equation}
+Because $\E\Proj=\Proj\E=\Proj$, the operator
+\begin{equation}
+  I-\E+\Proj
+  \label{eq:regularized-transfer-operator}
+\end{equation}
+has eigenvalue $1$ on the dominant subspace and agrees with $I-\E$ on the
+connected subspace.  Hence
+\begin{align}
+  \left(I-\E+\Proj\right)^{-1}
+  &=\Proj+\Qproj(I-\E)^{-1}\Qproj,
+  \label{eq:regularized-inverse-split}\\
+  \Res
+  &=
+  \left(I-\E+\Proj\right)^{-1}-\Proj
+  =
+  \Qproj(I-\E)^{-1}\Qproj.
+  \label{eq:resolvent-equivalence-appendix}
+\end{align}
+It follows immediately that
+\begin{equation}
+  \Res|r)=0,
+  \qquad
+  (l|\Res=0,
+  \qquad
+  (I-\E)\Res=\Res(I-\E)=\Qproj.
+  \label{eq:resolvent-identities}
+\end{equation}
+These identities explain both the connected environment terms in
+Eq.~\eqref{eq:directional-energy-gradient} and the subtraction terms in the
+dense Gram matrix.
+
+\section{Commands to reproduce the focused checks and benchmark}
+\label{app:commands}
+
+From the repository root:
+\begin{lstlisting}[style=pyqedpython,language=bash]
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+VECLIB_MAXIMUM_THREADS=1 NUMEXPR_NUM_THREADS=1 \
+PYTHONPATH=. python -m pytest -q \
+  tests/test_vuletta.py \
+  tests/test_vuletta_example.py \
+  tests/test_vuletta_benchmark.py \
+  tests/test_vumps.py \
+  tests/test_vumps_example.py
+\end{lstlisting}
+
+The full deterministic benchmark command used for the checked-in snapshot is
+\begin{lstlisting}[style=pyqedpython,language=bash]
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+VECLIB_MAXIMUM_THREADS=1 NUMEXPR_NUM_THREADS=1 \
+PYTHONPATH=. python \
+  -m pyqed._vuletta.benchmarks.one_dimensional_models \
+  --letta-bond-dimensions 1 2 3 \
+  --mps-bond-dimensions 1 2 3 4 6 \
+  --tolerance 1e-7 --max-iterations 300 --repeats 3 \
+  --csv pyqed/_vuletta/benchmarks/results/one_dimensional_models.csv \
+  --markdown pyqed/_vuletta/benchmarks/results/one_dimensional_models.md
+\end{lstlisting}
+
+\section{Compact VULETTA implementation summary}
+
+The current nearest-neighbor VULETTA implementation contracts an exact sparse
+MPS embedding of a leg-tied tensor, fixes the full block-diagonal
+physical-sector gauge inherited from that embedding, differentiates the
+thermodynamic energy through a connected transfer resolvent, removes all
+vertical gauge directions with sector QR complements, whitens the remaining
+horizontal directions with the supported right fixed-point metric, and
+retracts Armijo steps through injective conditional canonicalization; VUMPS
+uses the same canonical-MPS principles without the tying constraint, but
+updates its unrestricted center tensors by effective eigenproblems.
+
+\section{Remaining solver diagnostics and continuation}
+
+If no explicit evaluation budget is supplied, a conditional or dense
+natural-gradient run receives
+\begin{equation}
+  N_{\mathrm{eval,max}}
+  =
+  1+K_{\max}(1+N_{\mathrm{ls}}).
+  \label{eq:default-evaluation-budget}
+\end{equation}
+
+\subsection{How to interpret the result object}
+
+The most invariant stopping diagnostic is \code{residual_norm}, equal to
+$\epsilon_{\mathrm{tan}}$ for the default method.  The fields
+\code{coordinate_gradient_norm} and \code{gradient_norm} are Euclidean
+coordinate diagnostics after radial projection; they are useful for
+debugging but are not invariant under the full sector gauge.
+\code{reduced_dimension} and \code{metric_rank} report the active conditional
+coordinate count on the default path.  The returned
+\code{canonical_state} contains $T_L,T_R,T_C,\{C_p\}$, while
+\code{state} is the optimized raw-$T$ representation reconstructed from
+that canonical object.
+
+\subsection{Bond-dimension continuation}
+
+The convenience routine \code{continue_bond_dimension} embeds an optimized
+$D$ tensor into a larger $D'$ tensor by placing it in the leading virtual
+block and adding small random entries elsewhere.  With the present default
+noise fraction $\zeta=0.03$, the construction has the schematic form
+\begin{equation}
+  T'=
+  \operatorname{normalize}
+  \left[
+    \begin{pmatrix}
+      T&0\\0&0
+    \end{pmatrix}
+    +\zeta\,\Xi
+  \right].
+  \label{eq:bond-continuation}
+\end{equation}
+The noise is essential because a strictly zero new virtual block would be
+rank deficient and would fail the injective conditional canonicalization.
+
+\section{Models, reference formulas, and benchmark evidence}
+\label{sec:benchmarks}
+
+\subsection{Transverse-field Ising model}
+
+The benchmark convention is
+\begin{equation}
+  H_{\mathrm{TFIM}}
+  =
+  -J\sum_n Z_nZ_{n+1}
+  -g\sum_n X_n,
+  \label{eq:tfim-hamiltonian}
+\end{equation}
+implemented by the two-site density
+\begin{equation}
+  h_{\mathrm{TFIM}}
+  =
+  -J\,Z\otimes Z
+  -\frac g2\left(X\otimes\Id+\Id\otimes X\right).
+  \label{eq:tfim-bond-hamiltonian}
+\end{equation}
+With
+\begin{equation}
+  \varepsilon(k)
+  =
+  \sqrt{J^2+g^2-2Jg\cos k},
+  \label{eq:tfim-dispersion-root}
+\end{equation}
+the exact thermodynamic references used by the example are
+\begin{align}
+  e_0
+  &=
+  -\frac{1}{2\pi}
+  \int_0^{2\pi}\varepsilon(k)\,dk,
+  \label{eq:tfim-exact-energy}\\
+  \langle X\rangle
+  &=
+  \frac{1}{2\pi}
+  \int_0^{2\pi}
+  \frac{g-J\cos k}{\varepsilon(k)}\,dk,
+  \label{eq:tfim-exact-x}\\
+  \langle Z_nZ_{n+1}\rangle
+  &=
+  \frac{1}{2\pi}
+  \int_0^{2\pi}
+  \frac{J-g\cos k}{\varepsilon(k)}\,dk.
+  \label{eq:tfim-exact-zz}
+\end{align}
+The implementation evaluates the last integral in a paired
+$k,\pi-k$ form to avoid subtractive cancellation when $J\ll g$.
+
+\subsection{Antiferromagnetic spin-1/2 Heisenberg chain}
+
+The second model is
+\begin{equation}
+  H_{\mathrm H}
+  =
+  \sum_n\left(
+    S_n^xS_{n+1}^x+
+    S_n^yS_{n+1}^y+
+    S_n^zS_{n+1}^z
+  \right),
+  \qquad S^\alpha=\frac12\sigma^\alpha.
+  \label{eq:heisenberg-hamiltonian}
+\end{equation}
+The exact energy reference and symmetry-derived observables used by the
+benchmark are
+\begin{equation}
+  e_0=\frac14-\log 2,
+  \qquad
+  \langle S^z\rangle=0,
+  \qquad
+  \langle S_n^zS_{n+1}^z\rangle=\frac{e_0}{3}.
+  \label{eq:heisenberg-references}
+\end{equation}
+
+\subsection{Recorded deterministic benchmark snapshot}
+
+The checked-in snapshot uses $J=1$, $g=1.5$, seed $3$, tolerance $10^{-7}$,
+at most $300$ iterations, and the median of three single-threaded timed
+solves after one warm-up.  LETTA dimensions are continued from the preceding
+$D$ using $3\%$ noise.  The following tables reproduce the essential row
+data.  Conv is the solver's own residual-based flag; a good energy marked no
+is deliberately not relabeled as converged.
+
+\begin{table}[H]
+  \centering
+  \caption{TFIM snapshot at $J=1,g=1.5$.  Runtime is seconds.}
+  \label{tab:tfim-benchmark}
+  \scriptsize
+  \begin{tabular}{@{}llrcrrrrr@{}}
+    \toprule
+    Method & $D$ & $\chi$ & Conv & $e$ & $|e-e_0|$ &
+      $\langle X\rangle$ & $\langle ZZ\rangle$ & $(\epsilon,\ t)$ \\
+    \midrule
+    VULETTA & 1 & 2 & yes & $-1.666666667$ & $5.26\,10^{-3}$ &
+      $0.8888889$ & $0.3333333$ & $(5.82\,10^{-8},0.147)$ \\
+    VULETTA & 2 & 4 & yes & $-1.671919277$ & $6.94\,10^{-6}$ &
+      $0.8773681$ & $0.3558671$ & $(9.48\,10^{-8},0.549)$ \\
+    VULETTA & 3 & 6 & no & $-1.671926188$ & $3.34\,10^{-8}$ &
+      $0.8773285$ & $0.3559334$ & $(5.57\,10^{-7},1.365)$ \\
+    \midrule
+    VUMPS & 1 & 1 & yes & $-1.562500000$ & $1.09\,10^{-1}$ &
+      $0.7500001$ & $0.4374998$ & $(7.72\,10^{-8},0.022)$ \\
+    VUMPS & 2 & 2 & yes & $-1.671736624$ & $1.90\,10^{-4}$ &
+      $0.8780762$ & $0.3546223$ & $(4.40\,10^{-8},0.028)$ \\
+    VUMPS & 3 & 3 & yes & $-1.671909431$ & $1.68\,10^{-5}$ &
+      $0.8774289$ & $0.3557661$ & $(7.52\,10^{-8},0.051)$ \\
+    VUMPS & 4 & 4 & yes & $-1.671925967$ & $2.55\,10^{-7}$ &
+      $0.8773301$ & $0.3559308$ & $(4.16\,10^{-8},0.057)$ \\
+    VUMPS & 6 & 6 & yes & $-1.671926221$ & $3.75\,10^{-10}$ &
+      $0.8773282$ & $0.3559339$ & $(8.46\,10^{-8},0.112)$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+For TFIM, the structured ansatz is much more accurate than an MPS at the same
+nominal $D$, but that comparison gives LETTA the larger transfer bond
+$\chi=2D$.  At equal transfer bond, compare VULETTA $D=2$ with VUMPS
+$D=4$, or VULETTA $D=3$ with VUMPS $D=6$.  In this small implementation
+VUMPS is faster and, at those equal-$\chi$ points, more accurate.
+
+\begin{table}[H]
+  \centering
+  \caption{Antiferromagnetic Heisenberg snapshot.  Runtime is seconds.}
+  \label{tab:heisenberg-benchmark}
+  \scriptsize
+  \begin{tabular}{@{}llrcrrrrr@{}}
+    \toprule
+    Method & $D$ & $\chi$ & Conv & $e$ & $|e-e_0|$ &
+      $\langle S^z\rangle$ & $\langle S^zS^z\rangle$ & $(\epsilon,\ t)$ \\
+    \midrule
+    VULETTA & 1 & 2 & yes & $0.212962963$ & $6.56\,10^{-1}$ &
+      $1.61\,10^{-7}$ & $0.1666667$ & $(8.54\,10^{-8},0.027)$ \\
+    VULETTA & 2 & 4 & no & $-0.407782577$ & $3.54\,10^{-2}$ &
+      $1.64\,10^{-11}$ & $-0.1371459$ & $(3.44\,10^{-5},0.425)$ \\
+    VULETTA & 3 & 6 & no & $-0.435536167$ & $7.61\,10^{-3}$ &
+      $6.01\,10^{-14}$ & $-0.1572787$ & $(4.16\,10^{-5},1.596)$ \\
+    \midrule
+    VUMPS & 1 & 1 & no & $0.250000000$ & $6.93\,10^{-1}$ &
+      $-0.1106$ & $0.01223$ & $(1.414,0.215)$ \\
+    VUMPS & 2 & 2 & no & $0.226564773$ & $6.70\,10^{-1}$ &
+      $-0.4675$ & $0.23330$ & $(1.414,0.504)$ \\
+    VUMPS & 3 & 3 & no & $0.221776800$ & $6.65\,10^{-1}$ &
+      $-0.2481$ & $0.04213$ & $(1.399,0.971)$ \\
+    VUMPS & 4 & 4 & no & $-62.9335734$ & $6.25\,10^{1}$ &
+      $85.0204$ & $-13.8095$ & $(1.414,1.624)$ \\
+    VUMPS & 6 & 6 & no & $-0.277443776$ & $1.66\,10^{-1}$ &
+      $-0.04963$ & $-0.07270$ & $(1.222,4.088)$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Critical warning about the Heisenberg VUMPS rows.}
+The present one-site fixed-point update enters an undamped two-cycle and
+reaches the iteration limit.  The $D=4$ transfer fixed point is nonpositive,
+which produces unphysical observables.  These rows are failure diagnostics,
+not variational MPS estimates.  A two-site unit cell and/or a damped mixed
+update is needed before using this solver as a Heisenberg baseline.
+
+\subsection{What the tests establish}
+
+The focused tests are deliberately layered:
+\begin{enumerate}
+  \item exact equality of periodic LETTA and both sparse MPS embeddings;
+  \item state preservation, sector isometries, and blockwise center
+        identities after conditional canonicalization;
+  \item horizontality and strict descent of the conditional direction;
+  \item equality of conditional residual/rank with the dense Gram oracle;
+  \item gauge invariance of amplitudes, energy, gradient annihilation, and
+        tangent residual;
+  \item analytic-gradient agreement with real and complex finite
+        differences;
+  \item rejection of noninjective states and numerically invalid canonical
+        retractions;
+  \item explicit proof by monkeypatch that the default solver does not build
+        the dense tangent Gram matrix;
+  \item TFIM convergence, observable references, benchmark serialization,
+        VUMPS environments, effective-Hamiltonian Hermiticity and covariance,
+        and matrix-free branches.
+\end{enumerate}
+These tests do not prove global convergence, nor do they make a failed
+Heisenberg fixed-point iteration physically valid.  They establish the
+algebraic invariants and local derivative/update contracts implemented by the
+code.
+
+\section{VULETTA versus VUMPS: exact correspondences and real differences}
+\label{sec:comparison}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Conceptual map between the current implementations.}
+  \label{tab:method-map}
+  \small
+  \begin{tabular}{@{}p{0.20\linewidth}p{0.35\linewidth}p{0.35\linewidth}@{}}
+    \toprule
+    Concept & VULETTA & VUMPS \\
+    \midrule
+    Variational tensor
+      & $T^{p,q}\in\CC^{D\times D}$
+      & $A^s\in\CC^{\chi\times\chi}$ unrestricted \\
+    Physical amplitude
+      & $\Tr\prod_n T^{s_n,s_{n+1}}$
+      & $\Tr\prod_n A^{s_n}$ \\
+    Contraction tensor
+      & exact sparse embedding $B^s$ of bond $dD$
+      & the optimized $A^s$ itself \\
+    Gauge
+      & $T^{p,q}\mapsto G_p^{-1}T^{p,q}G_q$
+      & $A^s\mapsto G^{-1}A^sG$ \\
+    Canonical tensors
+      & $T_L^{p,q},T_R^{p,q},T_C^{p,q},C_p$
+      & $A_L^s,A_R^s,A_C^s,C$ \\
+    Isometry
+      & one equation for every conditioned sector
+      & one left and one right equation \\
+    Optimization
+      & analytic energy gradient, horizontal projection, metric whitening,
+        Armijo retraction
+      & center-site and center-bond ground-state eigenproblems, polar matching \\
+    Stationarity
+      & tangent residual plus canonical residual
+      & canonical-consistency plus fixed-point-change residual \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{The gauge condition really is the MPS condition, but conditioned}
+
+Substituting the exact right-copy embedding into an ordinary MPS gauge shows
+why the sector gauge is the correct one.  Define the block-diagonal enlarged
+matrix
+\begin{equation}
+  \mathbb G_{(\alpha,p),(\beta,q)}
+  =
+  \delta_{pq}(G_p)_{\alpha\beta}.
+  \label{eq:enlarged-block-gauge}
+\end{equation}
+Then
+\begin{equation}
+  B^s(T')=\mathbb G^{-1}B^s(T)\mathbb G
+  \label{eq:embedding-gauge-equivariance}
+\end{equation}
+holds exactly when $T'^{p,q}=G_p^{-1}T^{p,q}G_q$.  The conditional gauge is
+therefore not an analogy added after the fact; it is the restriction of the
+ordinary MPS virtual similarity transform to block-diagonal transformations
+that preserve the sparse LETTA embedding.
+
+What must \emph{not} be done is to allow a general
+$\mathbb G\in\operatorname{GL}(dD,\CC)$.  A generic enlarged transformation
+mixes the physical-copy sectors and destroys
+$B^s_{(\alpha,p),(\beta,q)}=\delta_{q,s}T^{p,s}_{\alpha\beta}$.  Such a gauge
+is legal for the represented MPS but leaves the structured LETTA coordinate
+chart.
+
+\subsection{Parameter and tangent counts}
+
+At LETTA bond $D$,
+\begin{align}
+  N_T&=d^2D^2
+  &&\text{complex stored tensor entries},
+  \label{eq:letta-storage-count-comparison}\\
+  \chi_{\mathrm{transfer}}&=dD,
+  \label{eq:letta-transfer-bond}\\
+  N_{\mathrm{tan}}&=d(d-1)D^2
+  &&\text{generic complex horizontal coordinates}.
+  \label{eq:letta-tangent-count}
+\end{align}
+An ordinary MPS of nominal bond $D$ has
+\begin{equation}
+  N_A=dD^2,
+  \qquad
+  N_{\mathrm{tan,MPS}}=(d-1)D^2
+  \label{eq:mps-counts-same-D}
+\end{equation}
+after quotienting its ordinary gauge and scale.  Hence at the same nominal
+$D$, LETTA has $d$ times as many stored entries and $d$ times as many generic
+tangent coordinates, while its transfer bond is also $d$ times larger.
+
+At the fairer comparison of equal transfer bond $\chi=dD$,
+\begin{align}
+  N_T&=\chi^2,
+  &
+  N_A&=d\chi^2,
+  \label{eq:equal-transfer-storage}\\
+  N_{\mathrm{tan}}^{\mathrm{LETTA}}
+    &=\frac{d-1}{d}\chi^2,
+  &
+  N_{\mathrm{tan}}^{\mathrm{MPS}}
+    &=(d-1)\chi^2.
+  \label{eq:equal-transfer-tangent}
+\end{align}
+Thus the structured family uses a factor $1/d$ of the unrestricted MPS
+storage and generic tangent dimension at equal contraction bond.  This
+compression is also an expressivity restriction: VULETTA cannot in general
+reach every MPS of bond $dD$.
+
+\subsection{Why VULETTA does not simply call VUMPS}
+
+VUMPS solves an effective ground-state equation in the full one-site MPS
+manifold.  A lowest eigenvector of Eq.~\eqref{eq:vumps-center-eigenproblem}
+will generally violate the sparse-copy constraint of
+Eq.~\eqref{eq:right-copy-embedding}.  Projecting that eigenvector back to
+$T^{p,q}$ would not preserve the variational optimality of the VUMPS step and
+would require a separate nonlinear projection.  The present VULETTA solver
+instead differentiates the energy \emph{within} the LETTA manifold and
+constructs a descent in its quotient tangent space.
+
+\section{Computational cost and current scaling bottlenecks}
+\label{sec:complexity}
+
+\subsection{VULETTA}
+
+Let $\chi=dD$.  The current thermodynamic contraction builds a dense transfer
+matrix acting on $\chi\times\chi$ matrices:
+\begin{equation}
+  \mathbf E_A\in\CC^{\chi^2\times\chi^2}.
+  \label{eq:dense-transfer-shape}
+\end{equation}
+Materializing it costs
+\begin{equation}
+  O(\chi^4)\ \text{memory},
+  \label{eq:dense-transfer-memory}
+\end{equation}
+and a generic dense eigendecomposition or inverse costs
+\begin{equation}
+  O((\chi^2)^3)=O(\chi^6)
+  \ \text{time}.
+  \label{eq:dense-transfer-time}
+\end{equation}
+The analytic gradient loops over all $d^2D^2$ structured parameters and two
+real directions for a complex tensor, reusing dense transfer-response
+objects.  The conditional tangent construction itself is cheaper: $d$
+sector QR decompositions and eigendecompositions of $D\times D$ metric blocks.
+
+Consequently, the default method removes the catastrophic
+$O(N_T^2)$ storage of the dense parameter Gram matrix, but it does
+\emph{not} yet remove the dense $\chi^2\times\chi^2$ transfer bottleneck.
+Exploiting the delta structure in $B^s$ and using matrix-free fixed-point and
+reduced-resolvent solvers is the natural next scaling improvement.
+
+\subsection{VUMPS}
+
+VUMPS uses transfer and environment spaces of vector dimension $\chi^2$,
+center space of dimension $d\chi^2$, and bond space of dimension $\chi^2$.
+Below the thresholds in Table~\ref{tab:vumps-options}, the current code
+materializes dense environment/effective matrices.  Above threshold it uses
+matrix-free GMRES for environments and a matrix-free Hermitian eigensolver
+for the effective Hamiltonians.  This gives VUMPS a materially better
+large-$\chi$ route than the present dense VULETTA transfer implementation,
+although individual contractions still have the standard MPS polynomial
+cost.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Dominant spaces in the current dense/sparse implementations.}
+  \label{tab:complexity-spaces}
+  \begin{tabular}{@{}lll@{}}
+    \toprule
+    Object & VULETTA dimension & VUMPS dimension \\
+    \midrule
+    transfer vector & $(dD)^2$ & $\chi^2$ \\
+    raw variational entries & $d^2D^2$ & $d\chi^2$ \\
+    generic quotient tangent & $d(d-1)D^2$ & $(d-1)\chi^2$ \\
+    center-site eigenproblem & not used & $d\chi^2$ \\
+    center-bond eigenproblem & not used & $\chi^2$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{The VUMPS implementation used for comparison}
+\label{sec:vumps}
+
+\subsection{Ordinary one-site uniform MPS and its gauge}
+
+The neighboring module \path{pyqed/_vumps} optimizes an unrestricted one-site
+uniform MPS tensor
+\begin{equation}
+  A=\{A^s\}_{s=0}^{d-1},
+  \qquad A^s\in\CC^{\chi\times\chi},
+  \label{eq:ordinary-mps-tensor}
+\end{equation}
+with periodic amplitude
+\begin{equation}
+  \Psi_A(s_1,\ldots,s_N)
+  =
+  \Tr\!\left(A^{s_1}A^{s_2}\cdots A^{s_N}\right).
+  \label{eq:ordinary-mps-amplitude}
+\end{equation}
+Its familiar gauge freedom is
+\begin{equation}
+  A^s\longmapsto G^{-1}A^sG,
+  \qquad G\in\operatorname{GL}(\chi,\CC).
+  \label{eq:ordinary-mps-gauge}
+\end{equation}
+Equation~\eqref{eq:letta-gauge} is precisely the conditional version of this
+MPS gauge: the single $G$ is replaced by a family $\{G_p\}$ attached to the
+physical label carried by the enlarged virtual leg.
+
+The MPS transfer actions in \code{state.py} are
+\begin{align}
+  \mathcal T_R^A(X)&=\sum_s A^sX A^{s\dagger},
+  \label{eq:vumps-right-transfer}\\
+  \mathcal T_L^A(X)&=\sum_s A^{s\dagger}X A^s.
+  \label{eq:vumps-left-transfer}
+\end{align}
+These are the same two maps as $\E_A$ and $\E_A^\dagger$ in
+Eq.~\eqref{eq:transfer-maps}.
+
+\subsection{Mixed-canonical MPS form}
+
+The \code{CanonicalMPS} container stores $A_L$, $A_R$, a center matrix $C$,
+and optionally an independently optimized center tensor $A_C$.  At a fixed
+point they obey
+\begin{equation}
+  A_C^s=A_L^sC=CA_R^s
+  \qquad\text{for every }s,
+  \label{eq:vumps-center-relation}
+\end{equation}
+together with
+\begin{align}
+  \sum_s A_L^{s\dagger}A_L^s&=\Id,
+  \label{eq:vumps-left-isometry}\\
+  \sum_s A_R^sA_R^{s\dagger}&=\Id,
+  \label{eq:vumps-right-isometry}\\
+  \norm{C}_F&=1.
+  \label{eq:vumps-center-normalization}
+\end{align}
+The two bond density matrices are
+\begin{equation}
+  \rho_L=\frac{CC^\dagger}{\Tr(CC^\dagger)},
+  \qquad
+  \rho_R=\frac{C^\dagger C}{\Tr(C^\dagger C)}.
+  \label{eq:vumps-bond-densities}
+\end{equation}
+
+The routine \code{canonicalize} begins with dominant left and right fixed
+points $l,r$ of a raw $A$.  After dividing $A$ by the square root of its
+transfer radius, it computes positive roots and forms
+\begin{align}
+  A_L^s&=l^{1/2}A_0^s l^{-1/2},
+  \label{eq:vumps-canonical-left}\\
+  A_R^s&=r^{-1/2}A_0^s r^{1/2},
+  \label{eq:vumps-canonical-right}\\
+  C&=\frac{l^{1/2}r^{1/2}}
+          {\norm{l^{1/2}r^{1/2}}_F}.
+  \label{eq:vumps-canonical-center}
+\end{align}
+These are the unconditioned analogues of
+Eqs.~\eqref{eq:TL}--\eqref{eq:conditional-centers}.
+Both implementations reject substantially negative or rank-deficient fixed
+points rather than silently pseudoinverting a noninjective state.
+
+\subsection{Observables in the VUMPS representation}
+
+The code treats $A_L$ as the definite physical uMPS representative.  If
+$\rho$ is the normalized right fixed point of $\mathcal T_R^{A_L}$, then
+\begin{equation}
+  \langle o\rangle
+  =
+  \sum_{s,u}o_{su}
+  \Tr\!\left(
+    \rho\,A_L^{s\dagger}A_L^u
+  \right)
+  \label{eq:vumps-one-site-observable}
+\end{equation}
+and
+\begin{equation}
+  e
+  =
+  \sum_{s,t,u,v}h_{stuv}
+  \Tr\!\left[
+    \rho\,
+    A_L^{t\dagger}A_L^{s\dagger}A_L^uA_L^v
+  \right].
+  \label{eq:vumps-energy}
+\end{equation}
+During an unfinished VUMPS iteration the stored $A_C$ can be a provisional
+eigensolver output not exactly equal to $A_LC$ or $CA_R$.  The energy and
+observables deliberately use $A_L$, not that provisional center.
+
+\subsection{Semi-infinite Hamiltonian environments}
+
+Define the uncentered left and right two-site source matrices
+\begin{align}
+  S_L
+  &=
+  \sum_{s,t,u,v}h_{stuv}
+  A_L^{t\dagger}A_L^{s\dagger}A_L^uA_L^v,
+  \label{eq:vumps-left-source}\\
+  S_R
+  &=
+  \sum_{s,t,u,v}h_{stuv}
+  A_R^uA_R^vA_R^{t\dagger}A_R^{s\dagger}.
+  \label{eq:vumps-right-source}
+\end{align}
+The source builders Hermitize these matrices.  The energy density is
+$e=\Tr(\rho_L S_L)$ on the definite $A_L$ state, and the environment builder
+first subtracts $e\Id$.
+
+For either orientation, let $\mathcal T$ be the relevant canonical transfer
+map and let
+\begin{equation}
+  \Phi_\rho(X)=\Tr(\rho X).
+  \label{eq:rho-functional}
+\end{equation}
+The singular identity component of $I-\mathcal T$ is regularized by solving
+\begin{equation}
+  \left[
+    I-\mathcal T+|\Id)\Phi_\rho
+  \right]H
+  =
+  S-\Id\,\Phi_\rho(S).
+  \label{eq:vumps-environment-equation}
+\end{equation}
+After solving, the implementation enforces
+\begin{equation}
+  H\leftarrow\tfrac12(H+H^\dagger),
+  \qquad
+  H\leftarrow H-\Id\,\Phi_\rho(H).
+  \label{eq:vumps-environment-gauge}
+\end{equation}
+For vectorized dimension $\chi^2\leq256$ it explicitly builds and solves the
+dense linear system.  Above that threshold it applies the same operator
+matrix-free with GMRES.  The two solutions are denoted $H_L$ and $H_R$.
+
+\subsection{Effective center-site Hamiltonian}
+
+For a trial center tensor $X=\{X^x\}$, the implemented linear action is
+\begin{align}
+  (\mathcal H_{A_C}X)^x
+  ={}&
+  H_LX^x+X^xH_R
+  \notag\\
+  &+\sum_{s,u,v}
+    h_{s x u v}\,
+    A_L^{s\dagger}A_L^uX^v
+  \notag\\
+  &+\sum_{t,u,v}
+    h_{x t u v}\,
+    X^uA_R^vA_R^{t\dagger}.
+  \label{eq:vumps-effective-center}
+\end{align}
+The first local term places $X$ on the right site of the interaction; the
+second places it on the left site.  The new center is the normalized lowest
+eigenvector,
+\begin{equation}
+  A_C^{\mathrm{new}}
+  =
+  \argmin_{\norm{X}_F=1}
+  \langle X,\mathcal H_{A_C}X\rangle_F.
+  \label{eq:vumps-center-eigenproblem}
+\end{equation}
+
+\subsection{Effective center-bond Hamiltonian}
+
+For a trial bond matrix $Y$, the action is
+\begin{align}
+  \mathcal H_C(Y)
+  ={}&
+  H_LY+YH_R
+  \notag\\
+  &+\sum_{s,t,u,v}h_{stuv}
+  A_L^{s\dagger}A_L^u
+  Y
+  A_R^vA_R^{t\dagger},
+  \label{eq:vumps-effective-bond}
+\end{align}
+and
+\begin{equation}
+  C^{\mathrm{new}}
+  =
+  \argmin_{\norm{Y}_F=1}
+  \langle Y,\mathcal H_C(Y)\rangle_F.
+  \label{eq:vumps-bond-eigenproblem}
+\end{equation}
+For a vector space of dimension at most
+\code{dense_eigensolver_threshold} $=256$, the code materializes the
+Hermitian matrix and calls a dense eigensolver.  Otherwise it uses a
+matrix-free smallest-algebraic-eigenvalue solve.  Each eigenvector is phase
+aligned with the previous center before normalization.
+
+\subsection{Polar gauge matching}
+
+The two eigenproblems optimize $A_C$ and $C$ independently, so the solver must
+recover isometric $A_L$ and $A_R$.  Let
+\begin{align}
+  A_{C,L}&=\reshape(A_C,(d\chi)\times\chi),
+  \label{eq:left-center-reshape}\\
+  A_{C,R}&=\reshape(A_C,\chi\times(d\chi)),
+  \label{eq:right-center-reshape}
+\end{align}
+and let
+\begin{equation}
+  \operatorname{polar}(M)=UV^\dagger
+  \quad\text{when}\quad M=U\Sigma V^\dagger .
+  \label{eq:polar-map}
+\end{equation}
+The implemented gauge match is
+\begin{align}
+  A_L&=
+  \reshape\!\left[
+    \operatorname{polar}(A_{C,L})
+    \operatorname{polar}(C)^\dagger
+  \right],
+  \label{eq:vumps-polar-left}\\
+  A_R&=
+  \reshape\!\left[
+    \operatorname{polar}(C)^\dagger
+    \operatorname{polar}(A_{C,R})
+  \right].
+  \label{eq:vumps-polar-right}
+\end{align}
+This is not an energy line search.  It is a fixed-point map built from the
+two effective eigenvectors.
+
+\subsection{VUMPS residuals and iteration}
+
+After gauge matching, define
+\begin{align}
+  \epsilon_{\mathrm{can}}^{\mathrm{V}}
+  &=
+  \max\left\{
+    \norm{A_C-A_LC}_F,\,
+    \norm{A_C-CA_R}_F
+  \right\},
+  \label{eq:vumps-canonical-residual}\\
+  \epsilon_{\mathrm{fp}}^{\mathrm{V}}
+  &=
+  \max\left\{
+    \norm{A_C^{\mathrm{new}}-A_C^{\mathrm{old}}}_F,\,
+    \norm{C^{\mathrm{new}}-C^{\mathrm{old}}}_F
+  \right\},
+  \label{eq:vumps-fixedpoint-residual}\\
+  \epsilon_{\mathrm{VUMPS}}
+  &=
+  \max\left\{
+    \epsilon_{\mathrm{can}}^{\mathrm{V}},
+    \epsilon_{\mathrm{fp}}^{\mathrm{V}}
+  \right\}.
+  \label{eq:vumps-total-residual}
+\end{align}
+The current one-site VUMPS loop repeats environment construction, the two
+lowest-eigenpair solves, polar matching, and residual evaluation until
+$\epsilon_{\mathrm{VUMPS}}$ reaches the requested tolerance.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Defaults in \code{VUMPSOptions}.}
+  \label{tab:vumps-options}
+  \begin{tabular}{@{}lll@{}}
+    \toprule
+    Option & Default & Meaning \\
+    \midrule
+    \code{max_iterations} & $100$ & fixed-point iterations \\
+    \code{tolerance} & $10^{-8}$ & total residual target \\
+    \code{eigensolver_tolerance} & $10^{-10}$ & iterative eigenproblem target \\
+    \code{dense_eigensolver_threshold} & $256$ & vector-space cutoff \\
+    \code{environment_tolerance} & $10^{-12}$ & GMRES target \\
+    \code{dense_environment_threshold} & $256$ & vectorized bond-space cutoff \\
+    \code{verbosity} & $0$ & progress printing \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Final synthesis}
+
+The two solvers share the same transfer-fixed-point and mixed-canonical
+language, but operate on different manifolds.  VUMPS uses the full MPS gauge
+and unrestricted center eigenvectors.  VULETTA preserves the nearest-neighbor
+leg tying by restricting that MPS gauge to the block-diagonal family
+$\{G_p\}$, and it optimizes only the resulting horizontal structured tangent.
+This is the precise sense in which the current implementation now uses the
+MPS-like gauge condition fully.
+
+\end{document}

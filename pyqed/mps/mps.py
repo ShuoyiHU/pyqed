@@ -29090,6 +29090,7 @@ class HamiltonianMultiply(sparse.linalg.LinearOperator):
         self.req_shape = (self.chi_L, self.d_in, self.chi_R)
         self.size = self.chi_L * self.d_in * self.chi_R
         self.shape = (self.size, self.size)
+        super().__init__(dtype=self.dtype, shape=self.shape)
 
     def _matvec(self, v):
         # 1. Reshape vector to tensor A [Left, Phys, Right]

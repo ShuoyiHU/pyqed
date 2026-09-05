@@ -1,0 +1,71 @@
+\contentsline {section}{\numberline {1}Purpose, scope, and the most important distinction}{4}{section.1}%
+\contentsline {section}{\numberline {2}Notation ledger and array conventions}{4}{section.2}%
+\contentsline {section}{\numberline {3}The uniform nearest-neighbor LETTA state}{5}{section.3}%
+\contentsline {subsection}{\numberline {3.1}Finite periodic amplitude}{5}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}Two exact structured-MPS embeddings}{5}{subsection.3.2}%
+\contentsline {paragraph}{Crucial implementation boundary.}{6}{section*.2}%
+\contentsline {section}{\numberline {4}Thermodynamic transfer calculus for LETTA}{6}{section.4}%
+\contentsline {subsection}{\numberline {4.1}Transfer maps and normalization}{6}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}One-site and two-site observables}{6}{subsection.4.2}%
+\contentsline {section}{\numberline {5}Exact physical-sector-dependent LETTA gauge}{7}{section.5}%
+\contentsline {subsection}{\numberline {5.1}Gauge group and telescoping invariance}{7}{subsection.5.1}%
+\contentsline {subsection}{\numberline {5.2}Why the transfer fixed points split into sectors}{7}{subsection.5.2}%
+\contentsline {subsection}{\numberline {5.3}Conditional mixed-canonical construction}{8}{subsection.5.3}%
+\contentsline {subsection}{\numberline {5.4}Canonical validation and numerical boundary}{8}{subsection.5.4}%
+\contentsline {section}{\numberline {6}Analytic transfer-response gradient}{9}{section.6}%
+\contentsline {subsection}{\numberline {6.1}Transfer variations}{9}{subsection.6.1}%
+\contentsline {subsection}{\numberline {6.2}Removing the dominant transfer mode}{9}{subsection.6.2}%
+\contentsline {subsection}{\numberline {6.3}Normalization derivative for a raw LETTA coordinate}{9}{subsection.6.3}%
+\contentsline {subsection}{\numberline {6.4}Directional energy derivative}{10}{subsection.6.4}%
+\contentsline {subsection}{\numberline {6.5}Assembly of the tensor gradient}{10}{subsection.6.5}%
+\contentsline {paragraph}{Meaning of an analytic gradient in this code.}{10}{section*.3}%
+\contentsline {section}{\numberline {7}Gauge-fixed conditional tangent space}{10}{section.7}%
+\contentsline {subsection}{\numberline {7.1}Left-horizontal condition}{10}{subsection.7.1}%
+\contentsline {subsection}{\numberline {7.2}Right metric and whitened coordinates}{11}{subsection.7.2}%
+\contentsline {subsection}{\numberline {7.3}Gradient pullback, descent, and residual}{11}{subsection.7.3}%
+\contentsline {subsection}{\numberline {7.4}Why this removes scale, phase, and gauge}{12}{subsection.7.4}%
+\contentsline {section}{\numberline {8}Dense connected tangent metric: legacy path and oracle}{12}{section.8}%
+\contentsline {section}{\numberline {9}The default VULETTA optimization algorithm}{12}{section.9}%
+\contentsline {subsection}{\numberline {9.1}Inputs, normalization, and the three update paths}{12}{subsection.9.1}%
+\contentsline {subsection}{\numberline {9.2}One conditional-canonical iteration}{13}{subsection.9.2}%
+\contentsline {paragraph}{1. Evaluate the physical objective and its tensor gradient.}{13}{section*.4}%
+\contentsline {paragraph}{2. Pull the gradient to horizontal conditional coordinates.}{13}{section*.5}%
+\contentsline {paragraph}{3. Check both kinds of stationarity.}{13}{section*.6}%
+\contentsline {paragraph}{4. Cap the whitened-coordinate step.}{13}{section*.7}%
+\contentsline {paragraph}{5. Armijo line search with canonical retraction.}{14}{section*.8}%
+\contentsline {subsection}{\numberline {9.3}Compact pseudocode}{14}{subsection.9.3}%
+\contentsline {subsection}{\numberline {9.4}Default numerical parameters}{14}{subsection.9.4}%
+\contentsline {section}{\numberline {10}Source-code map: where each equation lives}{14}{section.10}%
+\contentsline {subsection}{\numberline {10.1}Array axes and mathematical indices}{15}{subsection.10.1}%
+\contentsline {section}{\numberline {11}Numerical assumptions, limitations, and failure meanings}{16}{section.11}%
+\contentsline {section}{\numberline {12}Practical reading and debugging checklist}{17}{section.12}%
+\contentsline {section}{\numberline {13}Derivation of gauge annihilation by the exact gradient}{17}{section.13}%
+\contentsline {section}{\numberline {14}Why the reduced resolvent has the regularized-inverse form}{17}{section.14}%
+\contentsline {section}{\numberline {15}Commands to reproduce the focused checks and benchmark}{18}{section.15}%
+\contentsline {section}{\numberline {16}Compact VULETTA implementation summary}{18}{section.16}%
+\contentsline {section}{\numberline {17}Remaining solver diagnostics and continuation}{18}{section.17}%
+\contentsline {subsection}{\numberline {17.1}How to interpret the result object}{18}{subsection.17.1}%
+\contentsline {subsection}{\numberline {17.2}Bond-dimension continuation}{19}{subsection.17.2}%
+\contentsline {section}{\numberline {18}Models, reference formulas, and benchmark evidence}{19}{section.18}%
+\contentsline {subsection}{\numberline {18.1}Transverse-field Ising model}{19}{subsection.18.1}%
+\contentsline {subsection}{\numberline {18.2}Antiferromagnetic spin-1/2 Heisenberg chain}{19}{subsection.18.2}%
+\contentsline {subsection}{\numberline {18.3}Recorded deterministic benchmark snapshot}{20}{subsection.18.3}%
+\contentsline {paragraph}{Critical warning about the Heisenberg VUMPS rows.}{20}{section*.9}%
+\contentsline {subsection}{\numberline {18.4}What the tests establish}{20}{subsection.18.4}%
+\contentsline {section}{\numberline {19}VULETTA versus VUMPS: exact correspondences and real differences}{21}{section.19}%
+\contentsline {subsection}{\numberline {19.1}The gauge condition really is the MPS condition, but conditioned}{21}{subsection.19.1}%
+\contentsline {subsection}{\numberline {19.2}Parameter and tangent counts}{22}{subsection.19.2}%
+\contentsline {subsection}{\numberline {19.3}Why VULETTA does not simply call VUMPS}{22}{subsection.19.3}%
+\contentsline {section}{\numberline {20}Computational cost and current scaling bottlenecks}{22}{section.20}%
+\contentsline {subsection}{\numberline {20.1}VULETTA}{22}{subsection.20.1}%
+\contentsline {subsection}{\numberline {20.2}VUMPS}{23}{subsection.20.2}%
+\contentsline {section}{\numberline {21}The VUMPS implementation used for comparison}{23}{section.21}%
+\contentsline {subsection}{\numberline {21.1}Ordinary one-site uniform MPS and its gauge}{23}{subsection.21.1}%
+\contentsline {subsection}{\numberline {21.2}Mixed-canonical MPS form}{23}{subsection.21.2}%
+\contentsline {subsection}{\numberline {21.3}Observables in the VUMPS representation}{24}{subsection.21.3}%
+\contentsline {subsection}{\numberline {21.4}Semi-infinite Hamiltonian environments}{24}{subsection.21.4}%
+\contentsline {subsection}{\numberline {21.5}Effective center-site Hamiltonian}{25}{subsection.21.5}%
+\contentsline {subsection}{\numberline {21.6}Effective center-bond Hamiltonian}{25}{subsection.21.6}%
+\contentsline {subsection}{\numberline {21.7}Polar gauge matching}{25}{subsection.21.7}%
+\contentsline {subsection}{\numberline {21.8}VUMPS residuals and iteration}{26}{subsection.21.8}%
+\contentsline {section}{\numberline {22}Final synthesis}{26}{section.22}%

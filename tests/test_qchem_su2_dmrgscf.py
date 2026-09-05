@@ -73,6 +73,38 @@ def test_state_averaged_su2_dmrgscf_requires_final_inner_convergence():
     assert mc.converged is False
 
 
+def test_dmrgscf_macro_callback_receives_each_accepted_macro_state():
+    mf = _h2_rhf()
+    mc = DMRGSCF(
+        mf,
+        ncas=2,
+        nelecas=2,
+        D=8,
+        max_cycles=1,
+        symmetry="su2",
+        init_guess="hf",
+        verbose=0,
+    )
+    events = []
+
+    mc.run(
+        nstates=1,
+        nsweeps=2,
+        require_conv=False,
+        mixer_zero_block_noise_scale=0.0,
+        macro_callback=events.append,
+    )
+
+    assert len(events) == 1
+    event = events[0]
+    assert event["macro"] == 1
+    assert event["accepted"] is True
+    assert event["casci"].dmrg is not None
+    assert event["mo_coeff"].shape == mc.mo_coeff.shape
+    assert event["energy"] == pytest.approx(event["casci"].e_tot)
+    assert len(event["energy_history"]) == 2
+
+
 def test_qchem_su2_sweep_measure_prefers_objective_residual():
     sweep_result = {
         "updates": [

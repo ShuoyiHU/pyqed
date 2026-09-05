@@ -124,6 +124,7 @@ class DMRGSCF(QCDMRG):
 
     def run(self, nstates=1, weights = None, require_conv=True, mo_coeff=None, **kwargs):
         mf = self.mf
+        macro_callback = kwargs.pop("macro_callback", None)
         rej = kwargs.pop("reject_macro_energy", True)
         rise = kwargs.pop("macro_energy_rise_tol", 1.0e-8)
         rmax = kwargs.pop("macro_reject_max", 8)
@@ -330,6 +331,7 @@ class DMRGSCF(QCDMRG):
                 macro_trust_grow=tr_up,
                 warm_start_dmrg=warm,
                 raise_on_nonconvergence=require_conv,
+                macro_callback=macro_callback,
                 **kwargs,
             )
 
@@ -361,6 +363,7 @@ class DMRGSCF(QCDMRG):
                 macro_trust_grow=tr_up,
                 warm_start_dmrg=warm,
                 raise_on_nonconvergence=require_conv,
+                macro_callback=macro_callback,
                 **kwargs,
             )
 

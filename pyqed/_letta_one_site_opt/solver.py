@@ -37,6 +37,15 @@ class LETTADMROptions:
     bond_dimension_schedule: tuple[int, ...] | None = None
     bond_schedule_sweeps: tuple[int, ...] | None = None
     bond_expansion_noise: float = 1.0e-3
+    cbe_enabled: bool = False
+    cbe_selector: str = "exact"
+    cbe_expansion_dimension: int = 1
+    cbe_preselection_dimension: int | None = None
+    cbe_selection_tolerance: float = 1.0e-10
+    cbe_refinement_max_iterations: int = 4
+    cbe_projection_tolerance: float = 1.0e-10
+    cbe_projection_max_iterations: int = 100
+    cbe_baseline_guard_fraction: float = 0.2
     verbosity: int = 0
 
 
@@ -50,6 +59,34 @@ class LETTASiteUpdate:
     residual_norm: float
     accepted: bool
     full_local_dimension: int | None = None
+    cbe_expansion_dimension: int = 0
+    cbe_selector: str | None = None
+    cbe_preselection_dimension: int | None = None
+    cbe_pair_dimension: int | None = None
+    cbe_pair_metric_rank: int | None = None
+    cbe_tangent_rank: int | None = None
+    cbe_projection_iterations: int = 0
+    cbe_projection_converged: bool | None = None
+    cbe_selector_pair_action_count: int = 0
+    cbe_selector_pair_metric_count: int | None = None
+    cbe_selector_merged_pair_count: int | None = None
+    cbe_preselection_output_size: int | None = None
+    cbe_final_output_size: int | None = None
+    cbe_materialized_pair_tensor: bool | None = None
+    cbe_materialized_pair_metric: bool | None = None
+    cbe_materialized_tangent_jacobian: bool | None = None
+    cbe_trim_method: str | None = None
+    cbe_missing_norm: float | None = None
+    cbe_captured_weight: float | None = None
+    cbe_selection_loss: float | None = None
+    cbe_trim_loss: float | None = None
+    cbe_old_energy: float | None = None
+    cbe_expanded_energy: float | None = None
+    cbe_trimmed_energy: float | None = None
+    cbe_baseline_energy: float | None = None
+    cbe_baseline_allowance: float | None = None
+    cbe_baseline_selected: bool = False
+    cbe_fallback: bool = False
 
 
 @dataclass(frozen=True)
@@ -521,6 +558,8 @@ def _update_from_cached_environments(
     metric_left,
     metric_right,
     options,
+    *,
+    effective_metric=None,
 ):
     compression_error = max(
         hamiltonian_cache.compression_errors
@@ -534,16 +573,19 @@ def _update_from_cached_environments(
             min(0.1, 1.0e-2 * compression_error),
         )
         local_options = replace(options, metric_tolerance=adaptive_tolerance)
-    effective_metric = metric_cache.effective_metric(
-        metric_left,
-        metric_right,
-        site,
-    )
+    if effective_metric is None:
+        effective_metric = metric_cache.effective_metric(
+            metric_left,
+            metric_right,
+            site,
+        )
     indices = _active_local_indices(state, site)
     active_dimension = (
         state.tensors[site].size if indices is None else int(indices.size)
     )
-    if options.matrix_free and active_dimension > options.dense_solver_threshold:
+    if options.matrix_free and (
+        options.cbe_enabled or active_dimension > options.dense_solver_threshold
+    ):
         if indices is None:
             action = lambda vector: hamiltonian_cache.effective_action(
                 hamiltonian_left,
@@ -720,6 +762,18 @@ def _cached_mpo_sweep(
     direction,
     options,
 ):
+    if options.cbe_enabled:
+        from .cbe import cbe_cached_mpo_sweep
+
+        return cbe_cached_mpo_sweep(
+            state,
+            hamiltonian_cache,
+            metric_cache,
+            hamiltonian_environments,
+            metric_environments,
+            direction,
+            options,
+        )
     if options.environment_granularity == "column":
         return _cached_mpo_column_sweep(
             state,
@@ -1093,12 +1147,50 @@ def letta_dmrg(
         raise ValueError("boundary_cutoff must be nonnegative.")
     if options.bond_expansion_noise < 0.0:
         raise ValueError("bond_expansion_noise must be nonnegative.")
+    if options.cbe_expansion_dimension <= 0:
+        raise ValueError("cbe_expansion_dimension must be positive.")
+    if options.cbe_selector not in {"exact", "shrewd"}:
+        raise ValueError("cbe_selector must be 'exact' or 'shrewd'.")
+    if (
+        options.cbe_preselection_dimension is not None
+        and options.cbe_preselection_dimension <= 0
+    ):
+        raise ValueError(
+            "cbe_preselection_dimension must be positive when provided."
+        )
+    if (
+        options.cbe_preselection_dimension is not None
+        and options.cbe_preselection_dimension
+        < options.cbe_expansion_dimension
+    ):
+        raise ValueError(
+            "cbe_preselection_dimension must be at least "
+            "cbe_expansion_dimension."
+        )
+    if options.cbe_selection_tolerance <= 0.0:
+        raise ValueError("cbe_selection_tolerance must be positive.")
+    if options.cbe_refinement_max_iterations <= 0:
+        raise ValueError("cbe_refinement_max_iterations must be positive.")
+    if options.cbe_projection_tolerance <= 0.0:
+        raise ValueError("cbe_projection_tolerance must be positive.")
+    if options.cbe_projection_max_iterations <= 0:
+        raise ValueError("cbe_projection_max_iterations must be positive.")
+    if not 0.0 <= options.cbe_baseline_guard_fraction <= 1.0:
+        raise ValueError(
+            "cbe_baseline_guard_fraction must be between zero and one."
+        )
+    if options.cbe_enabled and options.environment_granularity != "site":
+        raise ValueError("LETTA-CBE requires site-granularity environments.")
+    if options.cbe_enabled and options.boundary_bond_dim is not None:
+        raise ValueError("LETTA-CBE requires exact boundary environments.")
     from .reduced_state import ReducedLatticeLETTA
     from .reduced_symmetry import ReducedSymmetry
 
     if isinstance(state, ReducedLatticeLETTA) or isinstance(symmetry, ReducedSymmetry):
         from .reduced_solver import reduced_letta_dmrg
 
+        if options.cbe_enabled:
+            raise ValueError("LETTA-CBE does not yet support reduced SU(2) states.")
         if state is None:
             if lattice_shape is None:
                 raise ValueError("lattice_shape is required when reduced state is omitted.")
@@ -1162,6 +1254,10 @@ def letta_dmrg(
             raise ValueError("supplied state and bond_charges do not match.")
         state = state.copy()
     hamiltonian = _validate_hamiltonian(hamiltonian, state)
+    if options.cbe_enabled and not isinstance(hamiltonian, LatticeMPO):
+        raise ValueError("LETTA-CBE currently requires an MPO Hamiltonian.")
+    if options.cbe_enabled and state.symmetry is not None:
+        raise ValueError("LETTA-CBE does not yet support symmetry sectors.")
     nominal_bond_dimension = max(state.bond_dimensions, default=1)
 
     previous_energy = None
@@ -1170,14 +1266,25 @@ def letta_dmrg(
     hamiltonian_environments = None
     metric_environments = None
     if isinstance(hamiltonian, LatticeMPO):
-        hamiltonian_cache = LETTAEnvironmentCache(
+        if options.cbe_enabled:
+            from .._letta_two_site_opt.contractions import (
+                IdentityPairEnvironmentCache,
+                LETTAPairEnvironmentCache,
+            )
+
+            hamiltonian_cache_class = LETTAPairEnvironmentCache
+            metric_cache_class = IdentityPairEnvironmentCache
+        else:
+            hamiltonian_cache_class = LETTAEnvironmentCache
+            metric_cache_class = IdentityEnvironmentCache
+        hamiltonian_cache = hamiltonian_cache_class(
             state,
             hamiltonian,
             use_sparse_mpo=options.use_sparse_mpo,
             boundary_bond_dim=options.boundary_bond_dim,
             boundary_cutoff=options.boundary_cutoff,
         )
-        metric_cache = IdentityEnvironmentCache(
+        metric_cache = metric_cache_class(
             state,
             boundary_bond_dim=options.boundary_bond_dim,
             boundary_cutoff=options.boundary_cutoff,

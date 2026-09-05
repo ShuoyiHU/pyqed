@@ -5469,6 +5469,47 @@ class DMRG(CASCI):
         """
         return self.make_rdm1(state_id, spatial, with_core), self.make_rdm2(state_id, spatial, with_core)
 
+    def make_orbital_rdm12(self, state_id=0, with_core=False):
+        """Return spatial RDMs in the restricted orbital-objective convention.
+
+        The ordinary spin-free 2-RDM is not eightfold symmetric. Only its
+        projection onto the chemist-integral symmetry contributes to a
+        restricted orbital objective. Canonicalizing that active-space block
+        also removes symmetry-null roundoff from manifold line searches.
+        """
+
+        dm1, dm2 = self.make_rdm12(
+            state_id,
+            spatial=True,
+            with_core=with_core,
+        )
+        if not (
+            self.site == "spatial"
+            and self.spatial_site_basis == "fully_reduced"
+        ):
+            return dm1, dm2
+
+        start = int(self.ncore) if with_core else 0
+        stop = start + int(self.ncas)
+        active = np.asarray(dm2[start:stop, start:stop, start:stop, start:stop])
+        permutations = (
+            (0, 1, 2, 3),
+            (1, 0, 2, 3),
+            (0, 1, 3, 2),
+            (1, 0, 3, 2),
+            (2, 3, 0, 1),
+            (2, 3, 1, 0),
+            (3, 2, 0, 1),
+            (3, 2, 1, 0),
+        )
+        projected = sum(
+            np.transpose(active, permutation)
+            for permutation in permutations
+        ) / 8.0
+        dm2 = np.asarray(dm2).copy()
+        dm2[start:stop, start:stop, start:stop, start:stop] = projected
+        return dm1, dm2
+
     def make_local_site_rdm(self, idx=None):
         """
         Calculate the local reduced density matrices for individual, isolated spin-orbitals.

@@ -53,3 +53,6 @@ Scan_Results_Nz_32
 *.fdb_latexmk
 *.fls
 *.tex
+!pyqed/_vuletta/VULETTA_IMPLEMENTATION_NOTES.tex
+.codex_generated
+_local_tests

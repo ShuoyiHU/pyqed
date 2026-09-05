@@ -3,6 +3,66 @@
 This package separates the reusable one-site optimization machinery from
 dimension-specific lattice models.
 
+## Controlled bond expansion
+
+LETTA-CBE is an optional per-site optimization mode.  Its strict `shrewd` path
+first streams cheap Hamiltonian-weighted left and right half environments to
+preselect a small parent space.  Inside that space, the final contraction forms
+the physical residual covector `(H - E N) psi`, raises it with the temporary
+expanded one-site overlap metric, and removes the current one-site tangent in
+that same metric.  The selected basis enlarges the active bond only for the
+next one-site generalized eigensolve.  This expanded eigensolve is the central
+operation: selection changes the variational subspace but does not perturb the
+pre-optimization state.  The optimized bond is returned to its original width
+by fixed-rank ALS in the active one-site LETTA norm, with a streamed scalar
+energy safeguard and ordinary one-site fallback.  Each attempted expansion is
+also compared with an ordinary one-site candidate.  By default, the trimmed
+CBE state may give up at most 20% of the descent achieved by that candidate;
+larger losses select the ordinary update.  Set
+`cbe_baseline_guard_fraction=0.0` for greedy local best-of-two selection or
+`1.0` for the original pre-update-energy guard.
+
+    options = LETTADMROptions(
+        matrix_free=True,
+        cbe_enabled=True,
+        cbe_selector="shrewd",
+        cbe_expansion_dimension=1,
+        # Optional; automatic is min(D + 2 * deltaD, parent sizes).
+        cbe_preselection_dimension=2,
+    )
+    result = letta_dmrg(hamiltonian, state=state, options=options)
+
+The `exact` selector explicitly constructs the pair metric and tangent
+Jacobian and remains the default correctness oracle.  The active `shrewd`
+selector performs opposite-half canonicalization, weighted preselection, and
+metric-projected physical-residual selection using sparse MPO transitions and
+one-site overlap blocks.  Its complete update invokes no pair action, pair
+metric, merged pair tensor, pair Rayleigh quotient, or pair trim.  Random
+bond-expansion noise is not part of either selector.
+
+The deterministic `cbe_scaling` audit profiles the sparse-Hamiltonian
+contraction graphs with `opt_einsum`.  For both sweep directions, those streamed
+contractions have no larger asymptotic exponent than the ordinary one-site
+action in bond dimension, have the same local-physical exponent while the pair
+action has one additional power, and are linear in the number of sparse MPO
+paths.  The physical-residual correction additionally constructs and solves a
+temporary expanded one-site block metric of width `D + p`; it adds one-site
+metric work, but no two-site vector space or physical-dimension exponent.
+Timing is reported only as supporting evidence; contraction shapes and
+operation counts are the proof.
+It currently supports nonsymmetric MPO runs with exact, site-granularity
+boundary environments.  The derivation, diagnostics, and cost comparison are
+in `letta_cbe_theory.tex`.  A reproducible four-way comparison of one-site,
+exact CBE, shrewd CBE, and two-site LETTA is available as the
+`cbe_convergence` benchmark module.
+
+Eight independently click-runnable condensed-model comparisons (Ising, XXZ
+Heisenberg, truncated Bose--Hubbard, and spinful Fermi--Hubbard, each in 1D and
+2D) and a consolidated launcher are documented in
+[`benchmarks/README.md`](benchmarks/README.md).  Every comparison starts all
+five solvers from the same physical state and reports an exact reference when
+the requested Hilbert-space cutoff permits it.
+
 ## Shared core
 
 - `state.py`: finite `LatticeLETTA` representation.
@@ -173,6 +233,7 @@ stored parameter count is already reduced.
 - `_letta_for_3d`: 3D orderings, TFIM builders, LETTA entry points, the MPS
   comparison solver, and 3D examples.
 
-Future two-site optimization should be implemented as a sibling package so
-it can share state/MPO concepts deliberately without coupling its truncation
-rules to the one-site solver.
+Two-site optimization lives in the sibling _letta_two_site_opt package.  The
+exact CBE oracle reuses its shared-physical-axis pair algebra.  The strict
+shrewd path stays in one-site parent spaces, and enabling or disabling CBE does
+not change the legacy one-site path.
