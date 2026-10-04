@@ -91,6 +91,11 @@ class LETTAPairUpdate:
     coupled_refinement_iterations: int = 0
     coupled_refinement_accepted_steps: int = 0
     compression_diagnostics: dict | None = None
+    energy_refinement_diagnostics: dict | None = None
+    recovery_reason: str | None = None
+    fallback: bool = False
+    baseline_energy: float | None = None
+    baseline_selected: bool = False
 
 
 @dataclass(frozen=True)

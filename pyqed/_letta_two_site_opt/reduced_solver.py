@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from operator import index
 
 import numpy as np
@@ -660,17 +660,65 @@ def _retained_bond_sectors(old_bond, retained):
 def _optimize_reduced_pair(
     state, hamiltonian, left_site, direction, bond_dim, options
 ):
-    if not options.reduced_sector_growth:
-        return _optimize_allocated_reduced_pair(
-            state, hamiltonian, left_site, direction, bond_dim, options)
-    # Work on a copy so a rejected split also rolls back the expanded spaces.
-    candidate = _expand_reduced_pair_space(state, left_site, bond_dim)
-    update = _optimize_allocated_reduced_pair(
-        candidate, hamiltonian, left_site, direction, bond_dim, options)
-    if update.accepted:
-        state.tensors = candidate.tensors
-        state.bond_sectors = candidate.bond_sectors
-    return update
+    from .._letta_one_site_opt.reduced_updates import NUMERICAL_ERRORS, one_site_options
+    from .._letta_one_site_opt.reduced_solver import optimize_reduced_site
+    from .solver import LETTAPairUpdate
+    before = _energy(state, hamiltonian, stable=True)
+    try:
+        candidate = (_expand_reduced_pair_space(state, left_site, bond_dim)
+                     if options.reduced_sector_growth else state.copy())
+        update = _optimize_allocated_reduced_pair(
+            candidate, hamiltonian, left_site, direction, bond_dim, options)
+        actual = _energy(candidate, hamiltonian, stable=True)
+        valid = update.accepted and actual <= before+options.energy_increase_tolerance
+        # Compression must not cost the progress of an ordinary one-site step
+        # from the same incumbent. Only compare feasible bond allocations.
+        baseline_error = None
+        if len(state.bond_sectors[left_site]) <= bond_dim:
+            baseline = state.copy()
+            site = left_site if direction == 'lr' else left_site+1
+            try:
+                ordinary = optimize_reduced_site(baseline, hamiltonian, site, one_site_options(options))
+                baseline_energy = _energy(baseline, hamiltonian, stable=True)
+                update = replace(update, baseline_energy=baseline_energy)
+                if ordinary.accepted and (not valid or baseline_energy <= actual):
+                    state.tensors, state.bond_sectors = baseline.tensors, baseline.bond_sectors
+                    return replace(update, energy=baseline_energy, accepted=True, baseline_selected=True)
+            except NUMERICAL_ERRORS as error:
+                baseline_error = f'one-site baseline failed: {type(error).__name__}: {error}'
+        if valid:
+            state.tensors, state.bond_sectors = candidate.tensors, candidate.bond_sectors
+            return replace(update, energy=actual, recovery_reason=baseline_error)
+        return replace(update, energy=before, accepted=False, recovery_reason=baseline_error)
+    except NUMERICAL_ERRORS as error:
+        # The failed candidate owns its allocations and arrays. The incumbent
+        # is still intact when the ordinary one-site fallback starts.
+        reason = f'{type(error).__name__}: {error}'
+        fallback = state.copy()
+        site = left_site if direction == 'lr' else left_site+1
+        try:
+            ordinary = optimize_reduced_site(fallback, hamiltonian, site, one_site_options(options))
+            energy = _energy(fallback, hamiltonian, stable=True)
+            accepted = ordinary.accepted and np.isfinite(energy) and energy <= before+options.energy_increase_tolerance
+            if accepted:
+                state.tensors, state.bond_sectors = fallback.tensors, fallback.bond_sectors
+        except NUMERICAL_ERRORS as second:
+            ordinary, accepted = None, False
+            reason += f'; one-site fallback failed: {type(second).__name__}: {second}'
+        return LETTAPairUpdate(left_site=left_site, right_site=left_site+1,
+            shared_physical_sites=tuple(sorted(set(state.site_neighborhood(left_site)) &
+                set(state.site_neighborhood(left_site+1)))), old_energy=before,
+            energy=_energy(state, hamiltonian, stable=True),
+            local_energy=before if ordinary is None else ordinary.local_energy,
+            metric_rank=0 if ordinary is None else ordinary.metric_rank,
+            local_dimension=0 if ordinary is None else ordinary.local_dimension,
+            residual_norm=np.inf if ordinary is None else ordinary.residual_norm,
+            conditional_discarded_weight=0., metric_truncation_loss=0., truncation_iterations=0,
+            energy_refinement_initial_energy=None, energy_refinement_energy=None,
+            energy_refinement_iterations=0, energy_refinement_accepted_substeps=0,
+            max_factor_norm=max(np.linalg.norm(a) for tensor in state.tensors for a in tensor.values()),
+            sector_ranks=tuple(Counter(state.bond_sectors[left_site]).values()),
+            accepted=accepted, fallback=True, recovery_reason=reason)
 
 
 def _expand_reduced_pair_space(state, left_site, bond_dim):
@@ -843,7 +891,11 @@ def _optimize_allocated_reduced_pair(
     state.bond_sectors = tuple(bonds)
     state.tensors = state._validate_tensors(state.tensors)
     new_energy = _energy(state, hamiltonian, stable=True)
-    accepted = new_energy <= old_energy + options.energy_increase_tolerance
+    energy_fit = _refine_pair_if_requested(state, hamiltonian, left_site, direction, options)
+    if energy_fit is not None:
+        state.tensors, state.bond_sectors = energy_fit.state.tensors, energy_fit.state.bond_sectors
+        new_energy = energy_fit.energy
+    accepted = np.isfinite(new_energy) and new_energy <= old_energy + options.energy_increase_tolerance
     if not accepted:
         state.tensors[left_site] = old_left
         state.tensors[left_site + 1] = old_right
@@ -870,18 +922,28 @@ def _optimize_allocated_reduced_pair(
         metric_truncation_loss=projection_loss,
         truncation_iterations=refinement.iterations,
         compression_diagnostics=refinement.diagnostics,
-        energy_refinement_initial_energy=None,
-        energy_refinement_energy=None,
-        energy_refinement_iterations=0,
-        energy_refinement_accepted_substeps=0,
+        energy_refinement_initial_energy=None if energy_fit is None else energy_fit.initial_energy,
+        energy_refinement_energy=None if energy_fit is None else energy_fit.energy,
+        energy_refinement_iterations=0 if energy_fit is None else energy_fit.iterations,
+        energy_refinement_accepted_substeps=0 if energy_fit is None else energy_fit.accepted_substeps,
+        energy_refinement_diagnostics=None if energy_fit is None else energy_fit.diagnostics,
         max_factor_norm=max(
-            max(np.linalg.norm(block) for block in left_source.values()),
-            max(np.linalg.norm(block) for block in right_source.values()),
+            max(np.linalg.norm(block) for block in state.tensors[left_site].values()),
+            max(np.linalg.norm(block) for block in state.tensors[left_site+1].values()),
         ),
         sector_ranks=split.sector_ranks,
         accepted=accepted,
         full_local_dimension=problem.full_local_dimension,
     )
+
+
+def _refine_pair_if_requested(state, hamiltonian, site, direction, options):
+    if options.split_method not in {'metric-als-energy', 'metric-energy', 'energy-refined'}:
+        return None
+    from .._letta_one_site_opt.reduced_updates import refine_reduced_pair_energy
+    return refine_reduced_pair_energy(state, hamiltonian, site, options,
+        max_iterations=options.energy_refinement_max_iterations,
+        tolerance=options.energy_refinement_tolerance, direction=direction)
 
 
 def _gram_roots(gram, tolerance):
@@ -944,7 +1006,11 @@ def _optimize_untied_split(state, hamiltonian, problem, vector, local_energy,
     state.tensors[i], state.tensors[i+1] = a, b
     state.tensors = state._validate_tensors(state.tensors)
     energy = _energy(state, hamiltonian, stable=True)
-    accepted = energy <= old_energy+options.energy_increase_tolerance
+    energy_fit = _refine_pair_if_requested(state, hamiltonian, i, direction, options)
+    if energy_fit is not None:
+        state.tensors, state.bond_sectors = energy_fit.state.tensors, energy_fit.state.bond_sectors
+        energy = energy_fit.energy
+    accepted = np.isfinite(energy) and energy <= old_energy+options.energy_increase_tolerance
     if not accepted:
         state.tensors[i], state.tensors[i+1], state.bond_sectors = old_a, old_b, old_bonds
         energy = old_energy
@@ -955,9 +1021,12 @@ def _optimize_untied_split(state, hamiltonian, problem, vector, local_energy,
         metric_rank=metric_rank, local_dimension=problem.local_dimension,
         residual_norm=residual, conditional_discarded_weight=split.discarded_weight,
         metric_truncation_loss=_pair_metric_loss(vector, pair/np.sqrt(norm), problem),
-        truncation_iterations=0, energy_refinement_initial_energy=None,
-        energy_refinement_energy=None, energy_refinement_iterations=0,
-        energy_refinement_accepted_substeps=0,
+        truncation_iterations=0,
+        energy_refinement_initial_energy=None if energy_fit is None else energy_fit.initial_energy,
+        energy_refinement_energy=None if energy_fit is None else energy_fit.energy,
+        energy_refinement_iterations=0 if energy_fit is None else energy_fit.iterations,
+        energy_refinement_accepted_substeps=0 if energy_fit is None else energy_fit.accepted_substeps,
+        energy_refinement_diagnostics=None if energy_fit is None else energy_fit.diagnostics,
         max_factor_norm=max(np.linalg.norm(x) for core in (a, b) for x in core.values()),
         sector_ranks=split.sector_ranks, accepted=accepted,
         full_local_dimension=problem.full_local_dimension)
@@ -971,12 +1040,6 @@ def reduced_two_site_dmrg(hamiltonian, *, state, bond_dim, options):
     if not isinstance(hamiltonian, ReducedMPOHamiltonian):
         raise TypeError("hamiltonian must be ReducedMPOHamiltonian")
     _validate_reduced_mpo(hamiltonian, state)
-    if options.split_method != "conditional-svd":
-        raise NotImplementedError(
-            "exact reduced SU(2) two-site optimization currently supports only "
-            "split_method='conditional-svd'; metric-ALS and energy refinement "
-            "have not yet been formulated in irrep-multiplicity space"
-        )
     if state.nsites < 2:
         raise ValueError("two-site optimization requires at least two sites")
     try:
@@ -1033,10 +1096,16 @@ def reduced_two_site_dmrg(hamiltonian, *, state, bond_dim, options):
                 f"direction={direction} energy={energy:.14f} "
                 f"dE/site={density_change:.3e}"
             )
-        if density_change <= options.tolerance:
-            converged = True
-            message = "CONVERGENCE: SWEEP ENERGY DENSITY CHANGE <= TOLERANCE"
-            break
+        if density_change <= options.tolerance and all(
+                u.accepted and not u.fallback and not u.recovery_reason and
+                (u.compression_diagnostics is None or u.compression_diagnostics.get('optimizer_success', False))
+                for u in updates):
+            from .._letta_one_site_opt.reduced_updates import reduced_stationarity
+            audit = reduced_stationarity(state, hamiltonian, range(state.nsites), options)
+            if max(r['relative_residual'] for r in audit) <= options.eigensolver_tolerance:
+                converged = True
+                message = "CONVERGENCE: ENERGY STATIONARY AND FRESH LOCAL RESIDUALS <= TOLERANCE"
+                break
         previous_energy = energy
         if options.alternate:
             direction = "rl" if direction == "lr" else "lr"

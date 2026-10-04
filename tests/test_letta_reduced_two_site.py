@@ -156,23 +156,13 @@ def test_reduced_two_site_truncation_keeps_complete_multiplets():
             assert update.conditional_discarded_weight >= 0.0
 
 
-def test_reduced_two_site_rejects_unsupported_dense_split_modes():
+def test_reduced_two_site_supports_metric_split_mode():
     state = _state(seed=53)
-    hamiltonian = su2_heisenberg_mpo(
-        state.nsites, physical_basis=state.physical_basis
-    )
-
-    with pytest.raises(NotImplementedError, match="conditional-svd"):
-        letta_two_site_dmrg(
-            hamiltonian,
-            state=state,
-            bond_dim=2,
-            options=LETTATwoSiteOptions(
-                max_sweeps=1,
-                split_method="metric-als",
-                gauge_mode="none",
-            ),
-        )
+    h = su2_heisenberg_mpo(state.nsites, physical_basis=state.physical_basis)
+    result = letta_two_site_dmrg(h, state=state, bond_dim=2,
+        options=LETTATwoSiteOptions(max_sweeps=1, split_method='metric-als', gauge_mode='none'))
+    assert np.isfinite(result.energy)
+    assert result.state.symmetry_violation() == 0.
 
 
 def test_multi_irrep_two_site_projection_preserves_normalized_state():

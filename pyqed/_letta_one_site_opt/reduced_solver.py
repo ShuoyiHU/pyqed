@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -764,13 +764,23 @@ def _energy(state, hamiltonian, *, stable=False):
             denominator = _mpo_expectation(
                 state, _identity_mpo_factors(tuple(hamiltonian))
             )
-        return float(np.real(numerator / denominator))
+        return _checked_energy(numerator, denominator)
     vector = np.asarray(state.state_vector(), dtype=complex)
     denominator = np.vdot(vector, vector)
-    return float(np.real(np.vdot(vector, hamiltonian @ vector) / denominator))
+    return _checked_energy(np.vdot(vector, hamiltonian @ vector), denominator)
 
 
-def optimize_reduced_site(state, hamiltonian, site, options, *, context=None):
+def _checked_energy(numerator, denominator):
+    if (not np.isfinite(denominator) or np.real(denominator) <= np.finfo(float).tiny
+            or abs(np.imag(denominator)) > 1e-10*abs(denominator)):
+        raise FloatingPointError("nonpositive, complex or nonfinite reduced state norm")
+    value = numerator / denominator
+    if not np.isfinite(value) or abs(np.imag(value)) > 1e-10*max(1., abs(value)):
+        raise FloatingPointError("complex or nonfinite reduced energy")
+    return float(np.real(value))
+
+
+def _optimize_reduced_site_impl(state, hamiltonian, site, options, *, context=None):
     """Solve and accept one exact reduced local generalized eigenproblem."""
 
     from .solver import LETTASiteUpdate
@@ -787,6 +797,8 @@ def optimize_reduced_site(state, hamiltonian, site, options, *, context=None):
         options,
         initial_vector=problem.embedding.pack_source(state.tensors[int(site)]),
     )
+    from .reduced_updates import local_residual
+    _, relative_residual = local_residual(problem, vector)
     old_blocks = {
         key: block.copy() for key, block in state.tensors[int(site)].items()
     }
@@ -820,9 +832,32 @@ def optimize_reduced_site(state, hamiltonian, site, options, *, context=None):
         metric_rank=metric_rank,
         local_dimension=problem.local_dimension,
         residual_norm=residual,
+        relative_residual=relative_residual,
+        local_converged=accepted and relative_residual <= options.eigensolver_tolerance,
         accepted=accepted,
         full_local_dimension=problem.full_local_dimension,
     )
+
+
+def optimize_reduced_site(state, hamiltonian, site, options, *, context=None):
+    """Commit a finite energy-checked update, or restore all tensors and caches."""
+    from .reduced_updates import NUMERICAL_ERRORS
+    snapshot = state.copy()
+    old_energy = _energy(snapshot, hamiltonian, stable=True)
+    def restore():
+        state.tensors, state.bond_sectors = snapshot.tensors, snapshot.bond_sectors
+        if context is not None:
+            context.synchronize(list(range(state.nsites)))
+    try:
+        update = _optimize_reduced_site_impl(state, hamiltonian, site, options, context=context)
+        actual = _energy(state, hamiltonian, stable=True)
+        if not np.isfinite(actual) or actual > old_energy+options.energy_increase_tolerance:
+            restore()
+            return replace(update, accepted=False, energy=old_energy, local_converged=False)
+        return replace(update, energy=actual)
+    except NUMERICAL_ERRORS:
+        restore()
+        raise
 
 
 def reduced_letta_dmrg(hamiltonian, *, state, options):
@@ -891,10 +926,14 @@ def reduced_letta_dmrg(hamiltonian, *, state, options):
                 f"reduced SU(2) LETTA sweep {sweep:3d}  direction={direction}  "
                 f"energy={energy:.14f}  dE/site={density_change:.3e}"
             )
-        if density_change <= options.tolerance:
-            converged = True
-            message = "CONVERGENCE: SWEEP ENERGY DENSITY CHANGE <= TOLERANCE"
-            break
+        if density_change <= options.tolerance and all(
+                u.accepted and u.local_converged for u in updates):
+            from .reduced_updates import reduced_stationarity
+            audit = reduced_stationarity(state, hamiltonian, range(state.nsites), options)
+            if max(r['relative_residual'] for r in audit) <= options.eigensolver_tolerance:
+                converged = True
+                message = "CONVERGENCE: ENERGY STATIONARY AND FRESH LOCAL RESIDUALS <= TOLERANCE"
+                break
         previous_energy = energy
         if options.alternate:
             direction = "rl" if direction == "lr" else "lr"

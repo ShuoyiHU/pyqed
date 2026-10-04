@@ -27,14 +27,16 @@ compression = MetricCompressionOptions(
 )
 options = LETTATwoSiteOptions(
     max_sweeps=20,
-    split_method="conditional-svd",
+    split_method="metric-als-energy",
+    energy_refinement_max_iterations=32,
+    energy_refinement_tolerance=1e-10,
     reduced_sector_growth=True,
     compression=compression,
 )
 # result = letta_two_site_dmrg(hamiltonian, state=state, bond_dim=16, options=options)
 ```
 
-The example uses the currently supported reduced split entry point: a sector SVD initializes the retained allocation, followed by the selected metric compressor. Native reduced post-compression energy alternation is still pending; the final integrated API must remove this transitional restriction. Untied reduced MPS uses its optimal physical-metric Schmidt split instead of iterative fitting.
+The example initializes a retained multiplet allocation, fits it with the selected metric compressor, and then alternates energy minimization on A and B. One energy-refinement round updates both sites; its budget is independent of the ALS and inner LSMR budgets. `metric-als` disables this final energy alternation; the older `conditional-svd` entry point retains its projected metric-fit behavior. Untied reduced MPS uses its physical-metric Schmidt split instead of iterative fitting, followed by energy alternation when requested.
 
 `als_max_iterations=None` uses the caller's `truncation_max_iterations` for reduced two-site fitting. `lsmr_max_iterations=None` uses an automatic cap between 50 and 1000 depending on the factor size. Nonlinear `max_iterations` counts residual evaluations for the least-squares methods and trust-region iterations for Newton; it does not cap the dense pseudoinverse used by variable projection. A nonlinear workspace limit can trigger an explicitly reported ALS fallback.
 
@@ -56,3 +58,13 @@ The reduced metric square root factors only boundary multiplicity Grams. No dens
 QC supports U(1) number, U(1) number × U(1) spin projection, and U(1) number × SU(2). SU(2) physical dependencies use invariant irrep/multiplicity labels. Spatial orbitals have empty, single and double labels; magnetic components are structural Clebsch–Gordan coordinates. D in the reduced solver counts complete multiplets, not magnetic states or total stored parameters.
 
 The integrated native reduced backend currently uses open virtual boundaries. The inherited periodic benchmark backend is a distinct closed-ring implementation with narrower model/tie/symmetry support. Its presence does not complete general SU(2) periodic support. Symmetry-enabled one-site CBE, general ring environments and the unified public API remain implementation tasks; see the full plan rather than inferring support from a file name.
+
+## Reduced energy updates and recovery
+
+Reduced one-site updates check the physical energy again after normalization. All tensor changes and cached environments are rolled back if normalization or another numerical operation fails. Invalid norms, significant imaginary energies and nonfinite energies raise explicit numerical errors.
+
+Reduced two-site candidates—including temporary sector allocations—are built on copies. Numerical failure discards the candidate and attempts an ordinary one-site update for the current sweep site. If that also fails, the incumbent is retained and the failure is recorded. The next pair is still attempted. An update records `fallback` and `recovery_reason`.
+
+When the incumbent bond fits the requested cap, every two-site candidate is compared to an ordinary one-site update from the same incumbent. The lower energy is retained, with `baseline_energy` and `baseline_selected` identifying this decision. This comparison is skipped when the requested bond cap is smaller than the incumbent allocation, because that baseline would be infeasible at the new cap.
+
+Energy refinement records its initial/final energies, actual A/B round count, accepted substeps and fresh final local residuals in `energy_refinement_diagnostics`. Local eigensolves record `relative_residual` and `local_converged`. Sweep convergence requires a small energy change and a fresh local stationarity audit; rejected updates, unresolved local solves, failed baselines and numerical fallback are not treated as successful convergence. These are local stationarity checks, not proofs of a global variational minimum. The residual scaling uses the norms of Hx and E Nx in the local coordinates.

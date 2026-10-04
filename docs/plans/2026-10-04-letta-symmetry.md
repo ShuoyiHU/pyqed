@@ -25,14 +25,14 @@
 |---|---|---|
 | Preserve source work and requested branch | Source hashes unchanged; integration commit with manifest | Source hashes verified; integration checkpoint tested |
 | Shared ALS/inner least-squares limits | Limits reach each backend, diagnostics distinguish cap from convergence | Pending |
-| ALS, variable projection, joint LS, Grassmann Newton | Same physical-metric objective, derivative and fit tests, both CBE/two-site | Pending reduced integration |
+| ALS, variable projection, joint LS, Grassmann Newton | Same physical-metric objective, derivative and fit tests, both CBE/two-site | Reduced two-site integrated; symmetry CBE adapter pending |
 | U(1) OBC one-site/CBE/two-site | Symmetry leakage zero, adaptive allocation, exact small-reference comparisons | Pending |
 | SU(2) OBC one-site/CBE/two-site | Native reduced actions, complete multiplets, numerical-reference gates | Pending |
 | U(1) closed-ring all three methods | Cyclic contractions and wrap bond, nonidentity metric, independent references | Pending |
 | SU(2) closed-ring all three methods | Reduced cyclic recoupling, explicit target representation, no magnetic/determinant solver fallback | Pending |
 | Arbitrary tying | Forward/backward/nonadjacent/cross-cut/wrap dependencies, exact embedding and metric tests | Pending symmetry/ring extensions |
 | QC and condensed models | Molecular integrals and Hubbard/Bose/Heisenberg examples with allowed symmetries | Pending integrated validation |
-| Recovery and variational acceptance | Restored state/sectors/caches, same-start one-site baseline, strict fresh energy check | Pending all backends |
+| Recovery and variational acceptance | Restored state/sectors/caches, same-start one-site baseline, strict fresh energy check | Reduced one-/two-site transactions and pair baseline implemented; CBE/ring integration pending |
 | Accuracy diagnostics | Inner residuals/status, truncation stationarity, rejected-update handling; plateau != global minimum | Pending |
 | Public API/documentation | Clear boundary/model distinction, D multiplets vs magnetic dimension, runnable examples | Pending |
 | Final verification and commit | Focused and combined numerical tests; clean scoped diff and accurate commit description | Pending |
@@ -104,3 +104,8 @@ Use the existing main-repo `.venv-1/bin/python` with `PYTHONPATH=.` from this wo
 - Full matrix remains incomplete: reduced post-compression energy alternation, stronger outer stopping/recovery, symmetry CBE, general cyclic reduced environments, public model/topology API, and full cross-product accuracy tests remain required.
 
 - Final checkpoint validation: **204 passed, 3 skipped in 208.09 s**. Skips are deliberately impossible correlated-diagonal metric representations. Includes native SU(2), molecular acceptance, reduced norm/gauge/Schmidt, all four reduced/common compressors, reduced two-site, CBE rollback, open/periodic legacy backends and diagnostic reconstruction. Exact output: `2026-10-04-letta-checkpoint-tests.txt`. This is not verification of the still-pending full feature matrix.
+
+- 2026-10-04 follow-up: native reduced two-site default now includes A/B energy alternation; one-site updates are transactional across normalization and caches; pair failures discard temporary allocations and fall back to an ordinary one-site update. Added same-start baseline selection when the incumbent allocation fits the requested cap.
+- Added explicit invalid-energy checks and local residual diagnostics; flat rejected or unresolved updates no longer satisfy convergence. Final-state local residuals are rebuilt when checking sweep stationarity.
+- Validation for this follow-up: 96 regression tests passed before the final finite-energy and baseline refinements; 40 finite-energy/one-site/QC tests passed; 17 native/Schmidt/molecular-acceptance checks passed after finite-energy validation; 63 focused final pair/refinement/compression/QC/Schmidt tests passed after adding the baseline guard. Logs are retained in `2026-10-04-letta-updates-tests.txt`. Tests overlap and are not summed into a unique-test count.
+- Next implementation priority remains actual symmetry-aware one-site CBE. Proposed reduced selection/compression design is recorded in `2026-10-04-reduced-cbe-design.md`; it is not yet implemented or validated.

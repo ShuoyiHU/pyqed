@@ -164,19 +164,26 @@ def test_import_after_dmrg_decomposition_with_explicit_representation():
 def test_growth_padding_preserves_incumbent_and_rejection_restores_bond(monkeypatch):
     import pyqed._letta_two_site_opt.reduced_solver as rs
     from pyqed._letta_two_site_opt import LETTATwoSiteOptions
-    from types import SimpleNamespace
+    from dataclasses import replace
     p = ElectronicProblem(*integrals(3), (2, 1))
     state = ReducedLatticeLETTA.random((1, 3), symmetry=p.symmetry('su2'), seed=9)
     original = state.state_vector()
     expanded = rs._expand_reduced_pair_space(state, 1, 5)
     np.testing.assert_allclose(expanded.state_vector(), original, atol=1e-14)
     old_bonds = state.bond_sectors
+    trial = rs._optimize_allocated_reduced_pair(state.copy(), p.su2_mpo(), 1, 'lr', 5,
+        LETTATwoSiteOptions(split_method='conditional-svd'))
     monkeypatch.setattr(rs, '_optimize_allocated_reduced_pair',
-                        lambda *a: SimpleNamespace(accepted=False))
-    rs._optimize_reduced_pair(state, p.su2_mpo(), 1, 'lr', 5,
-                             LETTATwoSiteOptions(reduced_sector_growth=True))
+                        lambda *a: replace(trial, accepted=False))
+    baseline = state.copy()
+    from pyqed._letta_one_site_opt.reduced_solver import optimize_reduced_site
+    from pyqed._letta_one_site_opt.reduced_updates import one_site_options
+    options = LETTATwoSiteOptions(reduced_sector_growth=True)
+    optimize_reduced_site(baseline, p.su2_mpo(), 1, one_site_options(options))
+    update = rs._optimize_reduced_pair(state, p.su2_mpo(), 1, 'lr', 5, options)
     assert state.bond_sectors == old_bonds
-    np.testing.assert_array_equal(state.state_vector(), original)
+    assert update.baseline_selected
+    np.testing.assert_allclose(state.state_vector(), baseline.state_vector(), atol=1e-12)
 
 
 @pytest.mark.parametrize('n', [1, 2, 3])
