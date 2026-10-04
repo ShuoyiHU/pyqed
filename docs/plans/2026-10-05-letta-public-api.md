@@ -107,3 +107,13 @@ independent physical energy, charge and total spin with no numerical recovery.
 The remaining public test session is still 67996. These five cases are the
 outstanding current-source numerical checks; the implementation note must
 receive their results and final audit before the performance-phase usage gate.
+
+
+The final-source molecular stress case completed successfully: session 24558
+exited 0, **1 passed in 1741.47 s** (1739.18 s test call). Its log is
+/private/tmp/letta-qc-ring-stress-final.log. The test independently checks the
+complex three-orbital covariant-ring CBE energy against the fermionic determinant
+Hamiltonian, fixed N=3 and S=1/2, unchanged backward/wrap ties and no numerical
+recovery. This supplies the previously excluded current-source stress evidence;
+it does not stand in for the four public fermionic U(1) cases still running in
+session 67996.

@@ -34,7 +34,7 @@
 | QC and condensed models | Molecular integrals and Hubbard/Bose/Heisenberg examples with allowed symmetries | Public constructors match independent operators; broad optimizer/topology matrix remains pending |
 | Recovery and variational acceptance | Restored state/sectors/caches, same-start one-site baseline, strict fresh energy check | Open/ring update and gauge recovery implemented; strict baselines, cache rebuilds and injected partial failures tested |
 | Accuracy diagnostics | Inner residuals/status, truncation stationarity, rejected-update handling; plateau != global minimum | Implemented and checked by reduced compression/update/recovery tests; iterative lowest-root limitations documented; broad final matrix remains pending |
-| Public API/documentation | Clear boundary/model distinction, D multiplets vs magnetic dimension, runnable examples | API, guide and CLI example implemented; 42 current-source model/input/compressor checks pass; broader matrix pending |
+| Public API/documentation | Clear boundary/model distinction, D multiplets vs magnetic dimension, runnable examples | API, guide and CLI examples implemented/audited; 75 of 79 current public tests and three independent CLI reference checks pass; four fermionic U(1) ring cases pending |
 | Full implementation note | Complete code-grounded description, especially symmetry representations, contractions, gauges, expansion, compression, recovery and limitations | Required after implementation; pending |
 | Conditional precision-preserving speedups | After correctness and note, query weekly remaining capacity; if >10%, profile and validate each speedup until approximately 5% remains or worthwhile options are exhausted | Not started; correctness gates take priority |
 | Final verification and commit | Focused and combined numerical tests; clean scoped diff and accurate commit description | Pending |
@@ -200,3 +200,6 @@ The requested scope remains all original model/symmetry/topology/method combinat
 
 
 - Final combined checkpoint: 400 tests passed, one molecular ring CBE stress case deselected, in 402.35 s on numerical commit 126bc0b. The excluded test is now running independently (session 24558, /private/tmp/letta-qc-ring-stress-final.log). The four remaining public fermionic U(1) ring cases remain live in session 67996. Numerical implementation has not changed since these runs started. The guide/source-map/example validation is committed as 20cae51; final coverage/note audit remains gated on those five cases. No weekly usage check or performance optimization has begun.
+
+
+- The final-source complex three-orbital molecular ring CBE stress case passed (1 test, 1741.47 s, session 24558 exit 0). Independent energy/charge/spin, nontrivial anchor, backward/wrap ties and no-recovery assertions all passed. Combined current-source validation is now 400 implementation checks plus this separately run stress case (401 disjoint cases), with 75/79 public API tests complete. The only outstanding numerical cases are the four public fermionic U(1) ring checks in session 67996. Completion/note/performance gates remain unchanged until those finish.
