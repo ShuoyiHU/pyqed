@@ -44,8 +44,7 @@ class ReducedPairProblem:
     source_frame: np.ndarray | None = None
     hamiltonian_action: object | None = None
     metric_action: object | None = None
-    metric_scale: float | None = None
-    metric_projector_factory: object | None = None
+    equilibrated_projector_factory: object | None = None
 
     @property
     def local_dimension(self):
@@ -299,8 +298,8 @@ def reduced_pair_problem(
         return ReducedPairProblem(left_site=left_site, old_vector=old_vector,
             layout=layout, frontier=frontier, expanded_dimension=expanded_dimension,
             hamiltonian=h, metric=n, hamiltonian_action=h_action, metric_action=n_action,
-            metric_scale=n_chain.metric_scale(left_site, layout.keys, width=2),
-            metric_projector_factory=lambda tol: n_chain.pair_projector(left_site, layout, tol))
+            equilibrated_projector_factory=lambda tol: n_chain.pair_projector(
+                left_site, layout, tol, equilibrated=True))
     hamiltonian_chain = CanonicalEnvironmentChain.build(sites, hamiltonian.canonical_factors)
     metric_chain = CanonicalEnvironmentChain.build(sites, identity_canonical_factors(sites))
     hamiltonian_action = lambda vector: _canonical_pair_action(

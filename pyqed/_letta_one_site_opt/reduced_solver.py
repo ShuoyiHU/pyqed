@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -44,8 +45,7 @@ class ReducedLocalProblem:
     metric: np.ndarray | None = None
     hamiltonian_action: object | None = None
     metric_action: object | None = None
-    metric_scale: float | None = None
-    metric_projector_factory: object | None = None
+    equilibrated_projector_factory: object | None = None
 
     @property
     def local_dimension(self):
@@ -406,8 +406,8 @@ def _native_local_problem(state, hamiltonian, site, sites, embedding,
         n = .5*(n+n.conj().T)
     return ReducedLocalProblem(site=int(site), frame=None, embedding=embedding,
         hamiltonian=h, metric=n, hamiltonian_action=h_action, metric_action=n_action,
-        metric_scale=n_chain.metric_scale(site, embedding.target_layout.keys, embedding=embedding),
-        metric_projector_factory=lambda tol: n_chain.local_projector(site, embedding, tol))
+        equilibrated_projector_factory=lambda tol: n_chain.local_projector(
+            site, embedding, tol, equilibrated=True))
 
 
 class ReducedSweepContext:
@@ -491,18 +491,15 @@ def reduced_local_problem(
 
 
 def _lowest_generalized(problem, metric_tolerance, *, initial_vector=None):
-    metric_values, metric_vectors = np.linalg.eigh(problem.metric)
-    scale = max(float(np.max(metric_values, initial=0.0)), 0.0)
-    if scale <= np.finfo(float).tiny:
-        raise ValueError("reduced one-site metric has zero rank")
-    cutoff = max(
-        float(metric_tolerance),
-        np.finfo(float).eps * problem.local_dimension,
-    ) * scale
-    keep = metric_values > cutoff
-    if not np.any(keep):
+    from .contractions import _equilibrated_metric_factors
+
+    # Rank belongs to normalized Gram columns, not their arbitrary tensor
+    # coordinate scales. Otherwise an invertible gauge can erase a physical
+    # direction before the energy minimization even starts.
+    whitening, _ = _equilibrated_metric_factors(problem.metric, metric_tolerance)
+    metric_rank = whitening.shape[1]
+    if not metric_rank:
         raise ValueError("reduced one-site metric has no retained directions")
-    whitening = metric_vectors[:, keep] / np.sqrt(metric_values[keep])[None, :]
     transformed = whitening.conj().T @ problem.hamiltonian @ whitening
     transformed = 0.5 * (transformed + transformed.conj().T)
     values, vectors = np.linalg.eigh(transformed)
@@ -527,12 +524,51 @@ def _lowest_generalized(problem, metric_tolerance, *, initial_vector=None):
         / np.real(np.vdot(vector, problem.metric @ vector))
     )
     residual = problem.hamiltonian @ vector - energy * (problem.metric @ vector)
-    return energy, vector, int(np.count_nonzero(keep)), float(
+    return energy, vector, metric_rank, float(
         np.linalg.norm(residual)
     )
 
 
 def _matrix_free_generalized_davidson(problem, options, initial_vector):
+    """Equilibrate Gram columns without materializing the full local metric."""
+    dimension = problem.local_dimension
+    initial_vector = np.asarray(initial_vector, dtype=complex).reshape(-1)
+    if initial_vector.size != dimension:
+        raise ValueError("initial_vector has incompatible local dimension")
+    if problem.metric is not None:
+        diagonal = np.diag(problem.metric).real.copy()
+    else:
+        diagonal = np.empty(dimension)
+        unit = np.zeros(dimension, dtype=complex)
+        for j in range(dimension):
+            unit[j] = 1.
+            diagonal[j] = problem.apply_metric(unit)[j].real
+            unit[j] = 0.
+    if not np.all(np.isfinite(diagonal)):
+        raise FloatingPointError('nonfinite reduced metric diagonal')
+    scale = max(float(np.max(diagonal, initial=0.)), np.finfo(float).tiny)
+    if np.min(diagonal, initial=0.) < -1e-10*scale:
+        raise FloatingPointError('negative reduced metric diagonal')
+    supported = diagonal > 0.
+    roots = np.sqrt(np.maximum(diagonal, 0.))
+    inverse = np.zeros(dimension)
+    inverse[supported] = 1/roots[supported]
+    # The raw-coordinate projector is not valid after this change of basis.
+    # Native open-chain adapters provide the conditional Gram projector in
+    # equilibrated coordinates; generic correlated metrics retain Davidson's
+    # metric-orthogonality/null-direction checks.
+    scaled = SimpleNamespace(local_dimension=dimension,
+        apply_hamiltonian=lambda x: inverse*problem.apply_hamiltonian(inverse*x),
+        apply_metric=lambda x: inverse*problem.apply_metric(inverse*x),
+        # A PSD correlation matrix has ||C||_2 <= trace(C).
+        metric_scale=float(np.count_nonzero(supported)),
+        metric_projector_factory=getattr(problem, 'equilibrated_projector_factory', None))
+    energy, vector, rank = _davidson_in_metric_coordinates(
+        scaled, options, roots*np.asarray(initial_vector))
+    return energy, inverse*vector, rank
+
+
+def _davidson_in_metric_coordinates(problem, options, initial_vector):
     """Lowest generalized root in an N-orthonormal Davidson space.
 
     The overlap operator may be positive semidefinite.  Null directions are
@@ -562,18 +598,7 @@ def _matrix_free_generalized_davidson(problem, options, initial_vector):
     )
     max_space = min(dimension, 48)
     minimum_explored = min(dimension, max_space, 16)
-    metric_scale = getattr(problem, 'metric_scale', None)
-    if metric_scale is None:
-        # Generic reference paths have no analytic bound. Estimate the scale
-        # in the supported space; native LETTA supplies a Kronecker bound.
-        probe = metric_initial.copy()
-        metric_scale = 0.
-        for _ in range(8):
-            norm = np.linalg.norm(probe)
-            if norm == 0:
-                break
-            probe = problem.apply_metric(probe/norm)
-            metric_scale = max(metric_scale, float(np.linalg.norm(probe)))
+    metric_scale = problem.metric_scale
     basis = initial_vector[:, None]
     metric_basis = metric_initial[:, None]
     hamiltonian_basis = problem.apply_hamiltonian(initial_vector)[:, None]

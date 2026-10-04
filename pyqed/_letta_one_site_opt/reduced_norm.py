@@ -51,7 +51,11 @@ def _normalize(blocks, log_scale):
     return {q: a/scale for q, a in blocks.items()}, float(log_scale+np.log(scale))
 
 
-def _support_projector(gram, tolerance):
+def _support_projector(gram, tolerance, *, equilibrated=False):
+    if equilibrated:
+        roots = np.sqrt(np.maximum(np.diag(gram).real, 0.))
+        denominator = roots[:, None]*roots[None, :]
+        gram = np.divide(gram, denominator, out=np.zeros_like(gram), where=denominator > 0.)
     values, vectors = np.linalg.eigh(.5*(gram+gram.conj().T))
     keep = values > tolerance*max(float(np.max(values, initial=0.)), np.finfo(float).tiny)
     return vectors[:, keep]@vectors[:, keep].conj().T
@@ -182,14 +186,16 @@ class ReducedNormChain(MovingReducedEnvironments):
             bound *= np.max(np.bincount(embedding.source_indices), initial=0)
         return float(bound)
 
-    def local_projector(self, site, embedding, tolerance):
+    def local_projector(self, site, embedding, tolerance, *, equilibrated=False):
         """Remove locally invisible coordinates without building a metric.
 
         When every frontier variable occurs on the center tensor, P assigns
         each source coordinate once. The norm is diagonal in the owned and
         tied physical labels; each remaining block is a Kronecker product of
         two conditional Grams. This applies to untied, NN, and carried ties.
-        More general embeddings explicitly return None.
+        More general embeddings explicitly return None. With equilibrated=True,
+        the returned orthogonal projector acts on D*x, where D contains the
+        source metric diagonal square roots, rather than on raw source x.
         """
         counts = np.bincount(embedding.source_indices, minlength=embedding.source_size)
         if np.any(counts != 1):
@@ -209,8 +215,8 @@ class ReducedNormChain(MovingReducedEnvironments):
                                            embedding.target_layout.shapes[key])
                 left = self.left[site][ql][l:l+shape[0], l:l+shape[0]]
                 right = self.right[site+1][qr][r:r+shape[-1], r:r+shape[-1]]
-                plan.append((key, physical, _support_projector(left, tolerance),
-                             _support_projector(right, tolerance)))
+                plan.append((key, physical, _support_projector(left, tolerance, equilibrated=equilibrated),
+                             _support_projector(right, tolerance, equilibrated=equilibrated)))
         def project(vector):
             source = embedding.unpack_source(vector)
             out = {k: np.zeros(a.shape, dtype=np.result_type(a, complex)) for k, a in source.items()}
@@ -220,10 +226,10 @@ class ReducedNormChain(MovingReducedEnvironments):
             return embedding.pack_source(out)
         return project
 
-    def pair_projector(self, site, layout, tolerance):
+    def pair_projector(self, site, layout, tolerance, *, equilibrated=False):
         self.ensure(site, site+2)
-        left = {q: _support_projector(a, tolerance) for q, a in self.left[site].items()}
-        right = {q: _support_projector(a, tolerance) for q, a in self.right[site+2].items()}
+        left = {q: _support_projector(a, tolerance, equilibrated=equilibrated) for q, a in self.left[site].items()}
+        right = {q: _support_projector(a, tolerance, equilibrated=equilibrated) for q, a in self.right[site+2].items()}
         def project(vector):
             blocks = layout.unpack(vector)
             return layout.pack({key: cached_einsum('al,br,lpqr->apqb',
