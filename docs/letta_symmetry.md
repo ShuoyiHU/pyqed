@@ -115,7 +115,7 @@ For open virtual boundaries, the reduced metric square root factors boundary mul
 
 QC supports U(1) number, U(1) number × U(1) spin projection, and U(1) number × SU(2). SU(2) physical dependencies use invariant irrep/multiplicity labels. Spatial orbitals have empty, single and double labels; magnetic components are structural Clebsch–Gordan coordinates. D in the reduced solver counts complete multiplets, not magnetic states or total stored parameters.
 
-The native reduced backend supports open virtual boundaries for one-site, CBE and two-site updates. Native closed-ring one-site, residual-CBE and two-site updates use `ReducedRingLETTA`, an explicit covariant target closure and the full cyclic metric. The unified model/topology API is implemented and undergoing the broader feature-matrix verification. The inherited periodic benchmark backend is separate and does not establish support for these unfinished native adapters.
+The native reduced backend supports open virtual boundaries for one-site, CBE and two-site updates. Native closed-ring one-site, residual-CBE and two-site updates use `ReducedRingLETTA`, an explicit covariant target closure and the full cyclic metric. The unified model/topology API is implemented and undergoing the broader feature-matrix verification. The inherited periodic benchmark backend is separate; its results do not replace validation of the native reduced ring adapters.
 
 ## Reduced energy updates and recovery
 
