@@ -1664,19 +1664,6 @@ class SpatialSpinFreeERIBuilder:
                             dtype=dtype,
                             cutoff=cutoff,
                         )
-                        if int(q) == int(r) and int(p) < min(int(q), int(s)):
-                            _add_fully_reduced_spinfree_bilinear(
-                                autompo,
-                                p,
-                                s,
-                                -val,
-                                phys_leg=phys_leg,
-                                dtype=dtype,
-                                density_site=q,
-                                density_operator=spatial_projector("single", phys_leg, dtype=dtype),
-                                family=("Q", "__prefix_projected_exchange_correction"),
-                            )
-                            fully_reduced_exchange_terms += 1
                         continue
                     raise NotImplementedError(
                         "Fully reduced spin-free ERI support currently covers four-distinct "

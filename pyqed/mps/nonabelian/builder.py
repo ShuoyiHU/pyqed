@@ -884,17 +884,6 @@ class AutoMPO:
                 if item is not None and not str(item).startswith("__prefix_")
             )
 
-        def _prefix_family_tuple(family):
-            if family is None:
-                return ()
-            if isinstance(family, str):
-                return (family,) if family.startswith("__prefix_") else ()
-            return tuple(
-                str(item)
-                for item in family
-                if item is not None and str(item).startswith("__prefix_")
-            )
-
         def add_dense_transition(
             site,
             left,
@@ -940,7 +929,16 @@ class AutoMPO:
             if not steps:
                 return
             prefix = []
-            prefix_family_key = _prefix_family_tuple(family)
+            # Transitions with different family metadata are distinct additive
+            # edges. Their prefix states must therefore be distinct as well;
+            # otherwise a shared opening edge is counted once per family and
+            # multiplies every downstream term.
+            if family is None:
+                prefix_family_key = ()
+            elif isinstance(family, str):
+                prefix_family_key = (family,)
+            else:
+                prefix_family_key = tuple(str(item) for item in family if item is not None)
             current_state = start_state
             current_charge = state_charges[current_state]
             previous_site = None

@@ -495,9 +495,12 @@ def test_fully_reduced_exchange_eri_matrix_matches_exact_reduced_cg_reference():
         (2, 1, 1, 0),
     )
 
-    for pattern in exchange_patterns:
+    # Also combine terms so shared prefixes and inter-family cancellation are
+    # tested on a complete operator, not only on isolated exchange strings.
+    for patterns in (*((p,) for p in exchange_patterns), exchange_patterns):
         eri = np.zeros((nsites, nsites, nsites, nsites))
-        eri[pattern] = 1.0
+        for i, pattern in enumerate(patterns):
+            eri[pattern] = (-0.3 if i % 2 else 0.7) if len(patterns) > 1 else 1.0
         autompo = AutoMPO([phys_leg] * nsites)
         add_spatial_spinfree_eri_terms(autompo, eri, cutoff=1.0e-12)
         mpo = autompo.build()
@@ -946,3 +949,45 @@ def test_add_spatial_hubbard_terms_matches_direct_builder():
     )
     np.testing.assert_allclose(built_dense, ref_dense)
     np.testing.assert_allclose(built_dense, built_dense.conj().T)
+
+
+@pytest.mark.parametrize("start", [0, 1])
+@pytest.mark.parametrize("families", [("left", "right"), (None, "right"),
+                                      ("same", "same"),
+                                      (("spin", "__prefix_a"), ("spin", "__prefix_b"))])
+def test_autompo_family_labels_do_not_multiply_shared_dense_prefixes(start, families):
+    leg = physical_leg_from_spatial_orbital()
+    number = spatial_number()
+    builder = AutoMPO([leg] * 4)
+    terms = [(start, start + 1, 0.7), (start, 3, -0.2)]
+    expected = np.zeros((256, 256))
+    for (left, right, coeff), family in zip(terms, families):
+        builder.add_term((left, number), (right, number), coeff=coeff, family=family)
+        product = np.ones((1, 1))
+        for site in range(4):
+            product = np.kron(product, number.as_dense() if site in (left, right) else np.eye(4))
+        expected += coeff * product
+    np.testing.assert_allclose(_dense_matrix_from_mpo_list(builder.build()), expected, atol=1e-12)
+
+
+@pytest.mark.parametrize("start", [0, 1])
+@pytest.mark.parametrize("families", [("left", "right"), (None, "right"), ("same", "same")])
+def test_autompo_family_labels_do_not_multiply_shared_reduced_prefixes(start, families):
+    from pyqed._letta_one_site_opt import ReducedPhysicalBasis
+    from pyqed._letta_one_site_opt.reduced_operators import physical_leg_from_reduced_basis, su2_spin_operator
+    basis = ReducedPhysicalBasis.spin_half()
+    leg = physical_leg_from_reduced_basis(basis, fully_reduced=False)
+    spin = su2_spin_operator(leg, physical_basis=basis, fully_reduced=False)
+    builder = AutoMPO([leg] * 4)
+    expected = np.zeros((16, 16), dtype=complex)
+    spin_matrices = [np.array([[0., 1.], [1., 0.]]) / 2,
+                     np.array([[0., -1j], [1j, 0.]]) / 2, np.diag([1., -1.]) / 2]
+    for (left, right, coupling), family in zip([(start, start + 1, 0.7), (start, 3, -0.2)], families):
+        builder.add_reduced_string((left, spin), (right, spin), intermediate_irreps=(SU2Irrep(2),),
+                                   coeff=-0.5 * np.sqrt(3) * coupling, family=family)
+        for op in spin_matrices:
+            product = np.ones((1, 1))
+            for site in range(4):
+                product = np.kron(product, op if site in (left, right) else np.eye(2))
+            expected += coupling * product
+    np.testing.assert_allclose(_dense_matrix_from_mpo_list(builder.build()), expected, atol=1e-12)
