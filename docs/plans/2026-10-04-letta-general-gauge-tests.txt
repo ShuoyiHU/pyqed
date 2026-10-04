@@ -1,0 +1,11 @@
+Arbitrary-tie native gauge checkpoint
+
+Command: PYTHONPATH=. pytest -p no:cacheprovider -q tests/test_letta_reduced_general_gauge.py tests/test_letta_reduced_gauge.py tests/test_letta_reduced_norm.py tests/test_letta_reduced_cbe.py tests/test_letta_abelian_backend.py tests/test_letta_reduced_updates.py tests/test_letta_su2_schmidt.py tests/test_letta_reduced_acceptance.py
+Interpreter: /Users/shuoyihu/Documents/GitHub/pyqed/.venv-1/bin/python
+BLAS/OpenMP threads limited to one; bytecode disabled; caches outside repository.
+
+........................................................................ [ 72%]
+............................                                             [100%]
+100 passed in 51.48s
+
+This verifies open-virtual-chain gauge conditioning, not native closed-ring support.

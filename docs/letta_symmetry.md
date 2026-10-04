@@ -95,7 +95,7 @@ Both residual-factor fitting and post-expansion fitting use `compression.als_max
 
 Diagnostics expose the missing residual norm, captured physical weight, tangent overlap, actual allocation, per-fit solver/budget/status, raw compressed energy, post-refinement energy and baseline decision. Numerical selection, expanded solve or compression failures discard the candidate and retain the independently computed ordinary step. If that ordinary step itself fails, the incumbent is unchanged and the update is rejected. Subsequent sites still attempt CBE. Unresolved projection, rejected baseline and failed/capped final fitting are not reported as successful sweep convergence.
 
-Currently only a native `ReducedMPOHamiltonian` with the `exact` selector is accepted. A streamed/shrewd selector, nonzero baseline allowance and separate preselection controls are not implemented. Reduced energy refinement uses alternating one-site solves; the nonsymmetric coupled-factor energy-refinement controls do not apply here. General forward/backward ties are covered by the full native metric with `gauge_mode="none"`; the frontier gauge still requires an admissible dependency layout. This does not complete the general closed-ring support matrix.
+Currently only a native `ReducedMPOHamiltonian` with the `exact` selector is accepted. A streamed/shrewd selector, nonzero baseline allowance and separate preselection controls are not implemented. Reduced energy refinement uses alternating one-site solves; the nonsymmetric coupled-factor energy-refinement controls do not apply here. General forward/backward ties are covered by the full native metric. The default reduced frontier gauge uses an exact shared-frontier gauge where available and a legal marginal gauge elsewhere; `gauge_mode="none"` remains available. This does not complete the general closed-ring support matrix.
 
 
 ## U(1) and products of U(1)
@@ -131,3 +131,22 @@ two = abelian_dmrg(problem.mpo(), state=state, bond_dim=8,
 ```
 
 The returned state is a `LatticeLETTA` with the original physical basis, coordinates, symmetry and ties, plus the retained charge allocation. D counts ordinary virtual states here, since all irreps are one dimensional. Existing `letta_dmrg(..., cbe_enabled=True)` calls with U(1) states automatically use this adapter. `abelian_dmrg` explicitly selects the shared backend for ordinary one-site and two-site runs as well; it validates the corresponding options through their existing public entry points. Bond schedules and finite cyclic groups are not yet implemented in this shared adapter. Open virtual boundaries are required; a periodic Hamiltonian is distinct from a closed virtual ring.
+
+
+## Gauge conditioning with arbitrary ties
+
+For a cut whose entire physical frontier is present on both neighboring tensors, the reduced solver uses the existing conditional boundary gauge. Otherwise it conditions on the subset of labels available on **both** tensors. It sums diagonal environment blocks over the unavailable labels, without altering the dependency graph.
+
+Write the boundary environment in a fixed symmetry sector as a matrix over memory labels and virtual multiplicities. If the memory labels split into shared labels and other labels, the gauge uses
+
+$$
+\overline G_{s;ab}=\sum_u G_{(s,u,a),(s,u,b)}.
+$$
+
+The eigenvectors and positive supported eigenvalues of this marginal define an invertible multiplicity transformation. Its inverse is absorbed into the neighboring tensor using the same shared labels. Small eigenvalues receive an invertible unit gauge rather than being deleted. Thus the physical state, all target magnetic components, bond allocation, and ties are preserved. On a cut with no shared labels this reduces to an unconditional sector-wise virtual gauge.
+
+Only the supported marginal becomes identity. Correlations between different frontier-memory assignments remain in the full environment, and every local solve still uses its full overlap metric. There is no claim that the generalized eigenproblem becomes Euclidean.
+
+`reduced_gauge_variables(state, cut)` reports the actual conditioning labels. `reduced_frontier_grams` reports the corresponding marginals. The gauge functions accept `strict=True` to require a complete shared frontier and reject before changing tensors. Individual shifts and whole canonicalization passes retain independent tensor snapshots and restore them if an operation raises; the error is propagated after restoration rather than hidden.
+
+This behavior is available to native SU(2) and the shared U(1) backend for ordinary one-site, CBE and two-site updates. Validation covers cyclic physical dependencies on an **open virtual chain**; this is separate from closed-ring virtual contraction, which remains pending.

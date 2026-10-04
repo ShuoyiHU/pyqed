@@ -33,7 +33,7 @@ def test_direct_long_tie_rejects_unavailable_conditional_gauge_before_mutation()
         neighborhoods=tie_neighborhoods(4, [(0, 3)], nearest=True), seed=73)
     v = state.state_vector()
     with pytest.raises(ValueError, match='shared frontier'):
-        canonicalize_reduced_frontier(state, 1)
+        canonicalize_reduced_frontier(state, 1, strict=True)
     np.testing.assert_array_equal(state.state_vector(), v)
 
 

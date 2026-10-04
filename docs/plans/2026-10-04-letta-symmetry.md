@@ -30,11 +30,13 @@
 | SU(2) OBC one-site/CBE/two-site | Native reduced actions, complete multiplets, numerical-reference gates | Implemented, small references pass; broad model/tie/API validation remains |
 | U(1) closed-ring all three methods | Cyclic contractions and wrap bond, nonidentity metric, independent references | Pending |
 | SU(2) closed-ring all three methods | Reduced cyclic recoupling, explicit target representation, no magnetic/determinant solver fallback | Pending |
-| Arbitrary tying | Forward/backward/nonadjacent/cross-cut/wrap dependencies, exact embedding and metric tests | Pending symmetry/ring extensions |
+| Arbitrary tying | Forward/backward/nonadjacent/cross-cut/wrap dependencies, exact embedding and metric tests | Native open-chain arbitrary ties and automatic legal gauges verified; ring extension pending |
 | QC and condensed models | Molecular integrals and Hubbard/Bose/Heisenberg examples with allowed symmetries | Pending integrated validation |
 | Recovery and variational acceptance | Restored state/sectors/caches, same-start one-site baseline, strict fresh energy check | Reduced one-/two-site/CBE transactions and strict baseline implemented; ring integration pending |
 | Accuracy diagnostics | Inner residuals/status, truncation stationarity, rejected-update handling; plateau != global minimum | Pending |
 | Public API/documentation | Clear boundary/model distinction, D multiplets vs magnetic dimension, runnable examples | Pending |
+| Full implementation note | Complete code-grounded description, especially symmetry representations, contractions, gauges, expansion, compression, recovery and limitations | Required after implementation; pending |
+| Conditional precision-preserving speedups | After correctness and note, query weekly remaining capacity; if >10%, profile and validate each speedup until approximately 5% remains or worthwhile options are exhausted | Not started; correctness gates take priority |
 | Final verification and commit | Focused and combined numerical tests; clean scoped diff and accurate commit description | Pending |
 
 ## Task 1: Integrate authoritative sources and establish a baseline
@@ -125,3 +127,18 @@ Use the existing main-repo `.venv-1/bin/python` with `PYTHONPATH=.` from this wo
 - Remaining work is unchanged in scope: generic gauge fallback on arbitrary dependency layouts, closed-ring native symmetry contractions and target closure, unified model/topology API, and full cross-product verification. Current checkpoints do not establish those requirements.
 
 - Abelian regression checkpoint: **135 passed, 1 deselected in 180.68 s**. Excluded the six-orbital stress sweep; native compiler/reduced CBE and ordinary Abelian/QC/state/two-site regressions passed. Exact command/output in `2026-10-04-letta-abelian-tests.txt`. Reverified 302 bg and 300 QC source hashes unchanged.
+
+
+- 2026-10-04 general-gauge checkpoint: reduced frontier conditioning now uses the largest shared physical-label subset. Partial tracing unavailable frontier labels yields a legal multiplicity gauge while retaining the full correlated local metric. Both U(1) and SU(2), all three methods, use this fallback automatically in frontier mode; strict full-frontier validation remains explicitly selectable.
+- Gauge shifts and whole initialization passes restore independent tensor snapshots on exceptions. Added target-multiplet preservation, marginal whitening, nonidentity full metric, cache consistency, arbitrary-tie energy references and partial-write failure tests.
+- Verification: **100 passed in 51.48 s**, including molecular roundoff acceptance and native U(1)/SU(2) CBE/Schmidt/update regressions. Exact command/output in `2026-10-04-letta-general-gauge-tests.txt`.
+- Next priority is native closed-ring contraction and target closure; the existing OBC scalar environment cannot simply be traced to obtain an SU(2) ring norm. A proposed transfer-channel derivation and its validation gates are recorded in `2026-10-04-native-ring-design.md`. The full goal remains active and incomplete.
+
+
+## User objective extension, 2026-10-05
+
+After the complete implementation/support matrix is working and verified, write a full implementation note, with special attention to symmetry. Ground it in the final code and explain tensor/sector conventions, irrep multiplicities and target sectors, physical index ownership and arbitrary ties, actual virtual OBC/PBC topology, native H/N contractions and recoupling, gauges and metric support, one-site/CBE/two-site update steps, all compression methods and independent iteration units, acceptance and numerical recovery, independent references and remaining numerical limitations. Include derivations where needed rather than skipping steps. Intermediate design notes do not satisfy this deliverable.
+
+Only after that correctness-and-documentation gate, read the account's current weekly usage using the usage-limits tool. Interpret the thresholds as **remaining** capacity. If more than 10% remains, profile the completed implementation and investigate worthwhile speedups, including reuse of existing DMRG backends or carefully scoped compiled kernels. Implement one improvement at a time and verify numerical accuracy before moving to the next. Changes may alter results only at machine-precision levels; do not weaken truncation, inner convergence, symmetry or acceptance criteria to improve timing. Continue until approximately 5% weekly capacity remains or worthwhile verified improvement opportunities are exhausted. Recheck actual usage between completed improvements, not by guessing from token counts. Do not start this optional performance phase while required correctness work is unfinished.
+
+The requested scope remains all original model/symmetry/topology/method combinations plus this note and conditional performance phase. No goal completion claim is justified by the current checkpoints.
