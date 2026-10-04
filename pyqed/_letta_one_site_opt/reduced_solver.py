@@ -873,6 +873,18 @@ def reduced_letta_dmrg(hamiltonian, *, state, options):
             hamiltonian = validated_factors
     else:
         hamiltonian = _validate_dense_hamiltonian(hamiltonian, state)
+    if options.cbe_enabled:
+        if not isinstance(hamiltonian, ReducedMPOHamiltonian) or hamiltonian.contraction_backend != 'reduced':
+            raise ValueError('reduced CBE requires a native ReducedMPOHamiltonian')
+        if options.cbe_selector != 'exact':
+            raise ValueError('reduced CBE currently supports the exact residual selector only')
+        if options.cbe_baseline_guard_fraction != 0.:
+            raise ValueError('reduced CBE requires the strict one-site baseline guard (fraction=0)')
+        if options.cbe_preselection_dimension is not None:
+            raise ValueError('reduced exact CBE does not use a preselection dimension')
+        if not options.cbe_conditional_trim:
+            raise ValueError('reduced CBE requires physical-metric pair trimming')
+    nominal_bond = max((len(bond) for bond in state.bond_sectors), default=1)
     state = state.copy()
     direction = str(options.start_direction).lower()
     if direction not in {"lr", "rl"}:
@@ -885,7 +897,6 @@ def reduced_letta_dmrg(hamiltonian, *, state, options):
     history = []
     converged = False
     message = "STOP: MAXIMUM SWEEPS REACHED"
-    nominal_bond = max((len(bond) for bond in state.bond_sectors), default=1)
     context = (ReducedSweepContext(state, hamiltonian)
         if isinstance(hamiltonian, ReducedMPOHamiltonian)
         and hamiltonian.contraction_backend == 'reduced' and options.gauge_mode == 'frontier' else None)
@@ -897,7 +908,14 @@ def reduced_letta_dmrg(hamiltonian, *, state, options):
         )
         updates = []
         for site in sites:
-            updates.append(optimize_reduced_site(state, hamiltonian, site, options, context=context))
+            if options.cbe_enabled:
+                from .reduced_cbe import reduced_cbe_site
+                updates.append(reduced_cbe_site(state, hamiltonian, site, direction, nominal_bond, options))
+                # A new multiplet allocation changes layouts as well as values.
+                if context is not None:
+                    context = ReducedSweepContext(state, hamiltonian)
+            else:
+                updates.append(optimize_reduced_site(state, hamiltonian, site, options, context=context))
             if options.gauge_mode == 'frontier':
                 cut = site+1 if direction == 'lr' else site
                 if 0 < cut < state.nsites:
@@ -927,7 +945,9 @@ def reduced_letta_dmrg(hamiltonian, *, state, options):
                 f"energy={energy:.14f}  dE/site={density_change:.3e}"
             )
         if density_change <= options.tolerance and all(
-                u.accepted and u.local_converged for u in updates):
+                u.accepted and u.local_converged and not u.cbe_recovery_reason
+                and all(d.get('optimizer_success', True) for d in u.cbe_compression_diagnostics)
+                for u in updates):
             from .reduced_updates import reduced_stationarity
             audit = reduced_stationarity(state, hamiltonian, range(state.nsites), options)
             if max(r['relative_residual'] for r in audit) <= options.eigensolver_tolerance:

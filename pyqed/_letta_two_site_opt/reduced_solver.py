@@ -783,8 +783,6 @@ def _expand_reduced_pair_space(state, left_site, bond_dim):
 def _optimize_allocated_reduced_pair(
     state, hamiltonian, left_site, direction, bond_dim, options
 ):
-    from .solver import LETTAPairUpdate
-
     problem = reduced_pair_problem(
         state,
         hamiltonian,
@@ -795,9 +793,25 @@ def _optimize_allocated_reduced_pair(
     local_energy, vector, metric_rank, residual = _solve_local_problem(
         problem, options, initial_vector=problem.old_vector
     )
+    return compress_reduced_pair_vector(state, hamiltonian, problem, vector,
+        local_energy, metric_rank, residual, direction, bond_dim, options)
+
+
+def compress_reduced_pair_vector(state, hamiltonian, problem, vector, local_energy,
+                                 metric_rank, residual, direction, bond_dim, options,
+                                 *, acceptance_energy=None):
+    """Compress a supplied pair target, without performing a pair eigensolve.
+
+    CBE supplies its expanded one-site result and compares the compressed state
+    with its ordinary one-site baseline. A two-site step defaults to comparing
+    with its own incumbent. Callers own transactional recovery on exceptions.
+    """
+    from .solver import LETTAPairUpdate
+    left_site = problem.left_site
     if all(len(state.site_neighborhood(i)) == 1 for i in range(state.nsites)):
         return _optimize_untied_split(state, hamiltonian, problem, vector,
-            local_energy, metric_rank, residual, direction, bond_dim, options)
+            local_energy, metric_rank, residual, direction, bond_dim, options,
+            acceptance_energy=acceptance_energy)
     optimized = problem.layout.unpack(vector)
     sites = tuple(problem.frontier.to_mps(state))
     split = _split_reduced_pair(
@@ -895,7 +909,8 @@ def _optimize_allocated_reduced_pair(
     if energy_fit is not None:
         state.tensors, state.bond_sectors = energy_fit.state.tensors, energy_fit.state.bond_sectors
         new_energy = energy_fit.energy
-    accepted = np.isfinite(new_energy) and new_energy <= old_energy + options.energy_increase_tolerance
+    threshold = old_energy if acceptance_energy is None else acceptance_energy
+    accepted = np.isfinite(new_energy) and new_energy <= threshold + options.energy_increase_tolerance
     if not accepted:
         state.tensors[left_site] = old_left
         state.tensors[left_site + 1] = old_right
@@ -984,7 +999,7 @@ def _schmidt_split_untied(problem, blocks, sites, state, bond_dim, direction, op
 
 
 def _optimize_untied_split(state, hamiltonian, problem, vector, local_energy,
-                          metric_rank, residual, direction, bond_dim, options):
+                          metric_rank, residual, direction, bond_dim, options, *, acceptance_energy=None):
     from .solver import LETTAPairUpdate
     i = problem.left_site
     sites = tuple(problem.frontier.to_mps(state))
@@ -1010,7 +1025,8 @@ def _optimize_untied_split(state, hamiltonian, problem, vector, local_energy,
     if energy_fit is not None:
         state.tensors, state.bond_sectors = energy_fit.state.tensors, energy_fit.state.bond_sectors
         energy = energy_fit.energy
-    accepted = np.isfinite(energy) and energy <= old_energy+options.energy_increase_tolerance
+    threshold = old_energy if acceptance_energy is None else acceptance_energy
+    accepted = np.isfinite(energy) and energy <= threshold+options.energy_increase_tolerance
     if not accepted:
         state.tensors[i], state.tensors[i+1], state.bond_sectors = old_a, old_b, old_bonds
         energy = old_energy

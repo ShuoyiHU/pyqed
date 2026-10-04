@@ -1,6 +1,6 @@
-# Proposed reduced one-site CBE implementation
+# Reduced one-site CBE implementation and remaining work
 
-This is the next implementation design, not completed support. Preserve the full parent plan: U(1)/SU(2), QC/condensed, OBC/closed PBC, arbitrary ties, all three optimization methods and all four compressors remain required.
+The native SU(2) OBC path is implemented and tested. Abelian sharing, streamed selection and ring support remain pending. Preserve the full parent plan: U(1)/SU(2), QC/condensed, OBC/closed PBC, arbitrary ties, all three optimization methods and all four compressors remain required.
 
 ## Existing reusable pieces
 
@@ -15,7 +15,7 @@ This is the next implementation design, not completed support. Preserve the full
 1. Construct a candidate space containing reachable complete multiplets. Retain the incumbent exactly: never count random seeded partner rows as an already-active tangent direction.
 2. Form the covector residual `(H - E N) x` using native reduced actions. Raise it with the supported metric inverse, respecting the boundary Gram nullspace and irrep dimension weights.
 3. Build a matrix-free tangent operator for variations of the ORIGINAL left and right source parameters. In weighted coordinates, project the raised residual off this tangent with LSMR; check the projection status and remaining tangent overlap.
-4. Fit the missing direction with a small legal reduced factor pair. Use a physical-metric sector SVD as an initializer and the shared compressor to enforce arbitrary tying. Weighted sector ranking must include complete-multiplet norm weights. An ordinary unweighted frontier SVD alone is not a metric-optimal selector.
+4. Fit the missing direction with a small legal reduced factor pair. Use the shared compressor with legal source-coordinate starts that include all tie labels. Greedily try complete-multiplet allocations and rank their achieved physical-metric loss, which includes irrep norm weights. Projecting an unconstrained frontier SVD alone can erase tie-label directions and trap ALS; it is not used as the sole selector initializer.
 5. For a left-to-right step, append selected right-factor rows and zero left-factor columns; reverse for right-to-left. Introduce only the selected multiplet multiplicities. Verify exact state preservation before any optimization.
 6. Solve the EXPANDED ONE-SITE problem. No two-site energy eigensolve is allowed in this CBE path.
 7. Refactor pair truncation into a reusable target-vector fitting helper so it can compress the expanded one-site state WITHOUT first optimizing a merged pair. Allow energy acceptance against the original one-site baseline, not against the lower uncompressed expanded energy.
@@ -33,7 +33,7 @@ A sector SVD can use padded square boundary factors, so template dimensions rema
 
 Investigate representing U(1) through the same reduced backend with trivial spin irreps and physical multiplicities (e.g. the two singly occupied spatial-orbital states). This could reuse all native contraction/compression/update code without duplicating CBE. Validate fermionic signs, physical basis order, sector mapping and exact conversion from Abelian LatticeLETTA. General signed charges/multiple U(1)s may need generic Sector metadata rather than a nonnegative particle-number-specific sector class. This is a proposal, not an assumption that the current interfaces already support it.
 
-## Required tests before exposing the new dispatch
+## Validation gates for the new dispatch
 
 - Metric inverse/root identities and tangent adjoint/orthogonality tests.
 - New-sector discovery from a deliberately incomplete allocation.
@@ -42,3 +42,10 @@ Investigate representing U(1) through the same reduced backend with trivial spin
 - Guard that no pair energy eigensolver is called during CBE.
 - Same-start one-site energy baseline, nominal cap, complete multiplets and numerical rollback including sector/cache restoration.
 - Hubbard and molecular small-reference comparisons, all compression solvers, U(1) and SU(2). Do not equate fewer sweeps with correctness or assert global convergence from energy plateaus.
+
+
+## Implemented checkpoint
+
+`reduced_cbe.py` now performs the native residual/tangent projection, greedy legal factor fitting, zero-partner expansion, expanded one-site solve, compression and strict baseline acceptance. `compress_reduced_pair_vector` separates supplied-target compression from the pair eigensolve. Tests forbid pair eigensolves and global/magnetic state reconstruction during CBE, and independently validate tangent projection, state preservation, energies, all four compressors and numerical recovery. A four-site tied Hubbard case agrees with PySCF FCI; an untied six-multiplet pilot remains above FCI, as expected for an insufficient Schmidt allocation. No claim of generic global variational convergence follows from these small tests.
+
+The supported metric inverse is built from equilibrated boundary Gram factors and is tested with null directions and coordinate scales spanning sixteen orders. It obeys the supported inverse identity and is not described as a Euclidean Moore–Penrose inverse in arbitrary raw coordinates.

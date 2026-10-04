@@ -1297,8 +1297,8 @@ def letta_dmrg(
     if isinstance(state, ReducedLatticeLETTA) or isinstance(symmetry, ReducedSymmetry):
         from .reduced_solver import reduced_letta_dmrg
 
-        if options.cbe_enabled:
-            raise ValueError("LETTA-CBE does not yet support reduced SU(2) states.")
+        if options.cbe_enabled and options.cbe_selector != 'exact':
+            raise ValueError("reduced CBE currently supports the exact residual selector only")
         if state is None:
             if lattice_shape is None:
                 raise ValueError("lattice_shape is required when reduced state is omitted.")

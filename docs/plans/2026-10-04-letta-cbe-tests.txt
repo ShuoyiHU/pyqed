@@ -1,0 +1,12 @@
+Native reduced CBE checkpoint on letta_oct_4_sym
+
+Command: PYTHONPATH=. pytest -p no:cacheprovider -q tests/test_letta_reduced_cbe.py tests/test_letta_reduced_updates.py tests/test_letta_reduced_compression.py tests/test_letta_su2_schmidt.py tests/test_letta_native_su2.py tests/test_letta_reduced_two_site.py tests/test_letta_reduced_one_site.py tests/test_letta_reduced_acceptance.py tests/test_letta_qchem.py tests/test_letta_qchem_symmetry.py tests/test_letta_cbe_recovery.py
+Interpreter: /Users/shuoyihu/Documents/GitHub/pyqed/.venv-1/bin/python
+BLAS/OpenMP threads limited to 1; bytecode disabled; caches outside repository.
+
+........................................................................ [ 54%]
+...........................................................              [100%]
+131 passed in 213.09s (0:03:33)
+
+Source manifest recheck: 302 bg files and 300 QC files unchanged.
+This validates the current open-boundary reduced CBE checkpoint, not the unfinished overall matrix.

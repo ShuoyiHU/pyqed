@@ -24,15 +24,18 @@ class ReducedPairMetricRoot:
         chain = ReducedNormChain.build(sites)
         i = problem.left_site
         scale = np.exp(.5*(chain.left_log_scales[i]+chain.right_log_scales[i+2]))
-        left = {q: _equilibrated_metric_factors(g, tolerance)[1]
+        left = {q: _equilibrated_metric_factors(g, tolerance)
                 for q, g in chain.left[i].items()}
-        right = {q: _equilibrated_metric_factors(g, tolerance)[1]
+        right = {q: _equilibrated_metric_factors(g, tolerance)
                  for q, g in chain.right[i+2].items()}
         self.input_layout = problem.layout
         self.factors = {}
+        self.inverse_factors = {}
         shapes = {}
         for key, shape in problem.layout.shapes.items():
-            l, r = left[key[0]], right[key[-1]]
+            wl, l = left[key[0]]
+            wr, r = right[key[-1]]
+            self.inverse_factors[key] = (wl, wr, scale*np.sqrt(_sector_irrep(key[-1]).dim))
             self.factors[key] = (l, r, scale*np.sqrt(_sector_irrep(key[-1]).dim))
             shapes[key] = (l.shape[0], shape[1], shape[2], r.shape[0])
         self.output_layout = _BlockVectorLayout(shapes)
@@ -50,6 +53,28 @@ class ReducedPairMetricRoot:
         return self.input_layout.pack({key: scale*np.einsum('al,br,apqb->lpqr',
             l.conj(), r.conj(), blocks[key], optimize=True)
             for key, (l, r, scale) in self.factors.items()})
+
+    def unwhiten(self, vector):
+        """Map supported orthonormal coordinates back to pair coefficients."""
+        blocks = self.output_layout.unpack(vector)
+        return self.input_layout.pack({key: np.einsum('la,rb,apqb->lpqr',
+            l, r, blocks[key], optimize=True)/scale
+            for key, (l, r, scale) in self.inverse_factors.items()})
+
+    def unwhiten_adjoint(self, vector):
+        blocks = self.input_layout.unpack(vector)
+        return self.output_layout.pack({key: np.einsum('la,rb,lpqr->apqb',
+            l.conj(), r.conj(), blocks[key], optimize=True)/scale
+            for key, (l, r, scale) in self.inverse_factors.items()})
+
+    def inverse_action(self, vector):
+        """Apply a supported inverse: N inverse_action(N x) = N x.
+
+        Equilibrating boundary coordinates before the rank decision preserves
+        small but independent physical directions. This is a generalized inverse,
+        not necessarily the Euclidean Moore-Penrose inverse in the raw gauge.
+        """
+        return self.unwhiten(self.unwhiten_adjoint(vector))
 
 
 def reduced_factor_blocks(state, site, left_embedding, right_embedding, retained):
