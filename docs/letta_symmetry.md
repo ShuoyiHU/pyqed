@@ -57,6 +57,21 @@ PYTHONPATH=. python examples/letta_symmetry.py --model hubbard --sites 4 \
 
 Large tie frontiers can make exact cyclic environments expensive in both memory and time, even for a small physical system. The compression workspace limit applies to compression workspaces; it is not a global process-memory limit. No environment truncation is silently introduced to fit that limit.
 
+For a concrete resource observation on numerical commit `126bc0b`, the public
+three-site periodic fermionic Hubbard test (hopping 1, repulsion 3, chemical
+potential 0.2, two spin-up and one spin-down electron; closed virtual ring; ties `((0, 2), (1,), (2, 0))`; seed 31;
+default one multiplicity copy per sector) remained in its one-site test after
+50 minutes. A one-second macOS execution sample during that test found the
+main thread in complex NumPy/BLAS matrix multiplication and reported a 32.2 GB
+physical footprint, with a 49.8 GB peak. These are observations of an unfinished
+run, not its final runtime or a completed accuracy result. Process resident
+memory alone substantially understated the footprint in that sample. The
+sample does not identify which Python contraction produced the multiplication.
+Thus physical site count and multiplicity copies alone are insufficient to
+predict feasible memory use; the tied frontier and cyclic environment also
+matter. This observation is not an argument for relaxing the physical metric
+or silently truncating environment channels.
+
 
 Development branch: `letta_oct_4_sym`. The complete required support matrix and current unfinished work are in [the implementation plan](plans/2026-10-04-letta-symmetry.md).
 

@@ -117,3 +117,17 @@ Hamiltonian, fixed N=3 and S=1/2, unchanged backward/wrap ties and no numerical
 recovery. This supplies the previously excluded current-source stress evidence;
 it does not stand in for the four public fermionic U(1) cases still running in
 session 67996.
+
+
+## Live fermionic-ring resource observation
+
+The same current-source session 67996 / PID 61659 remained live after 50:13
+elapsed, with 45:40.70 CPU time and 90.1% CPU. No completed result or failure
+was reported by the first selected one-site case. A one-second macOS sample
+at 2026-10-05 04:53:55 +0800 placed the main thread in NumPy complex matrix
+multiplication / BLAS and reported 32.2 GB physical footprint, 49.8 GB peak.
+Raw diagnostic: /private/tmp/letta-public-ring-stack.txt. This is liveness and
+resource evidence, not a completed test or a Python-level bottleneck profile.
+The guide now records the exact test configuration and limits of this
+observation. No numerical source changed, no process was restarted, and the
+four-case correctness gate and subsequent usage/performance gate remain open.
