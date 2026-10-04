@@ -91,3 +91,19 @@ A combined implementation suite is also active in session 96127, log
 backward-tie CBE stress case explicitly deselected. That stress case previously
 passed on an earlier solver and still requires final-source accounting; neither
 an exclusion nor a live process is a completed verification gate.
+
+
+The combined run (session 96127) completed with exit 0: **400 passed, 1 deselected
+in 402.35 s**, on numerical commit 126bc0b. It covers reduced symmetry/state,
+frontier/norm/H, all compressors, eigensolver scaling/exploration, update/gauge/
+resource recovery, Abelian conversion, native ring/target/pair/allocation/scaling,
+all three methods, Schmidt and molecular symmetry tests. Counts overlap earlier
+focused runs and must not be added as unique tests.
+
+The sole excluded stress test now runs separately in session 24558, log
+/private/tmp/letta-qc-ring-stress-final.log. It uses a complex three-orbital
+molecular doublet, a nontrivial spin anchor and backward/wrap ties, and checks
+independent physical energy, charge and total spin with no numerical recovery.
+The remaining public test session is still 67996. These five cases are the
+outstanding current-source numerical checks; the implementation note must
+receive their results and final audit before the performance-phase usage gate.
