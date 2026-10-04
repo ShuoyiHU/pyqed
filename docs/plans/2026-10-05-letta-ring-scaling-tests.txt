@@ -1,0 +1,24 @@
+Worktree: /Users/shuoyihu/.codex/worktrees/letta-oct-4-sym/pyqed
+
+Before correction: six reproduced failures (intermediate overflow/underflow under cancelling binary core gauges).
+=========================== short test summary info ============================
+FAILED tests/test_letta_ring_scaling.py::test_long_cyclic_norm_h_and_local_actions_preserve_binary_gauges[32]
+FAILED tests/test_letta_ring_scaling.py::test_long_cyclic_norm_h_and_local_actions_preserve_binary_gauges[64]
+FAILED tests/test_letta_ring_scaling.py::test_long_cyclic_pair_complements_keep_absolute_metric_scale[0]
+FAILED tests/test_letta_ring_scaling.py::test_long_cyclic_pair_complements_keep_absolute_metric_scale[15]
+FAILED tests/test_letta_ring_scaling.py::test_long_cyclic_pair_complements_keep_absolute_metric_scale[31]
+FAILED tests/test_letta_ring_scaling.py::test_long_cyclic_pair_complements_keep_absolute_metric_scale[32]
+6 failed in 1.99s
+
+Focused final validation:
+........                                                                 [100%]
+8 passed in 2.09s
+
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONWARNINGS=ignore NUMBA_CACHE_DIR=/private/tmp/letta-oct4-numba MPLCONFIGDIR=/private/tmp/letta-mpl OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 NUMEXPR_NUM_THREADS=1 PYTHONPATH=. /Users/shuoyihu/Documents/GitHub/pyqed/.venv-1/bin/python -m pytest -p no:cacheprovider -q tests/test_letta_ring_scaling.py tests/test_letta_native_ring.py tests/test_letta_ring_target.py tests/test_letta_ring_pair.py tests/test_letta_ring_allocation.py tests/test_letta_ring_compression.py tests/test_letta_ring_two_site.py tests/test_letta_ring_cbe.py tests/test_letta_ring_sweeps.py -k "not complex_three_orbital_qc_ring_with_backward_ties"
+
+........................................................................ [ 53%]
+..............................................................           [100%]
+134 passed, 1 deselected in 243.27s (0:04:03)
+
+The combined run was collected before the last two explicit out-of-range failure tests were added; the final focused run includes those. The excluded molecular case had already passed in the original extended ring run (2026-10-05-letta-ring-cbe-tests.txt); it was not re-executed in this combined run. Test counts overlap.

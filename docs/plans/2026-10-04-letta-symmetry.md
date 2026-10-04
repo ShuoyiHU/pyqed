@@ -32,7 +32,7 @@
 | SU(2) closed-ring all three methods | Reduced cyclic recoupling, explicit target representation, no magnetic/determinant solver fallback | All three ring methods implemented; reduced cyclic reference tests pass; molecular backward-tie stress test passed |
 | Arbitrary tying | Forward/backward/nonadjacent/cross-cut/wrap dependencies, exact embedding and metric tests | Open/ring embeddings and all three methods implemented; complex molecular ring CBE validation passed |
 | QC and condensed models | Molecular integrals and Hubbard/Bose/Heisenberg examples with allowed symmetries | Pending integrated validation |
-| Recovery and variational acceptance | Restored state/sectors/caches, same-start one-site baseline, strict fresh energy check | Open/ring update transactions and strict baselines implemented; OBC sweep-level gauge recovery pending |
+| Recovery and variational acceptance | Restored state/sectors/caches, same-start one-site baseline, strict fresh energy check | Open/ring update and gauge recovery implemented; strict baselines, cache rebuilds and injected partial failures tested |
 | Accuracy diagnostics | Inner residuals/status, truncation stationarity, rejected-update handling; plateau != global minimum | Pending |
 | Public API/documentation | Clear boundary/model distinction, D multiplets vs magnetic dimension, runnable examples | Pending |
 | Full implementation note | Complete code-grounded description, especially symmetry representations, contractions, gauges, expansion, compression, recovery and limitations | Required after implementation; pending |
@@ -173,3 +173,8 @@ The requested scope remains all original model/symmetry/topology/method combinat
 - 2026-10-05 OBC gauge recovery: sweep-level physical-energy checks, transactional tensor/sector restore, moving-environment rebuild after partial cache mutation, and continuation without false convergence. Initial and subsequent shifts are covered in both directions for one-site, CBE and two-site. Low-level standalone gauge errors still propagate after restoration.
 - Verification: 17 new focused recovery tests passed, then 113 combined reduced/gauge/update/CBE/two-site/molecular-acceptance/ring-sweep/Abelian tests passed in 87.15 s. Exact command/output in 2026-10-05-letta-sweep-recovery-tests.txt.
 - Long-ring scale stress tests now reproduce intermediate overflow/underflow in native single-site and pair complement products, despite representable final contractions. Fixing this numerical issue is the next correctness task; this is not the optional performance phase.
+
+
+- 2026-10-05 cyclic scaling checkpoint: reproduced six failures from intermediate overflow/underflow under cancelling binary gauges. Shared exact power-of-two transfer multiplication fixes both one-site and pair complements without rank/channel truncation or independent H/N rescaling. Truly unrepresentable absolute environments fail explicitly.
+- Verification: 8 numerical-range tests passed; 134 combined cyclic norm/operator/target/pair/allocation/compression/two-site/CBE/sweep tests passed, with the 20-minute molecular CBE case excluded from this rerun after its previous successful run. Counts overlap. Exact outputs in 2026-10-05-letta-ring-scaling-tests.txt.
+- Next implementation task: public model/state/method API and its independent cross-product tests, detailed in 2026-10-05-letta-public-api.md. Existing detailed diagnostics require a public-API audit; complete feature-matrix verification and final implementation note remain required before the usage/performance gate.

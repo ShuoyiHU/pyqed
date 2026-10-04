@@ -47,17 +47,7 @@ def _pair_operator_coefficient(bra, ket, operator, left_channel, right_channel, 
 
 
 def _pair_environment(chain, site):
-    n = len(chain.sites)
-    # The removed internal cut must not restrict the expanded pair's channels.
-    cuts = [c for i, c in enumerate(chain.cuts) if i != (site+1) % n]
-    channels = set.intersection(*(set(c.sizes) for c in cuts))
-    result = {}
-    for j in sorted(channels):
-        value = np.eye(chain.cuts[(site+2) % n].sizes[j], dtype=complex)
-        for step in range(2, n):
-            value = value@chain.transfers[(site+step) % n][j]
-        result[j] = value
-    return result
+    return chain.environment(site, removed=2)
 
 
 def _pair_layout(left, right):

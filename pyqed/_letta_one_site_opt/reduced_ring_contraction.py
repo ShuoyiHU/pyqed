@@ -74,19 +74,70 @@ class _NormEntry:
     coefficient: float
 
 
+def _binary_scaled(matrix):
+    """Separate an exact binary scale without overflowing a complex modulus."""
+    peak = max(float(np.max(np.abs(matrix.real), initial=0.)),
+               float(np.max(np.abs(matrix.imag), initial=0.)))
+    if not np.isfinite(peak):
+        raise FloatingPointError('nonfinite cyclic transfer product')
+    if peak == 0.:
+        return matrix, 0
+    exponent = int(np.frexp(peak)[1])
+    return _binary_rescale(matrix, -exponent), exponent
+
+
+def _binary_rescale(matrix, exponent):
+    with np.errstate(over='ignore', under='ignore', invalid='ignore'):
+        if np.iscomplexobj(matrix):
+            result = np.empty_like(matrix)
+            result.real = np.ldexp(matrix.real, exponent)
+            result.imag = np.ldexp(matrix.imag, exponent)
+        else:
+            result = np.ldexp(matrix, exponent)
+    return result
+
+
+def _transfer_product(matrices, dimension):
+    """Multiply every transfer exactly up to roundoff, with no rank truncation.
+
+    Keep an integer power of two outside each multiplication. Intermediate
+    overflow/underflow cannot erase a representable final environment merely
+    because neighboring tensor gauges have large cancelling scalar factors.
+    """
+    product = np.eye(dimension, dtype=complex)
+    exponent = 0
+    for matrix in matrices:
+        factor, factor_exponent = _binary_scaled(matrix)
+        product, product_exponent = _binary_scaled(product@factor)
+        exponent += factor_exponent+product_exponent
+        if not np.any(product):
+            exponent = 0
+    result = _binary_rescale(product, exponent)
+    if not np.all(np.isfinite(result)):
+        raise FloatingPointError('cyclic environment exceeds floating-point range')
+    if np.any(product) and not np.any(result):
+        raise FloatingPointError('cyclic environment underflows floating-point range')
+    return result
+
+
 class _CyclicTransferChain:
-    def environment(self, site):
-        """All sites except this one, mapping its right cut to its left cut."""
+    def environment(self, site, *, removed=1):
+        """Complement of consecutive cores, from their right to left cut.
+
+        Internal cuts of the removed region cannot restrict expansion channels.
+        The same scaled contraction is used by one-site and two-site actions.
+        """
         n = len(self.sites)
-        start = (site+1) % n
-        channels = set.intersection(*(set(c.sizes) for c in self.cuts))
-        result = {}
-        for j in sorted(channels):
-            product = np.eye(self.cuts[start].sizes[j], dtype=complex)
-            for step in range(1, n):
-                product = product@self.transfers[(site+step) % n][j]
-            result[j] = product
-        return result
+        if not 0 <= site < n or not 1 <= removed <= n:
+            raise ValueError('invalid cyclic complement')
+        start = (site+removed) % n
+        internal = {(site+step) % n for step in range(1, removed)}
+        cuts = [cut for i, cut in enumerate(self.cuts) if i not in internal]
+        channels = set.intersection(*(set(c.sizes) for c in cuts))
+        return {j: _transfer_product(
+                    (self.transfers[(site+step) % n][j] for step in range(removed, n)),
+                    self.cuts[start].sizes[j])
+                for j in sorted(channels)}
 
     def channel_overlaps(self):
         environment = self.environment(0)

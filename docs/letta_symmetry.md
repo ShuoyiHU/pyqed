@@ -339,3 +339,16 @@ nor a determinant Hamiltonian is built in production. The workspace limit can
 trigger ordinary-step fallback. Streamed/shrewd selection, separate preselection
 controls and relaxed baseline allowances are explicitly rejected. The dense
 cyclic root is not a claim of scalable large-ring CBE.
+
+
+## Numerical range of cyclic products
+
+Single-site and pair environments now use the same cyclic complement contraction. Each transfer and intermediate product is stored temporarily as a bounded matrix and an integer binary exponent,
+
+$$T_i=2^{e_i}\widehat T_i,\qquad P_k=2^{p_k}\widehat P_k.$$
+
+A multiplication computes the bounded product, extracts another power of two, and adds its exponent to the accumulated integer. Every transfer channel and full matrix rank is retained. The absolute scale is restored at the end separately for each channel; Hamiltonian and norm actions are not independently renormalized, so their physical generalized eigenproblem is unchanged. Pair complements exclude the removed internal cut from channel restrictions, as before.
+
+This prevents an intermediate overflow or underflow from destroying a representable final environment under large cancelling scalar gauges. It does not make a truly unrepresentable absolute environment representable: that case raises a numerical error for transactional recovery instead of returning NaNs or a false zero. Tensor-transfer construction and all other numerical operations still have ordinary floating-point range limits.
+
+Tests use complex 32- and 64-core rings with nontrivial spin transfer channels and binary core gauges whose product is exactly one. Independent multiplicity transfers verify norms and Hamiltonian expectations. Single-site and pair actions retain their expected absolute scale on internal and closure-adjacent edges. These are numerical-range tests, not evidence that large interacting optimization problems have reached global minima.
