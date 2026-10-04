@@ -63,3 +63,55 @@ def test_native_equilibrated_support_projector_preserves_physical_metric(pair):
     np.testing.assert_allclose(correlation@projected, correlation@x, atol=3e-10)
     np.testing.assert_allclose(projector(projected), projected, atol=3e-12)
     assert np.linalg.norm(projected) <= np.linalg.norm(x)+1e-12
+
+
+@pytest.mark.parametrize('matrix_free', [False, True])
+@pytest.mark.parametrize('case', ['diagonal', 'complex-disconnected', 'singular-scaled'])
+def test_stationary_excited_start_does_not_hide_lower_root(case, matrix_free):
+    # The incumbent is an exact excited eigenstate. Coordinate seeding confined
+    # to the first 16 entries cannot see the disconnected lowest eigenspace.
+    dimension = 64
+    physical = np.diag(np.linspace(.25, 3., dimension)).astype(complex)
+    physical[-1, -1] = -2.
+    if case != 'diagonal':
+        rng = np.random.default_rng(190)
+        rotation, _ = np.linalg.qr(rng.normal(size=(16, 16))
+                                  + 1j*rng.normal(size=(16, 16)))
+        physical[-16:, -16:] = rotation @ physical[-16:, -16:] @ rotation.conj().T
+    frame = np.eye(dimension, dtype=complex)
+    if case == 'singular-scaled':
+        # Add both a redundant column and a zero-norm coordinate, then change
+        # coefficient scales without changing the physical variational space.
+        frame = np.column_stack((frame, frame[:, 0], np.zeros(dimension)))
+        frame *= np.geomspace(1e-4, 1e4, frame.shape[1])
+    h, n = frame.conj().T@physical@frame, frame.conj().T@frame
+    size = frame.shape[1]
+    problem = ReducedLocalProblem(0, None,
+        SimpleNamespace(source_size=size, target_size=size),
+        None if matrix_free else h, None if matrix_free else n,
+        hamiltonian_action=lambda x: h@x, metric_action=lambda x: n@x)
+    initial = np.zeros(size, dtype=complex)
+    initial[0] = 1/frame[0, 0]
+    energy, vector, _, _ = _solve_local_problem(problem,
+        LETTADMROptions(eigensolver_tolerance=1e-11), initial_vector=initial)
+    actual = frame@vector
+    expected, states = np.linalg.eigh(physical)
+    assert energy == pytest.approx(expected[0], abs=2e-10)
+    assert abs(np.vdot(actual, states[:, 0])) == pytest.approx(1., abs=2e-10)
+    assert np.linalg.norm(physical@actual-energy*actual) < 2e-9
+
+
+def test_exploration_preserves_incumbent_inside_degenerate_ground_space():
+    dimension = 32
+    diagonal = np.r_[np.zeros(20), np.ones(12)]
+    problem = ReducedLocalProblem(0, None,
+        SimpleNamespace(source_size=dimension, target_size=dimension),
+        hamiltonian_action=lambda x: diagonal*x, metric_action=lambda x: x.copy())
+    rng = np.random.default_rng(293)
+    initial = rng.normal(size=dimension)+1j*rng.normal(size=dimension)
+    initial[20:] = 0.
+    initial /= np.linalg.norm(initial)
+    energy, actual, _, _ = _solve_local_problem(problem, LETTADMROptions(),
+                                               initial_vector=initial)
+    assert energy == pytest.approx(0., abs=1e-12)
+    np.testing.assert_allclose(actual, initial, atol=2e-12)

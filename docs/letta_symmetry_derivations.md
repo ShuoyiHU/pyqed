@@ -280,6 +280,41 @@ conditional support projectors are constructed from the normalized boundary
 Grams and act on these equilibrated coordinates. A raw-coordinate projector
 cannot be reused unchanged after this transformation. Generic correlated
 layouts retain the iterative metric-orthogonality and dependence checks.
+
+
+A small eigenvector residual alone does not identify the lowest eigenvalue.
+For example, with $N'=I$, an initial coordinate eigenvector of a diagonal
+$H'$ can have zero residual even when a different coordinate has lower energy.
+The Krylov sequence from that initial vector stays in its invariant eigenspace.
+Testing only a prefix of coordinate vectors does not resolve this problem.
+
+The matrix-free solver therefore starts with the incumbent and two reproducible
+complex random probes, projected and orthonormalized in $N'$. If their columns
+form $V$, its Ritz problem is
+
+$$
+V^\dagger N' V=I,\qquad
+(V^\dagger H'V)c_j=\theta_j c_j,\qquad
+u_j=Vc_j,\qquad r_j=H'u_j-\theta_j N'u_j.
+$$
+
+The lowest Ritz vector can still be the unchanged excited incumbent while the
+initial probe Rayleigh quotients lie above it. Consequently, the iteration
+also examines residuals of the next two lowest Ritz vectors. The first
+unconverged independent residual extends $V$. Coordinate seeds remain a
+fallback for insufficient exploration; a restart keeps up to four low Ritz
+vectors. Within a numerically degenerate lowest Ritz space, projection of the
+incumbent selects a continuous representative whenever possible.
+
+These probes change only the search space, never the physical Hamiltonian or
+state being represented. In exact arithmetic the incumbent's inclusion makes
+the lowest Ritz value no higher than its starting Rayleigh quotient. Random
+probes avoid the deterministic coordinate-prefix blind spot; they are not a
+proof that a finite capped iterative solve always finds the global lowest
+local eigenvalue. Residual checks, independent physical-energy acceptance and
+explicit iteration caps are still necessary. Regression tests compare against
+independent diagonalizations with a stationary excited start, a disconnected
+complex subspace, redundant/null coordinates and large coordinate scaling.
 Computing the diagonal currently requires one norm action per source coordinate;
 this accuracy correction is not claimed to improve runtime.
 

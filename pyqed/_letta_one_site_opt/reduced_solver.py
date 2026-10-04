@@ -665,26 +665,50 @@ def _davidson_in_metric_coordinates(problem, options, initial_vector):
             coefficients = vectors[:, 0]
         return float(values[0]), coefficients, values, vectors
 
+    # A warm start can be an exact excited eigenvector. Its residual then
+    # supplies no search direction, and a short prefix of coordinate seeds
+    # may miss an entire lower invariant subspace. Reproducible full-support
+    # probes explore every coordinate before testing residual convergence.
+    # They are search vectors only: no random perturbation of the state or
+    # Hamiltonian is made, and the incumbent remains in the Ritz space.
+    rng = np.random.default_rng(271828)
+    for _ in range(min(2, dimension - 1)):
+        candidate, metric_candidate = metric_orthogonalize(
+            rng.normal(size=dimension) + 1j*rng.normal(size=dimension))
+        if candidate is not None:
+            basis = np.column_stack((basis, candidate))
+            metric_basis = np.column_stack((metric_basis, metric_candidate))
+            hamiltonian_basis = np.column_stack(
+                (hamiltonian_basis, problem.apply_hamiltonian(candidate)))
+
     energy = np.inf
     residual = np.zeros(dimension, dtype=complex)
-    coefficients = np.ones(1, dtype=complex)
+    coefficients = np.ones(basis.shape[1], dtype=complex)
     for _iteration in range(int(options.eigensolver_max_iterations)):
         energy, coefficients, _values, projected_vectors = lowest_projected_root()
-        vector = basis @ coefficients
-        hamiltonian_vector = hamiltonian_basis @ coefficients
-        metric_vector = metric_basis @ coefficients
-        residual = hamiltonian_vector - energy * metric_vector
-        residual_scale = max(
-            1.0,
-            abs(energy),
-            float(np.linalg.norm(hamiltonian_vector)),
-            abs(energy) * float(np.linalg.norm(metric_vector)),
-        )
-        converged = np.linalg.norm(residual) <= tolerance * residual_scale
         candidate = None
         metric_candidate = None
-        if not converged:
+        converged = True
+        # Follow the exploratory Ritz roots as well as the incumbent. Merely
+        # adding random vectors is insufficient: their initial Rayleigh values
+        # may exceed an already stationary excited incumbent, whose residual
+        # would then suppress all further Hamiltonian-driven exploration.
+        roots = [coefficients] + [projected_vectors[:, j]
+            for j in range(1, min(3, projected_vectors.shape[1]))]
+        for root in roots:
+            hamiltonian_vector = hamiltonian_basis @ root
+            metric_vector = metric_basis @ root
+            root_energy = float(np.real(np.vdot(basis @ root, hamiltonian_vector)))
+            residual = hamiltonian_vector - root_energy * metric_vector
+            residual_scale = max(
+                1.0, abs(root_energy), float(np.linalg.norm(hamiltonian_vector)),
+                abs(root_energy) * float(np.linalg.norm(metric_vector)))
+            if np.linalg.norm(residual) <= tolerance * residual_scale:
+                continue
+            converged = False
             candidate, metric_candidate = metric_orthogonalize(-residual)
+            if candidate is not None:
+                break
         if candidate is None and (not converged or basis.shape[1] < minimum_explored):
             candidate, metric_candidate = next_independent_seed()
         if candidate is None:
