@@ -35,7 +35,7 @@
 | Recovery and variational acceptance | Restored state/sectors/caches, same-start one-site baseline, strict fresh energy check | Open/ring update and gauge recovery implemented; strict baselines, cache rebuilds and injected partial failures tested |
 | Accuracy diagnostics | Inner residuals/status, truncation stationarity, rejected-update handling; plateau != global minimum | Implemented and checked by reduced compression/update/recovery tests; iterative lowest-root limitations documented; broad final matrix remains pending |
 | Public API/documentation | Clear boundary/model distinction, D multiplets vs magnetic dimension, runnable examples | API, guide and CLI examples implemented/audited; 75 of 79 current public tests and three independent CLI reference checks pass; four fermionic U(1) ring cases pending |
-| Full implementation note | Complete code-grounded description, especially symmetry representations, contractions, gauges, expansion, compression, recovery and limitations | Required after implementation; pending |
+| Full implementation note | Complete code-grounded description, especially symmetry representations, contractions, gauges, expansion, compression, recovery and limitations | Written in docs/letta_symmetry.md and docs/letta_symmetry_derivations.md; source/equation/test-coverage audit complete, final validation accounting awaits four public ring cases |
 | Conditional precision-preserving speedups | After correctness and note, query weekly remaining capacity; if >10%, profile and validate each speedup until approximately 5% remains or worthwhile options are exhausted | Not started; correctness gates take priority |
 | Final verification and commit | Focused and combined numerical tests; clean scoped diff and accurate commit description | Pending |
 
@@ -203,3 +203,40 @@ The requested scope remains all original model/symmetry/topology/method combinat
 
 
 - The final-source complex three-orbital molecular ring CBE stress case passed (1 test, 1741.47 s, session 24558 exit 0). Independent energy/charge/spin, nontrivial anchor, backward/wrap ties and no-recovery assertions all passed. Combined current-source validation is now 400 implementation checks plus this separately run stress case (401 disjoint cases), with 75/79 public API tests complete. The only outstanding numerical cases are the four public fermionic U(1) ring checks in session 67996. Completion/note/performance gates remain unchanged until those finish.
+
+
+## Requirement audit while final cyclic validation runs
+
+The original QC source review is separate from this integration branch. Its
+45 passing native/QC/acceptance/Schmidt checks do not replace the integration
+branch's current-source results and are not added to the 401 implementation
+checks or 75 completed public API checks.
+
+Rechecked the committed source manifest against both original working trees:
+all 302 recorded bg hashes and 300 recorded QC hashes match. Parsed all 53
+implementation modules in the public API, one-site and two-site directories,
+and the shared compression module. `git diff --check` is clean. This confirms
+source preservation and syntax, not numerical correctness.
+
+The full implementation note is already written: the 511-line user/architecture
+guide and 622-line derivation companion explain physical ownership, invariant
+SU(2) tie labels, reduced CG coefficients and dimension factors, exact frontier
+copy/adjoint maps, metric support/equilibration, the four compression objectives
+and derivatives, covariant cyclic target closure, residual CBE, pair updates,
+strict baselines and recovery. The source responsibility table was cross-checked
+against the corresponding implementation modules. The note is no longer an
+unwritten deliverable; its final validation accounting remains open.
+
+Coverage audit distinguishes native missing-sector CBE tests (which forbid pair
+diagonalization and require actual gain) from broad API energy-bound tests that
+permit reported recovery. Open and ring compression tests cover all four
+solvers, physical metric/adjoint identities and independent ALS/LSMR controls;
+ring tests include nonseparable metrics and both target-closure edges. Target
+and recovery tests cover physical charge/spin and state/allocation restoration.
+These checks support the implementations, not a universal convergence theorem.
+
+The required remaining gate is unchanged: all three public methods on the
+three-site backward/wrap-tied fermionic U(1) ring and the two-copy fermionic ring
+allocation. They remain in the same live session 67996. No new duplicate run or
+numerical source change was made for this audit. Final correctness completion,
+weekly-usage gating and any precision-preserving performance work remain pending.
