@@ -51,7 +51,7 @@ A reduced two-site update exposes `compression_diagnostics`, including requested
 
 A capped fit retains its best non-increasing-loss iterate. It is not described as converged. Compression quality and final energy acceptance are separate: improving norm error alone cannot guarantee an energy decrease.
 
-The reduced metric square root factors only boundary multiplicity Grams. No dense square root of the full pair metric is constructed. Tiny coordinate scales are equilibrated before rank decisions, sharing the bg metric-conditioning implementation.
+For open virtual boundaries, the reduced metric square root factors boundary multiplicity Grams. The experimental cyclic pair adapter instead uses the full local reduced coefficient-space Gram; it does not assume a separable ring environment. Tiny coordinate scales are equilibrated before rank decisions. Neither path constructs a global determinant-space frame.
 
 ## Representation and current boundary scope
 
@@ -195,3 +195,12 @@ The norm convention is the invariant physical-plus-target scalar norm. Each raw 
 Accepted local updates pass a fresh physical energy check after normalization. A failed solve restores its incumbent. A failed gauge restores the state after the accepted local update and continues with subsequent cores. Recovery is recorded and prevents that sweep from being called converged. Energy plateaus require a fresh all-core local-residual audit; they are not guarantees of a global minimum.
 
 This is currently the **one-site** ring path. Asking it for CBE raises an explicit error; ring pair metrics, all four ring compressors and genuine ring CBE/two-site adapters remain required work. The existing open-chain boundary-Gram compression root cannot be used for a general cyclic metric.
+
+
+## Cyclic pair compression: internal adapter
+
+The native ring pair and compression adapters are independently verified, but are not yet connected to public ring CBE/two-site sweeps. `CyclicPairProblem` forms the full correlated H/N pair response on a physical/physical or closure-adjacent graph edge. Its fusion layout includes missing middle irreps, independent of the incumbent allocation.
+
+`compress_ring_pair` accepts the same `MetricCompressionOptions` and explicit ALS/LSMR budgets as the open reduced backend. All four solvers operate on the same cyclic physical-norm loss. The caller remains responsible for changing sector allocations, choosing starting factors, alternating energy minimization, comparing against an ordinary one-site baseline, and committing or restoring a candidate. Calling the adapter alone does not guarantee an energy improvement.
+
+The current cyclic metric root uses dense LOCAL pair matrices with a workspace guard. This is distinct from a forbidden global determinant projection, but can still be expensive for large pair spaces. Ring scalability and the full CBE/two-site sweep integration remain unfinished.

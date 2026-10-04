@@ -36,18 +36,22 @@ def ring_energy(state, hamiltonian):
                            CyclicReducedNorm(ring.sites).overlap())
 
 
+def ring_site_embedding(state, site):
+    state.site_blocks(site)
+    if site < state.nsites:
+        return ReducedFrontier.from_state(state).site_embedding(state, site)
+    layout = _BlockVectorLayout({key: a.shape for key, a in state.closure.data.items()})
+    indices = np.arange(layout.size)
+    return FrontierSiteEmbedding(layout, layout, indices, indices, (), ())
+
+
 def ring_local_problem(state, hamiltonian, site, *, matrix_free=False, dense_solver_threshold=96):
     """Compose the exact tie embedding with native cyclic H/N actions."""
     if not isinstance(state, ReducedRingLETTA):
         raise TypeError('expected ReducedRingLETTA')
     state.site_blocks(site)  # Check the physical/closure core index.
     ring = state.to_target_ring()
-    if site < state.nsites:
-        embedding = ReducedFrontier.from_state(state).site_embedding(state, site)
-    else:
-        layout = _BlockVectorLayout({key: a.shape for key, a in state.closure.data.items()})
-        indices = np.arange(layout.size)
-        embedding = FrontierSiteEmbedding(layout, layout, indices, indices, (), ())
+    embedding = ring_site_embedding(state, site)
     h_chain = CyclicReducedOperator(ring.sites, _native_hamiltonian(state, hamiltonian))
     n_chain = CyclicReducedNorm(ring.sites)
     def action(chain, vector):

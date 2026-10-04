@@ -92,3 +92,31 @@ The overall goal remains incomplete. This design/checkpoint note is not the fina
 Every ring edge, including both closure edges, supports invertible sector-multiplicity conditioning or scalar balancing. These are unconditional legal gauges for arbitrary ties; the full local metric remains explicit. Transactional local and gauge failure paths restore the relevant incumbent and do not report convergence. Fresh local residuals are audited at energy plateaus. Numerical scaling of much longer cyclic products and broader target/allocation tests remain open gates.
 
 Next implementation priority: native cyclic pair-response coordinates and a valid metric root for all four compressors, followed by true expanded-one-site CBE and two-site integration. The covariant closure is a variational core, so update policies for its two adjacent graph edges and a direct last–first physical pair through the closure must be kept explicit. Open-chain sweep-level gauge recovery is also still pending.
+
+
+## Cyclic pair metric and compression foundation, 2026-10-05
+
+`CyclicPairProblem` stores untruncated coefficients with the fusion-path key
+
+$$
+(q_L,p_1,q_M,p_2,q_R)
+$$
+
+and multiplicity shape `(d_L, multiplicity(p1), multiplicity(p2), d_R)`. The structural spin tensor is the product of the two sequential Clebsch–Gordan tensors, summed over the intermediate magnetic component. The coefficient layout includes every allowed intermediate irrep, including sectors missing from the incumbent middle bond. It does not expand variational magnetic coefficients.
+
+The norm contracts these two-site structural tensors with the coupled bra/ket bases at the OUTER cuts. The Hamiltonian additionally keeps the MPO's intermediate spin and the ket/operator fusion multiplicity at both outer cuts. The complement is the cyclic product of every remaining transfer. Its channel intersection excludes the removed internal cut: limiting transfer J by the incumbent middle bond would incorrectly remove directions that an expanded pair is meant to discover. A regression starts with only a scalar internal-spin bond, retains nontrivial outer transfer channels, and recovers the exact Hubbard dimer pair energy.
+
+The resulting pair overlap is the full correlated cyclic Gram N. `CyclicPairMetricRoot` materializes this LOCAL reduced coefficient-space matrix and equilibrates its diagonal scales before deciding support. If D denotes those coordinate scales and the supported correlation factorization is C=V Λ V†, the maps are
+
+$$
+S=\sqrt{\Lambda}\,V^\dagger D,\qquad
+W=D^{-1}V\Lambda^{-1/2}.
+$$
+
+On retained support, S†S=N and SW=I. The generalized inverse action is WW†, satisfying N WW† N=N on that support; no Euclidean Moore–Penrose claim is made after equilibration. The inverse supports metric residual operations needed by CBE. The construction has quadratic LOCAL matrix storage and cubic dense factorization cost; a conservative workspace estimate is checked before matrix construction and again before factorization. It is an accuracy backend, not a completed large-ring scalability solution.
+
+`compress_ring_pair` composes exact physical-tie copy maps with the bilinear merge, provides analytic source adjoints, and supplies admissible `(middle sector, shared invariant labels)` gauge blocks. It uses the same `fit_metric_factors` implementation as open reduced compression: ALS, variable projection, joint LS and Grassmann Newton therefore have identical iteration-budget, stopping and best-iterate semantics. A retained rank counts complete middle-sector multiplets. The supplied target is fitted in N, not in unweighted coefficient norm or a fictitious pair of independent boundary Grams.
+
+Independent tests cover all graph edges on a two-physical-site-plus-target ring, both U(1) components, singlet/doublet targets, missing internal spin sectors, exact source adjoints, arbitrary bidirectional ties, complex legal gauges, diagonal scale ranges of sixteen orders of magnitude, explicit ALS/LSMR budgets and all four solvers. A separate four-physical-site test verifies nonzero nonlinear chart dimension, genuine rank reduction, a full-rank nonseparable cyclic Gram and the fitted error in an independent physical frame. Global frames occur only in reference tests.
+
+This foundation does NOT yet change the public ring CBE/two-site availability. Next work is allocation growth/shrinkage, multistart initialization, supplied-target compression plus A/B energy alternation and strict same-start ordinary one-site comparison, then actual two-site and residual-CBE sweeps. The pair graph includes last-physical/closure and closure/first-physical edges; a direct last–first physical update through the closure is a distinct operation and must not be silently conflated with these edges. Numerical/resource failures must restore the incumbent and use the ordinary local fallback. The complete feature matrix, long-chain scaling, API and final implementation note remain required.

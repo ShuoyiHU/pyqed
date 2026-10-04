@@ -1,8 +1,8 @@
 """Safeguarded physical-norm compression for bilinear LETTA factors.
 
-The nonlinear methods use bounded dense *factor* Jacobians, never a dense
-wavefunction or a dense square root of the environment metric. ALS remains
-the matrix-free fallback. Shared-index and charge blocks restrict the factor
+The nonlinear methods use bounded dense *factor* Jacobians, never a global
+wavefunction. The caller supplies a topology-specific metric square root;
+ALS uses its forward/adjoint actions through matrix-free linear solves. Shared-index and charge blocks restrict the factor
 charts; the objective always uses the full metric, including block couplings.
 """
 from dataclasses import dataclass

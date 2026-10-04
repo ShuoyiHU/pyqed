@@ -1,0 +1,6 @@
+Validation: cyclic pair/compression, ring one-site, OBC reduced compression/CBE/two-site, shared compressors and Abelian backend.
+
+........................................................................ [ 41%]
+........................................................................ [ 82%]
+..............................                                           [100%]
+174 passed in 64.12s (0:01:04)

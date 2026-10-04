@@ -137,6 +137,27 @@ def compress_reduced_pair(target, problem, state, left, right, retained, *, opti
     root = ReducedPairMetricRoot(problem, state, metric_tolerance)
     groups = reduced_factor_blocks(state, i, le, re, retained)
     metric = _PairMetric(problem, dtype)
+    def adjoint(side, a, b, vector):
+        if side == 0:
+            return _left_source_adjoint(problem.layout, vector, _expanded_source_blocks(re, b), le)[li]
+        return _right_source_adjoint(problem.layout, _expanded_source_blocks(le, a), vector, re)[ri]
+
+    return fit_metric_factors(target, metric, left, right, merge=merge, root=root,
+        adjoint=adjoint, left_indices=li, right_indices=ri, gauge_blocks=groups,
+        options=options, metric_tolerance=metric_tolerance,
+        als_max_iterations=als_max_iterations)
+
+
+def fit_metric_factors(target, metric, left, right, *, merge, root, adjoint,
+                       left_indices, right_indices, gauge_blocks, options,
+                       metric_tolerance=1e-12, als_max_iterations=100):
+    """Shared ALS/nonlinear fitting loop for open and cyclic reduced metrics.
+
+    ``adjoint(side, a, b, v)`` returns only the active side coordinates.
+    Topology is entirely in merge/adjoint/root; budgets and loss guards match.
+    """
+    li, ri, groups = left_indices, right_indices, gauge_blocks
+    dtype = np.result_type(target, left, right, complex)
     rhs = root.apply(target)
     reports = []
     als_info = {}
@@ -147,11 +168,6 @@ def compress_reduced_pair(target, problem, state, left, right, retained, *, opti
         if not np.isfinite(value) or value < -1e-10:
             raise FloatingPointError('invalid reduced compression loss')
         return max(0., value)
-
-    def adjoint(side, a, b, vector):
-        if side == 0:
-            return _left_source_adjoint(problem.layout, vector, _expanded_source_blocks(re, b), le)[li]
-        return _right_source_adjoint(problem.layout, _expanded_source_blocks(le, a), vector, re)[ri]
 
     def solve(side, a, b):
         indices, old = (li, a) if side == 0 else (ri, b)
