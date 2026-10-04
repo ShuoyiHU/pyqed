@@ -26,7 +26,7 @@
 | Preserve source work and requested branch | Source hashes unchanged; integration commit with manifest | Source hashes verified; integration checkpoint tested |
 | Shared ALS/inner least-squares limits | Limits reach each backend, diagnostics distinguish cap from convergence | Pending |
 | ALS, variable projection, joint LS, Grassmann Newton | Same physical-metric objective, derivative and fit tests, both CBE/two-site | Reduced two-site and SU(2) CBE integrated; remaining backend adapters pending |
-| U(1) OBC one-site/CBE/two-site | Symmetry leakage zero, adaptive allocation, exact small-reference comparisons | Pending |
+| U(1) OBC one-site/CBE/two-site | Symmetry leakage zero, adaptive allocation, exact small-reference comparisons | Shared adapter implemented; independent small-model and conversion tests pass; broader API/topology gates remain |
 | SU(2) OBC one-site/CBE/two-site | Native reduced actions, complete multiplets, numerical-reference gates | Implemented, small references pass; broad model/tie/API validation remains |
 | U(1) closed-ring all three methods | Cyclic contractions and wrap bond, nonidentity metric, independent references | Pending |
 | SU(2) closed-ring all three methods | Reduced cyclic recoupling, explicit target representation, no magnetic/determinant solver fallback | Pending |
@@ -117,3 +117,11 @@ Use the existing main-repo `.venv-1/bin/python` with `PYTHONPATH=.` from this wo
 - Next work: shared Abelian representation/adapter, generic gauge fallback for arbitrary dependencies, closed-ring native symmetry contractions, model/topology public API, and full cross-product reference validation. The overall goal remains incomplete.
 
 - Combined CBE checkpoint validation: **131 passed in 213.09 s**, including native reduced regressions, all four compressors, independent QC references, molecular roundoff acceptance and nonsymmetric CBE recovery. Exact output: `2026-10-04-letta-cbe-tests.txt`. Manifest recheck confirms 302 bg and 300 QC source files unchanged.
+
+
+- 2026-10-04 Abelian checkpoint: added lossless U(1)/U(1)-product coordinate conversion into the native reduced block backend, preserving physical basis order, duplicate charges, virtual allocation, coordinates and arbitrary ties. Native MPO compilation now carries all charge differences rather than extracting only one particle-number label. No physical SU(2) constraint is added to Abelian models.
+- Added public `abelian_dmrg` for shared one-site/CBE/two-site execution and automatic dispatch from ordinary U(1) `letta_dmrg` CBE. Existing ordinary Abelian paths remain available; the unified method/model/topology API is still pending. Added optional `normalize=False` state construction to make coordinate round trips coefficient-exact.
+- Added 23 tests for arbitrary complex ties and repeated/signed/multiple charges, independent fermionic MPO action, all three methods versus Hubbard FCI and Bose/Heisenberg sector references, absent-charge discovery without pair diagonalization, all four compression choices/budgets, and conservation of the second U(1) component.
+- Remaining work is unchanged in scope: generic gauge fallback on arbitrary dependency layouts, closed-ring native symmetry contractions and target closure, unified model/topology API, and full cross-product verification. Current checkpoints do not establish those requirements.
+
+- Abelian regression checkpoint: **135 passed, 1 deselected in 180.68 s**. Excluded the six-orbital stress sweep; native compiler/reduced CBE and ordinary Abelian/QC/state/two-site regressions passed. Exact command/output in `2026-10-04-letta-abelian-tests.txt`. Reverified 302 bg and 300 QC source hashes unchanged.

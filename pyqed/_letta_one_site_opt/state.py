@@ -78,6 +78,7 @@ class LatticeLETTA:
         neighborhoods=None,
         symmetry=None,
         bond_charges=None,
+        normalize=True,
     ):
         self.lattice_shape = _validate_lattice_shape(lattice_shape)
         try:
@@ -124,7 +125,8 @@ class LatticeLETTA:
                 bond_charges, self.bond_dimensions
             )
             self.enforce_symmetry()
-        self.normalize()
+        if normalize:
+            self.normalize()
 
     @classmethod
     def random(

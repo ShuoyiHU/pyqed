@@ -1367,6 +1367,9 @@ def letta_dmrg(
         else:
             state = state.copy()
     hamiltonian = _validate_hamiltonian(hamiltonian, state)
+    if options.cbe_enabled and state.symmetry is not None:
+        from .abelian_backend import abelian_dmrg
+        return abelian_dmrg(hamiltonian, state=state, options=options)
     if options.gauge_mode == "frontier":
         if not isinstance(hamiltonian, LatticeMPO):
             raise ValueError("frontier gauge sweeps require an MPO Hamiltonian.")
@@ -1377,8 +1380,6 @@ def letta_dmrg(
         )
     if options.cbe_enabled and not isinstance(hamiltonian, LatticeMPO):
         raise ValueError("LETTA-CBE currently requires an MPO Hamiltonian.")
-    if options.cbe_enabled and state.symmetry is not None:
-        raise ValueError("LETTA-CBE does not yet support symmetry sectors.")
     nominal_bond_dimension = max(state.bond_dimensions, default=1)
 
     previous_energy = None

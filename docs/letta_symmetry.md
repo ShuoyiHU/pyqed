@@ -4,7 +4,7 @@ Development branch: `letta_oct_4_sym`. The complete required support matrix and 
 
 ## Shared metric compression
 
-The nonsymmetric solver, native reduced SU(2) CBE and tied two-site solver accept `MetricCompressionOptions`. The solver names are:
+The nonsymmetric solver and shared native U(1)/SU(2) CBE and tied two-site solvers accept `MetricCompressionOptions`. The solver names are:
 
 - `als`: alternate linear least-squares solves for the two factors.
 - `variable-projection`: solve the second factor at each nonlinear first-factor iterate.
@@ -57,7 +57,7 @@ The reduced metric square root factors only boundary multiplicity Grams. No dens
 
 QC supports U(1) number, U(1) number × U(1) spin projection, and U(1) number × SU(2). SU(2) physical dependencies use invariant irrep/multiplicity labels. Spatial orbitals have empty, single and double labels; magnetic components are structural Clebsch–Gordan coordinates. D in the reduced solver counts complete multiplets, not magnetic states or total stored parameters.
 
-The integrated native reduced backend currently uses open virtual boundaries. The inherited periodic benchmark backend is a distinct closed-ring implementation with narrower model/tie/symmetry support. Its presence does not complete general SU(2) periodic support. Reduced SU(2) CBE now supports these open virtual boundaries. Abelian CBE, general ring environments and the unified public API remain implementation tasks; see the full plan rather than inferring support from a file name.
+The integrated native reduced backend currently uses open virtual boundaries. The inherited periodic benchmark backend is a distinct closed-ring implementation with narrower model/tie/symmetry support. Its presence does not complete general SU(2) periodic support. Reduced SU(2) and Abelian CBE now support these open virtual boundaries. General ring environments and the unified public API remain implementation tasks; see the full plan rather than inferring support from a file name.
 
 ## Reduced energy updates and recovery
 
@@ -95,4 +95,39 @@ Both residual-factor fitting and post-expansion fitting use `compression.als_max
 
 Diagnostics expose the missing residual norm, captured physical weight, tangent overlap, actual allocation, per-fit solver/budget/status, raw compressed energy, post-refinement energy and baseline decision. Numerical selection, expanded solve or compression failures discard the candidate and retain the independently computed ordinary step. If that ordinary step itself fails, the incumbent is unchanged and the update is rejected. Subsequent sites still attempt CBE. Unresolved projection, rejected baseline and failed/capped final fitting are not reported as successful sweep convergence.
 
-Currently only a native `ReducedMPOHamiltonian` with the `exact` selector is accepted. A streamed/shrewd selector, nonzero baseline allowance and separate preselection controls are not implemented. Reduced energy refinement uses alternating one-site solves; the nonsymmetric coupled-factor energy-refinement controls do not apply here. General forward/backward ties are covered by the full native metric with `gauge_mode="none"`; the frontier gauge still requires an admissible dependency layout. CBE does not make the general closed-ring or Abelian support matrix complete.
+Currently only a native `ReducedMPOHamiltonian` with the `exact` selector is accepted. A streamed/shrewd selector, nonzero baseline allowance and separate preselection controls are not implemented. Reduced energy refinement uses alternating one-site solves; the nonsymmetric coupled-factor energy-refinement controls do not apply here. General forward/backward ties are covered by the full native metric with `gauge_mode="none"`; the frontier gauge still requires an admissible dependency layout. This does not complete the general closed-ring support matrix.
+
+
+## U(1) and products of U(1)
+
+The shared block backend also accepts ordinary Abelian LETTA states. `AbelianReducedMap` groups equal physical charges, preserves their multiplicity and local basis permutation, and attaches a trivial one-dimensional spin representation. This is an exact coordinate conversion. It neither imposes physical spin SU(2) nor projects the wavefunction. Signed charges, repeated/noncontiguous equal-charge labels, and multiple independent U(1) factors are supported. Finite cyclic groups are explicitly rejected by this adapter.
+
+Native MPO compilation now keeps **every** conserved charge component. Thus a spin-flip term is valid with number-only symmetry but rejected when Nalpha and Nbeta are separately fixed. All conversion, compilation and optimization use local tensors and virtual spaces. Dense global states/operators appear only in independent tests.
+
+```python
+import numpy as np
+from pyqed._letta_one_site_opt import (
+    LETTADMROptions, MetricCompressionOptions, abelian_dmrg,
+)
+from pyqed._letta_one_site_opt.qchem import ElectronicProblem, initial_state
+from pyqed._letta_two_site_opt import LETTATwoSiteOptions
+
+n = 3
+h1 = -np.eye(n, k=1) - np.eye(n, k=-1)
+eri = np.zeros((n, n, n, n))
+for i in range(n):
+    eri[i, i, i, i] = 4.0
+problem = ElectronicProblem(h1, eri, (2, 1))
+state = initial_state(problem, max_bond_dim=8, symmetry="nalpha_nbeta")
+compression = MetricCompressionOptions(als_max_iterations=100, lsmr_max_iterations=300)
+
+one = abelian_dmrg(problem.mpo(), state=state,
+    options=LETTADMROptions(max_sweeps=100))
+cbe = abelian_dmrg(problem.mpo(), state=state,
+    options=LETTADMROptions(max_sweeps=100, cbe_enabled=True, compression=compression))
+two = abelian_dmrg(problem.mpo(), state=state, bond_dim=8,
+    options=LETTATwoSiteOptions(max_sweeps=20, reduced_sector_growth=True,
+                               compression=compression))
+```
+
+The returned state is a `LatticeLETTA` with the original physical basis, coordinates, symmetry and ties, plus the retained charge allocation. D counts ordinary virtual states here, since all irreps are one dimensional. Existing `letta_dmrg(..., cbe_enabled=True)` calls with U(1) states automatically use this adapter. `abelian_dmrg` explicitly selects the shared backend for ordinary one-site and two-site runs as well; it validates the corresponding options through their existing public entry points. Bond schedules and finite cyclic groups are not yet implemented in this shared adapter. Open virtual boundaries are required; a periodic Hamiltonian is distinct from a closed virtual ring.

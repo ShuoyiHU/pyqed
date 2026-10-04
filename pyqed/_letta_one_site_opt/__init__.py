@@ -67,7 +67,11 @@ from .reduced_solver import (
     reduced_local_problem,
 )
 
+from .abelian_backend import AbelianReducedMap, abelian_dmrg
+
 __all__ = [
+    "AbelianReducedMap",
+    "abelian_dmrg",
     "canonicalize_reduced_frontier",
     "reduced_frontier_grams",
     "shift_reduced_frontier_gauge",

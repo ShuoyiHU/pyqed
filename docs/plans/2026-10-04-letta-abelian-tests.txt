@@ -1,0 +1,13 @@
+Shared Abelian backend checkpoint on letta_oct_4_sym
+
+Command: PYTHONPATH=. pytest -p no:cacheprovider -q tests/test_letta_abelian_backend.py tests/test_letta_native_su2.py tests/test_letta_reduced_cbe.py tests/test_letta_reduced_compression.py tests/test_letta_qchem.py tests/test_letta_qchem_symmetry.py tests/test_letta_symmetry.py tests/test_letta_one_site_opt_structure.py tests/test_letta_two_site_opt.py -k 'not matrix_free_six_orbital'
+Interpreter: /Users/shuoyihu/Documents/GitHub/pyqed/.venv-1/bin/python
+BLAS/OpenMP threads limited to 1; bytecode disabled and caches outside repository.
+
+........................................................................ [ 53%]
+...............................................................          [100%]
+135 passed, 1 deselected in 180.68s (0:03:00)
+
+The six-orbital native sweep stress test is outside this focused compiler/adapter regression.
+Source manifest recheck: 302 bg and 300 QC files unchanged.
+General ring support and the complete feature matrix remain unfinished.

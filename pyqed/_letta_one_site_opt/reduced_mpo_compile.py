@@ -14,11 +14,11 @@ from scipy.linalg import svd
 from pyqed.mps.su2 import SU2Irrep
 from pyqed.mps.symmetry import Sector
 from pyqed.mps.nonabelian.coupling import (
-    clebsch_gordan, ordered_two_m_values, _extract_charge_spin,
+    clebsch_gordan, ordered_two_m_values,
 )
 from pyqed.mps.nonabelian.tensor import NonabelianTensor
 
-from .reduced_symmetry import ReducedPhysicalBasis, _sector_irrep
+from .reduced_symmetry import ReducedPhysicalBasis, _sector_irrep, SpinChargeSector
 
 
 @lru_cache(maxsize=None)
@@ -40,6 +40,23 @@ class OperatorMultiplet:
     components: np.ndarray
 
 
+def _operator_sector(output, input, irrep):
+    """All conserved charge differences, with the spin tensor rank attached."""
+    if isinstance(output, SpinChargeSector) and isinstance(input, SpinChargeSector):
+        return Sector(('charge', 'su2'), (output.charge-input.charge, irrep))
+    if not isinstance(output, Sector) or not isinstance(input, Sector) or output.labels != input.labels:
+        raise TypeError('operator input/output sector labels must match')
+    components = []
+    for label, out, inp in zip(output.labels, output.components, input.components):
+        if label == 'su2':
+            components.append(irrep)
+        elif label in {'pg', 'point_group', 'abelianpg'}:
+            components.append(int(out)^int(inp))
+        else:
+            components.append(out-inp)
+    return Sector(output.labels, tuple(components))
+
+
 def operator_basis(physical_basis):
     """Orthonormal |out><in| basis coupled with the dual input irrep."""
     offsets, cursor = {}, 0
@@ -49,10 +66,9 @@ def operator_basis(physical_basis):
     grouped = defaultdict(list)
     for out in physical_basis.reduced_states:
         for inp in physical_basis.reduced_states:
-            no, jo = _extract_charge_spin(out.sector)
-            ni, ji = _extract_charge_spin(inp.sector)
+            jo, ji = _sector_irrep(out.sector), _sector_irrep(inp.sector)
             for two_j in range(abs(jo.two_j-ji.two_j), jo.two_j+ji.two_j+1, 2):
-                q = Sector(('charge', 'su2'), (no-ni, SU2Irrep(two_j)))
+                q = _operator_sector(out.sector, inp.sector, SU2Irrep(two_j))
                 matrices = np.zeros((_sector_irrep(q).dim, cursor, cursor))
                 for k, m in enumerate(ordered_two_m_values(_sector_irrep(q))):
                     for a, mo in enumerate(ordered_two_m_values(jo)):
@@ -115,7 +131,7 @@ class SpinTensorMPO:
             q, r = np.linalg.qr(a.reshape(a.shape[0], -1).T, mode='reduced')
             cores[i] = q.T.reshape(q.shape[1], a.shape[1], a.shape[2])
             cores[i-1] = np.tensordot(cores[i-1], r.T, axes=(2, 0))
-        scalar = Sector(('charge', 'su2'), (0, SU2Irrep(0)))
+        scalar = _operator_sector(physical_basis.sectors[0], physical_basis.sectors[0], SU2Irrep(0))
         if np.linalg.norm(cores[0]) == 0:
             # Retain a scalar identity channel with zero amplitude at site 0.
             values = [np.trace(c.components[0]) for c in channels if c.sector == scalar]
