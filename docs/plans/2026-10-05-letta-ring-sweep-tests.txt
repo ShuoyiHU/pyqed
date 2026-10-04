@@ -1,0 +1,13 @@
+Environment: PYTHONDONTWRITEBYTECODE=1 PYTHONWARNINGS=ignore NUMBA_CACHE_DIR=/private/tmp/letta-oct4-numba MPLCONFIGDIR=/private/tmp/letta-mpl OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 NUMEXPR_NUM_THREADS=1 PYTHONPATH=.
+Python: /Users/shuoyihu/Documents/GitHub/pyqed/.venv-1/bin/python
+Command: -m pytest -p no:cacheprovider -q tests/test_letta_ring_sweeps.py tests/test_letta_reduced_frontier.py tests/test_letta_reduced_one_site.py tests/test_letta_abelian_backend.py tests/test_letta_ring_target.py tests/test_letta_native_ring.py tests/test_letta_reduced_cbe.py tests/test_letta_reduced_two_site.py tests/test_letta_reduced_general_gauge.py tests/test_letta_qchem_symmetry.py -k "not six_orbital"
+
+........................................................................ [ 48%]
+........................................................................ [ 97%]
+...                                                                      [100%]
+147 passed in 65.29s (0:01:05)
+
+Strengthened singular matrix-free check after combined regression:
+Command: -m pytest -p no:cacheprovider -q tests/test_letta_ring_sweeps.py::test_matrix_free_ring_update_matches_dense_update
+.                                                                        [100%]
+1 passed in 2.06s

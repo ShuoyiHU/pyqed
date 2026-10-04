@@ -81,3 +81,14 @@ Periodic Heisenberg had different family labels for the ordinary and wrap bonds.
 - Long-chain numerical scaling of cyclic transfer products. Current checks establish small-system accuracy, not overflow-safe long-chain execution.
 
 The overall goal remains incomplete. This design/checkpoint note is not the final full implementation note requested by the user.
+
+
+## One-site ring integration, 2026-10-05
+
+`ReducedRingLETTA` now stores conditional physical cores with L+1 virtual allocations and a separate covariant target core. It reuses the exact `ReducedFrontier` sparse copy map without imposing open unit virtual endpoints. A seeded random constructor keeps all fusion-compatible sectors for a user-selected anchor irrep/copy count, and import from a verified reduced target ring broadcasts exact ties without changing the state. Signed target labels are preserved.
+
+`ring_local_problem` composes that sparse map with native cyclic H/N and their source adjoints. `letta_dmrg` explicitly dispatches this state type to a ring one-site sweep. All physical cores and the target closure are optimized. The shared generalized eigensolver supports dense local matrices and matrix-free actions. No production magnetic wavefunction or determinant-space frame is constructed.
+
+Every ring edge, including both closure edges, supports invertible sector-multiplicity conditioning or scalar balancing. These are unconditional legal gauges for arbitrary ties; the full local metric remains explicit. Transactional local and gauge failure paths restore the relevant incumbent and do not report convergence. Fresh local residuals are audited at energy plateaus. Numerical scaling of much longer cyclic products and broader target/allocation tests remain open gates.
+
+Next implementation priority: native cyclic pair-response coordinates and a valid metric root for all four compressors, followed by true expanded-one-site CBE and two-site integration. The covariant closure is a variational core, so update policies for its two adjacent graph edges and a direct last–first physical pair through the closure must be kept explicit. Open-chain sweep-level gauge recovery is also still pending.

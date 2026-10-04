@@ -137,8 +137,9 @@ class ReducedFrontier:
 
     @classmethod
     def from_state(cls, state):
-        if not isinstance(state, ReducedLatticeLETTA):
-            raise TypeError("ReducedFrontier.from_state expects ReducedLatticeLETTA")
+        from .reduced_ring_state import ReducedRingLETTA
+        if not isinstance(state, (ReducedLatticeLETTA, ReducedRingLETTA)):
+            raise TypeError("ReducedFrontier requires a reduced LETTA state")
         return cls(state._neighborhoods, state.physical_dim)
 
     def left_variables(self, site):
@@ -153,8 +154,9 @@ class ReducedFrontier:
         return tuple(product(range(self.reduced_dim), repeat=len(variables)))
 
     def site_embedding(self, state, site):
-        if not isinstance(state, ReducedLatticeLETTA):
-            raise TypeError("site_embedding expects ReducedLatticeLETTA")
+        from .reduced_ring_state import ReducedRingLETTA
+        if not isinstance(state, (ReducedLatticeLETTA, ReducedRingLETTA)):
+            raise TypeError("site_embedding requires a reduced LETTA state")
         site = int(site)
         if not 0 <= site < self.nsites:
             raise IndexError("site index out of range")

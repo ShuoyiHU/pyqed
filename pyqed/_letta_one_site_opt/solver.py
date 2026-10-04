@@ -1291,6 +1291,12 @@ def letta_dmrg(
         raise ValueError("LETTA-CBE requires site-granularity environments.")
     if options.cbe_enabled and options.boundary_bond_dim is not None:
         raise ValueError("LETTA-CBE requires exact boundary environments.")
+    from .reduced_ring_state import ReducedRingLETTA
+    if isinstance(state, ReducedRingLETTA):
+        from .reduced_ring_solver import ring_dmrg
+        if symmetry is not None and state.symmetry != symmetry:
+            raise ValueError("supplied ring state and symmetry do not match")
+        return ring_dmrg(hamiltonian, state=state, options=options)
     from .reduced_state import ReducedLatticeLETTA
     from .reduced_symmetry import ReducedSymmetry
 

@@ -123,3 +123,11 @@ __all__ = [
     "state_vector_two_site_expectation",
     "two_site_expectation",
 ]
+
+
+# Explicit closed virtual topology; target closure is part of the state.
+from .reduced_ring_state import ReducedRingLETTA
+from .reduced_ring_target import ReducedRingTarget, signed_physical_basis
+from .reduced_ring_solver import ring_local_problem, ring_energy
+__all__ += ["ReducedRingLETTA", "ReducedRingTarget", "signed_physical_basis",
+            "ring_local_problem", "ring_energy"]

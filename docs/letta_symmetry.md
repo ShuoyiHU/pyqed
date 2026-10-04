@@ -57,7 +57,7 @@ The reduced metric square root factors only boundary multiplicity Grams. No dens
 
 QC supports U(1) number, U(1) number × U(1) spin projection, and U(1) number × SU(2). SU(2) physical dependencies use invariant irrep/multiplicity labels. Spatial orbitals have empty, single and double labels; magnetic components are structural Clebsch–Gordan coordinates. D in the reduced solver counts complete multiplets, not magnetic states or total stored parameters.
 
-The integrated native reduced backend currently uses open virtual boundaries. The inherited periodic benchmark backend is a distinct closed-ring implementation with narrower model/tie/symmetry support. Its presence does not complete general SU(2) periodic support. Reduced SU(2) and Abelian CBE now support these open virtual boundaries. General ring environments and the unified public API remain implementation tasks; see the full plan rather than inferring support from a file name.
+The native reduced backend supports open virtual boundaries for one-site, CBE and two-site updates. Native closed-ring one-site updates now use `ReducedRingLETTA`, an explicit covariant target closure and the full cyclic metric. Ring CBE/two-site compression and the unified model/topology API remain unfinished. The inherited periodic benchmark backend is separate and does not establish support for these unfinished native adapters.
 
 ## Reduced energy updates and recovery
 
@@ -150,3 +150,48 @@ Only the supported marginal becomes identity. Correlations between different fro
 `reduced_gauge_variables(state, cut)` reports the actual conditioning labels. `reduced_frontier_grams` reports the corresponding marginals. The gauge functions accept `strict=True` to require a complete shared frontier and reject before changing tensors. Individual shifts and whole canonicalization passes retain independent tensor snapshots and restore them if an operation raises; the error is propagated after restoration rather than hidden.
 
 This behavior is available to native SU(2) and the shared U(1) backend for ordinary one-site, CBE and two-site updates. Validation covers cyclic physical dependencies on an **open virtual chain**; this is separate from closed-ring virtual contraction, which remains pending.
+
+
+## Native closed-ring one-site calculation
+
+`ReducedRingLETTA` stores physical conditional cores and a separate covariant target core. Both virtual legs at this closure remain ordinary multiplet spaces: this is a closed virtual loop, not an open chain with a periodic Hamiltonian. The target core carries the dual total charge/spin and closes the physical state into a scalar. The Hamiltonian acts as the identity on this auxiliary representation.
+
+```python
+import numpy as np
+from pyqed.mps.su2 import SpinChargeSector, SU2Irrep
+from pyqed._letta_one_site_opt import (
+    ReducedPhysicalBasis, ReducedRingLETTA, LETTADMROptions, letta_dmrg,
+)
+from pyqed._letta_one_site_opt.qchem import ElectronicProblem
+
+# Three-site periodic fermionic Hubbard model, N=3 and S=1/2.
+n = 3
+h1 = np.eye(n) - np.ones((n, n))
+eri = np.zeros((n,)*4)
+for i in range(n):
+    eri[i, i, i, i] = 4.0
+problem = ElectronicProblem(h1, eri, (2, 1))
+state = ReducedRingLETTA.random(
+    n, ReducedPhysicalBasis.spatial_orbital(),
+    SpinChargeSector(3, SU2Irrep(1)),
+    multiplets_per_sector=2,
+    neighborhoods=((0, 1), (1, 2), (2, 0)),
+    seed=71,
+)
+result = letta_dmrg(problem.su2_mpo(), state=state,
+    options=LETTADMROptions(max_sweeps=20, gauge_mode="frontier"))
+```
+
+`multiplets_per_sector` initializes that many copies of EACH reachable sector; it is not a total D cap. `state.bond_dimensions` reports the actual multiplet counts, including both closure-adjacent bonds. A constructor taking explicit `bond_sectors`, `tensors` and `closure` is available when a particular allocation is required. The optional `anchor_sector` chooses the virtual irrep at the distinguished ring cut; it need not be the scalar irrep. U(1) and product-U(1) use generic `Sector` labels with a trivial SU(2) factor, as in the shared Abelian backend.
+
+Every dependency list starts with the core's own physical site and may contain forward, backward, nonadjacent or last–first ties. Physical labels cross the sequential embedding as neutral multiplicity memory. The original virtual bond still closes through the target core. No target magnetic component is copied as a physical tie label.
+
+A sweep updates all physical cores and then the target closure (reverse order on the next sweep). The closure is variational in its multiplicity coefficients, so its coefficients are included in `parameter_count`; it is not counted as an extra physical site when reporting energy per site. `RingSiteUpdate.is_target_closure` identifies its local update.
+
+Local solves retain the complete cyclic overlap matrix, including correlated environments. Dense local-parameter H/N matrices or the shared matrix-free generalized eigensolver are used; neither path constructs a global determinant-space Hamiltonian. `gauge_mode="frontier"` currently applies unconditional sector-multiplicity Gram balancing on each ring edge. It is legal for every tie pattern but does not make the cyclic metric the identity. `"scalar"` balances only a scalar core scale; `"none"` skips gauge moves. The open-chain QR/frontier canonicalization is not reused on a ring.
+
+The norm convention is the invariant physical-plus-target scalar norm. Each raw auxiliary magnetic slice has 1/(2S+1) of that squared norm. Multiplying a slice by sqrt(2S+1) and its CG phase gives the corresponding physical target component. Scalar energy ratios agree in all components.
+
+Accepted local updates pass a fresh physical energy check after normalization. A failed solve restores its incumbent. A failed gauge restores the state after the accepted local update and continues with subsequent cores. Recovery is recorded and prevents that sweep from being called converged. Energy plateaus require a fresh all-core local-residual audit; they are not guarantees of a global minimum.
+
+This is currently the **one-site** ring path. Asking it for CBE raises an explicit error; ring pair metrics, all four ring compressors and genuine ring CBE/two-site adapters remain required work. The existing open-chain boundary-Gram compression root cannot be used for a general cyclic metric.
