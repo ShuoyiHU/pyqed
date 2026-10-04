@@ -14,7 +14,6 @@ from .solver import LETTASiteUpdate, LETTASweep, LETTADMRGResult
 
 @dataclass(frozen=True)
 class RingSiteUpdate(LETTASiteUpdate):
-    recovery_reason: str | None = None
     is_target_closure: bool = False
 
 

@@ -889,10 +889,11 @@ def reduced_letta_dmrg(hamiltonian, *, state, options):
     direction = str(options.start_direction).lower()
     if direction not in {"lr", "rl"}:
         raise ValueError("start_direction must be 'lr' or 'rl'")
+    initial_recovery = None
     if options.gauge_mode == 'frontier':
-        from .reduced_gauge import canonicalize_reduced_frontier, shift_reduced_frontier_gauge
-        canonicalize_reduced_frontier(state, 0 if direction == 'lr' else state.nsites-1,
-                                      tolerance=options.metric_tolerance)
+        from .reduced_gauge import condition_reduced_sweep
+        initial_recovery = condition_reduced_sweep(state, hamiltonian, options,
+            center=0 if direction == 'lr' else state.nsites-1)
     previous_energy = _energy(state, hamiltonian, stable=True)
     history = []
     converged = False
@@ -916,14 +917,20 @@ def reduced_letta_dmrg(hamiltonian, *, state, options):
                     context = ReducedSweepContext(state, hamiltonian)
             else:
                 updates.append(optimize_reduced_site(state, hamiltonian, site, options, context=context))
+            if initial_recovery:
+                updates[-1] = replace(updates[-1], recovery_reason=initial_recovery, local_converged=False)
+                initial_recovery = None
             if options.gauge_mode == 'frontier':
                 cut = site+1 if direction == 'lr' else site
                 if 0 < cut < state.nsites:
-                    shift_reduced_frontier_gauge(state, cut, direction,
-                        tolerance=options.metric_tolerance,
-                        environment=None if context is None else (context.n_chain, context.frontier))
-                    if context is not None:
-                        context.synchronize([cut-1, cut])
+                    reason = condition_reduced_sweep(state, hamiltonian, options,
+                        cut=cut, direction=direction, context=context)
+                    if reason:
+                        prior = updates[-1].recovery_reason
+                        updates[-1] = replace(updates[-1], local_converged=False,
+                            recovery_reason=reason if prior is None else prior+'; '+reason)
+                        if context is not None:
+                            context = ReducedSweepContext(state, hamiltonian)
         updates = tuple(updates)
         energy = _energy(state, hamiltonian, stable=True)
         change = abs(energy - previous_energy)
@@ -945,7 +952,7 @@ def reduced_letta_dmrg(hamiltonian, *, state, options):
                 f"energy={energy:.14f}  dE/site={density_change:.3e}"
             )
         if density_change <= options.tolerance and all(
-                u.accepted and u.local_converged and not u.cbe_recovery_reason
+                u.accepted and u.local_converged and not u.cbe_recovery_reason and not u.recovery_reason
                 and all(d.get('optimizer_success', True) for d in u.cbe_compression_diagnostics)
                 for u in updates):
             from .reduced_updates import reduced_stationarity

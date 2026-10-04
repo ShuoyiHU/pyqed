@@ -1,0 +1,7 @@
+Worktree: /Users/shuoyihu/.codex/worktrees/letta-oct-4-sym/pyqed
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONWARNINGS=ignore NUMBA_CACHE_DIR=/private/tmp/letta-oct4-numba MPLCONFIGDIR=/private/tmp/letta-mpl OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 NUMEXPR_NUM_THREADS=1 PYTHONPATH=. /Users/shuoyihu/Documents/GitHub/pyqed/.venv-1/bin/python -m pytest -p no:cacheprovider -q tests/test_letta_reduced_sweep_recovery.py tests/test_letta_reduced_gauge.py tests/test_letta_reduced_updates.py tests/test_letta_reduced_cbe.py tests/test_letta_reduced_two_site.py tests/test_letta_reduced_acceptance.py tests/test_letta_ring_sweeps.py tests/test_letta_abelian_backend.py
+
+........................................................................ [ 63%]
+.........................................                                [100%]
+113 passed in 87.15s (0:01:27)

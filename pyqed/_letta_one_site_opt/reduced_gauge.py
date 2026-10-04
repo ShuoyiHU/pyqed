@@ -160,3 +160,36 @@ def canonicalize_reduced_frontier(state, center, *, tolerance=1e-12, strict=Fals
         state.tensors = original
         raise
     return tuple(reports)
+
+
+def condition_reduced_sweep(state, hamiltonian, options, *, center=None,
+                            cut=None, direction='lr', context=None):
+    """Condition a sweep transactionally, returning a recovery reason or None.
+
+    A caller with moving environments must rebuild that context on recovery.
+    Restoring tensors alone cannot undo partially advanced cached boundaries.
+    """
+    from .reduced_solver import _energy
+    from .reduced_updates import NUMERICAL_ERRORS
+    snapshot = state.copy()
+    before = _energy(snapshot, hamiltonian, stable=True)
+    try:
+        if center is not None:
+            canonicalize_reduced_frontier(state, center, tolerance=options.metric_tolerance)
+            changed = list(range(state.nsites))
+        else:
+            shift_reduced_frontier_gauge(state, cut, direction,
+                tolerance=options.metric_tolerance,
+                environment=None if context is None else (context.n_chain, context.frontier))
+            changed = [cut-1, cut]
+        checked = _energy(state, hamiltonian, stable=True)
+        allowance = max(options.energy_increase_tolerance, 1e-10*max(1., abs(before)))
+        if not np.isfinite(checked) or abs(checked-before) > allowance:
+            raise FloatingPointError('reduced gauge changed the physical energy')
+        if context is not None:
+            context.synchronize(changed)
+    except NUMERICAL_ERRORS+(MemoryError,) as error:
+        state.tensors, state.bond_sectors = snapshot.tensors, snapshot.bond_sectors
+        where = 'initial gauge' if center is not None else 'gauge'
+        return f'{where}: {type(error).__name__}: {error}'
+    return None

@@ -78,6 +78,7 @@ class LETTASiteUpdate:
     metric_kind: str = "general"
     relative_residual: float | None = None
     local_converged: bool | None = None
+    recovery_reason: str | None = None
     cbe_timings: dict[str, float] | None = None
     cbe_selection_diagnostics: dict | None = None
     cbe_expansion_dimension: int = 0

@@ -1068,11 +1068,11 @@ def reduced_two_site_dmrg(hamiltonian, *, state, bond_dim, options):
     direction = str(options.start_direction).lower()
     if direction not in {"lr", "rl"}:
         raise ValueError("start_direction must be 'lr' or 'rl'")
+    initial_recovery = None
     if options.gauge_mode == 'frontier':
-        from .._letta_one_site_opt.reduced_gauge import (
-            canonicalize_reduced_frontier, shift_reduced_frontier_gauge)
-        canonicalize_reduced_frontier(state, 0 if direction == 'lr' else state.nsites-1,
-                                      tolerance=options.metric_tolerance)
+        from .._letta_one_site_opt.reduced_gauge import condition_reduced_sweep
+        initial_recovery = condition_reduced_sweep(state, hamiltonian, options,
+            center=0 if direction == 'lr' else state.nsites-1)
     previous_energy = _energy(state, hamiltonian, stable=True)
     history = []
     converged = False
@@ -1088,9 +1088,15 @@ def reduced_two_site_dmrg(hamiltonian, *, state, bond_dim, options):
             updates.append(_optimize_reduced_pair(
                 state, hamiltonian, site, direction, bond_dim, options
             ))
+            if initial_recovery:
+                updates[-1] = replace(updates[-1], recovery_reason=initial_recovery)
+                initial_recovery = None
             if options.gauge_mode == 'frontier':
-                shift_reduced_frontier_gauge(state, site+1, direction,
-                                            tolerance=options.metric_tolerance)
+                reason = condition_reduced_sweep(state, hamiltonian, options,
+                    cut=site+1, direction=direction)
+                if reason:
+                    prior = updates[-1].recovery_reason
+                    updates[-1] = replace(updates[-1], recovery_reason=reason if prior is None else prior+'; '+reason)
         updates = tuple(updates)
         energy = _energy(state, hamiltonian, stable=True)
         change = abs(energy - previous_energy)

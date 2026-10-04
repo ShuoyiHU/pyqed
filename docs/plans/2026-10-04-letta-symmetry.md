@@ -29,8 +29,8 @@
 | U(1) OBC one-site/CBE/two-site | Symmetry leakage zero, adaptive allocation, exact small-reference comparisons | Shared adapter implemented; independent small-model and conversion tests pass; broader API/topology gates remain |
 | SU(2) OBC one-site/CBE/two-site | Native reduced actions, complete multiplets, numerical-reference gates | Implemented, small references pass; broad model/tie/API validation remains |
 | U(1) closed-ring all three methods | Cyclic contractions and wrap bond, nonidentity metric, independent references | All three ring methods implemented; independent Bose/fermionic small references pass; broader matrix pending |
-| SU(2) closed-ring all three methods | Reduced cyclic recoupling, explicit target representation, no magnetic/determinant solver fallback | All three ring methods implemented; reduced cyclic reference tests pass; molecular backward-tie stress test running |
-| Arbitrary tying | Forward/backward/nonadjacent/cross-cut/wrap dependencies, exact embedding and metric tests | Open/ring embeddings and all three methods implemented; complex molecular ring CBE validation running |
+| SU(2) closed-ring all three methods | Reduced cyclic recoupling, explicit target representation, no magnetic/determinant solver fallback | All three ring methods implemented; reduced cyclic reference tests pass; molecular backward-tie stress test passed |
+| Arbitrary tying | Forward/backward/nonadjacent/cross-cut/wrap dependencies, exact embedding and metric tests | Open/ring embeddings and all three methods implemented; complex molecular ring CBE validation passed |
 | QC and condensed models | Molecular integrals and Hubbard/Bose/Heisenberg examples with allowed symmetries | Pending integrated validation |
 | Recovery and variational acceptance | Restored state/sectors/caches, same-start one-site baseline, strict fresh energy check | Open/ring update transactions and strict baselines implemented; OBC sweep-level gauge recovery pending |
 | Accuracy diagnostics | Inner residuals/status, truncation stationarity, rejected-update handling; plateau != global minimum | Pending |
@@ -168,3 +168,8 @@ The requested scope remains all original model/symmetry/topology/method combinat
 
 - 2026-10-05 ring CBE checkpoint: shared residual/tangent selector, native full-cyclic metric, whole-sector directional insertion, expanded one-site solve, all four physical-metric compressors, strict same-start baseline and transactional recovery including closure-adjacent updates. No pair eigensolve or global/magnetic state expansion enters CBE.
 - Validation: 116 passed, 1 deselected in 96.88 s; the original separate ring run completed with 44 passed in 1181.73 s, including the complex three-orbital molecular backward-tie case. Counts overlap; commands/output in 2026-10-05-letta-ring-cbe-tests.txt. OBC sweep recovery, broader API/feature matrix, cyclic scaling and final implementation note remain outstanding.
+
+
+- 2026-10-05 OBC gauge recovery: sweep-level physical-energy checks, transactional tensor/sector restore, moving-environment rebuild after partial cache mutation, and continuation without false convergence. Initial and subsequent shifts are covered in both directions for one-site, CBE and two-site. Low-level standalone gauge errors still propagate after restoration.
+- Verification: 17 new focused recovery tests passed, then 113 combined reduced/gauge/update/CBE/two-site/molecular-acceptance/ring-sweep/Abelian tests passed in 87.15 s. Exact command/output in 2026-10-05-letta-sweep-recovery-tests.txt.
+- Long-ring scale stress tests now reproduce intermediate overflow/underflow in native single-site and pair complement products, despite representable final contractions. Fixing this numerical issue is the next correctness task; this is not the optional performance phase.
