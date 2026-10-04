@@ -863,7 +863,8 @@ def optimize_reduced_site(state, hamiltonian, site, options, *, context=None):
 def reduced_letta_dmrg(hamiltonian, *, state, options):
     """Alternate exact one-site sweeps in reduced LETTA parameter spaces."""
 
-    from .solver import LETTADMRGResult, LETTASweep
+    from .solver import LETTADMRGResult, LETTASiteUpdate, LETTASweep
+    from .reduced_updates import NUMERICAL_ERRORS
 
     if not isinstance(state, ReducedLatticeLETTA):
         raise TypeError("state must be ReducedLatticeLETTA")
@@ -916,7 +917,19 @@ def reduced_letta_dmrg(hamiltonian, *, state, options):
                 if context is not None:
                     context = ReducedSweepContext(state, hamiltonian)
             else:
-                updates.append(optimize_reduced_site(state, hamiltonian, site, options, context=context))
+                try:
+                    update = optimize_reduced_site(state, hamiltonian, site, options, context=context)
+                except NUMERICAL_ERRORS as error:
+                    # The local transaction has restored the incumbent. Drop
+                    # any partially refreshed environments before continuing.
+                    if context is not None:
+                        context = ReducedSweepContext(state, hamiltonian)
+                    energy = _energy(state, hamiltonian, stable=True)
+                    update = LETTASiteUpdate(site=site, local_energy=energy, energy=energy,
+                        metric_rank=0, local_dimension=0, residual_norm=np.inf,
+                        relative_residual=np.inf, accepted=False, local_converged=False,
+                        recovery_reason=f'one-site update failed: {type(error).__name__}: {error}')
+                updates.append(update)
             if initial_recovery:
                 updates[-1] = replace(updates[-1], recovery_reason=initial_recovery, local_converged=False)
                 initial_recovery = None

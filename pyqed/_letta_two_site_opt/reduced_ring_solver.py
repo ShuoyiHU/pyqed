@@ -16,7 +16,7 @@ from .reduced_ring_allocation import ring_edge, expand_ring_pair_space, install_
 from .reduced_solver import _split_reduced_pair, _project_frontier_blocks
 
 
-RING_NUMERICAL_ERRORS = NUMERICAL_ERRORS + (MemoryError,)
+RING_NUMERICAL_ERRORS = NUMERICAL_ERRORS
 
 
 def ring_stationarity(state, hamiltonian, sites, options):

@@ -188,7 +188,7 @@ def condition_reduced_sweep(state, hamiltonian, options, *, center=None,
             raise FloatingPointError('reduced gauge changed the physical energy')
         if context is not None:
             context.synchronize(changed)
-    except NUMERICAL_ERRORS+(MemoryError,) as error:
+    except NUMERICAL_ERRORS as error:
         state.tensors, state.bond_sectors = snapshot.tensors, snapshot.bond_sectors
         where = 'initial gauge' if center is not None else 'gauge'
         return f'{where}: {type(error).__name__}: {error}'

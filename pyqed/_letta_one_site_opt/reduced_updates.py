@@ -5,7 +5,7 @@ from operator import index
 import numpy as np
 
 
-NUMERICAL_ERRORS = (FloatingPointError, ArithmeticError, np.linalg.LinAlgError, ValueError)
+NUMERICAL_ERRORS = (FloatingPointError, ArithmeticError, np.linalg.LinAlgError, ValueError, MemoryError)
 
 
 def one_site_options(options):
