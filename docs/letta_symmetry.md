@@ -194,13 +194,68 @@ The norm convention is the invariant physical-plus-target scalar norm. Each raw 
 
 Accepted local updates pass a fresh physical energy check after normalization. A failed solve restores its incumbent. A failed gauge restores the state after the accepted local update and continues with subsequent cores. Recovery is recorded and prevents that sweep from being called converged. Energy plateaus require a fresh all-core local-residual audit; they are not guarantees of a global minimum.
 
-This is currently the **one-site** ring path. Asking it for CBE raises an explicit error; ring pair metrics, all four ring compressors and genuine ring CBE/two-site adapters remain required work. The existing open-chain boundary-Gram compression root cannot be used for a general cyclic metric.
+The ring state now supports public one-site and two-site paths. Asking the one-site path for CBE still raises an explicit error: the residual-based ring CBE selector and update integration remain required work. The existing open-chain boundary-Gram compression root cannot be used for a general cyclic metric.
 
 
 ## Cyclic pair compression: internal adapter
 
-The native ring pair and compression adapters are independently verified, but are not yet connected to public ring CBE/two-site sweeps. `CyclicPairProblem` forms the full correlated H/N pair response on a physical/physical or closure-adjacent graph edge. Its fusion layout includes missing middle irreps, independent of the incumbent allocation.
+The native ring pair and compression adapters are independently verified and connected to public ring two-site sweeps. The supplied-target adapter is ready for integration with a genuine expanded-one-site CBE update; CBE itself remains unavailable for rings. `CyclicPairProblem` forms the full correlated H/N pair response on a physical/physical or closure-adjacent graph edge. Its fusion layout includes missing middle irreps, independent of the incumbent allocation.
 
 `compress_ring_pair` accepts the same `MetricCompressionOptions` and explicit ALS/LSMR budgets as the open reduced backend. All four solvers operate on the same cyclic physical-norm loss. The caller remains responsible for changing sector allocations, choosing starting factors, alternating energy minimization, comparing against an ordinary one-site baseline, and committing or restoring a candidate. Calling the adapter alone does not guarantee an energy improvement.
 
-The current cyclic metric root uses dense LOCAL pair matrices with a workspace guard. This is distinct from a forbidden global determinant projection, but can still be expensive for large pair spaces. Ring scalability and the full CBE/two-site sweep integration remain unfinished.
+The current cyclic metric root uses dense LOCAL pair matrices with a workspace guard. This is distinct from a forbidden global determinant projection, but can still be expensive for large pair spaces. Long-ring scalability and ring CBE integration remain unfinished.
+
+
+## Two-site optimization on the covariant ring
+
+Pass a `ReducedRingLETTA` state to `letta_two_site_dmrg`. The ordinary
+`LETTATwoSiteOptions` and `MetricCompressionOptions` apply, including separate
+ALS, inner LSMR, nonlinear optimizer and A/B energy-refinement budgets. Set
+`reduced_sector_growth=True` to discover locally reachable middle sectors;
+otherwise the existing allocation is used. `bond_dim` caps the total retained
+multiplets at each visited graph bond, rather than copies per sector.
+
+Each step works on a copy. New left columns are zero and complementary right
+rows are seeded: their product remains exactly the incumbent. The full cyclic
+pair H/N is solved, and a coefficient SVD supplies only initial ranks/factors.
+Both incumbent-based and SVD-based factor starts are fitted in the correlated
+physical metric using the requested compressor. Failed starts are recorded;
+finite fitted states are compared by physical fitting loss. The retained
+allocation is physically installed on both cores, including closure metadata.
+For energy-refined split modes, full-metric one-site solves alternate between
+the two graph vertices. A fresh norm and energy are evaluated on the resulting
+state before any candidate is committed.
+
+An ordinary one-site update is also computed from the untouched incumbent. If
+its current bond meets the requested cap, it is a feasible baseline and the
+lower-energy candidate is selected. Numerical/resource failure records a
+reason and falls back to that baseline; failure of both candidates leaves the
+original state and allocation intact. When reducing a bond cap below the
+incumbent allocation, an oversized baseline cannot satisfy the new cap and is
+not silently accepted as a successful compression. A rejected step can retain
+the old allocation; the sweep is not called converged while any bond exceeds
+the requested cap.
+
+The graph vertices are physical cores 0 through L-1 followed by target closure
+L. A forward sweep visits (0,1), ..., (L-1,L), (L,0), and the next sweep reverses
+that order. Thus both closure-adjacent bonds participate in growth and
+compression. This schedule does not call a three-core update through the
+closure a two-physical-site update: physical (L-1,0) are not adjacent graph
+vertices. The physical Hamiltonian may contain the periodic last-first term;
+that term remains present in every exact environment contraction.
+
+`conditional_discarded_weight` records the initialization SVD statistic, which
+is NOT a cyclic physical discarded weight. `metric_truncation_loss` is the
+physical-norm fitting loss before subsequent normalization/energy refinement.
+Compression diagnostics retain the requested/used solver and linear/nonlinear
+stopping reports. Energy plateaus require successful compression reports and a
+fresh all-core local residual audit before convergence is declared. This is a
+stationarity condition, not proof of a global minimum. Gauge failures restore
+the state after the accepted update and are marked in the sweep record.
+
+Independent tests cover all four compressors, exact Hubbard dimer energy,
+three-site periodic Hubbard doublets and Bose-Hubbard with arbitrary ties,
+missing spin-sector growth, both closure edges, matrix-free pair actions,
+state-preserving growth/shrinkage, same-start recovery and failed partial gauge
+writes. Larger systems and the complete topology/model/method matrix remain
+separate validation gates.

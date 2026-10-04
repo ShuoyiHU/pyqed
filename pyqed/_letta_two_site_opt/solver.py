@@ -780,6 +780,10 @@ def letta_two_site_dmrg(
     solve_started = perf_counter()
     options = LETTATwoSiteOptions() if options is None else options
     _validate_options(options)
+    from .._letta_one_site_opt.reduced_ring_state import ReducedRingLETTA
+    if isinstance(state, ReducedRingLETTA):
+        from .reduced_ring_solver import ring_two_site_dmrg
+        return ring_two_site_dmrg(hamiltonian, state=state, bond_dim=bond_dim, options=options)
     from .._letta_one_site_opt.reduced_operators import ReducedMPOHamiltonian
     from .._letta_one_site_opt.reduced_state import ReducedLatticeLETTA
 

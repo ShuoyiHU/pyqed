@@ -1,0 +1,14 @@
+Working directory: /Users/shuoyihu/.codex/worktrees/letta-oct-4-sym/pyqed
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONWARNINGS=ignore NUMBA_CACHE_DIR=/private/tmp/letta-oct4-numba MPLCONFIGDIR=/private/tmp/letta-mpl OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 NUMEXPR_NUM_THREADS=1 PYTHONPATH=. /Users/shuoyihu/Documents/GitHub/pyqed/.venv-1/bin/python -m pytest -p no:cacheprovider -q tests/test_letta_ring_two_site.py tests/test_letta_ring_allocation.py tests/test_letta_ring_pair.py tests/test_letta_ring_compression.py tests/test_letta_ring_sweeps.py tests/test_letta_reduced_two_site.py tests/test_letta_reduced_cbe.py tests/test_letta_abelian_backend.py
+
+........................................................................ [ 57%]
+......................................................                   [100%]
+126 passed in 183.93s (0:03:03)
+
+The optional polish check was added after collection of the combined run. Its focused verification on the final source:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONWARNINGS=ignore NUMBA_CACHE_DIR=/private/tmp/letta-oct4-numba MPLCONFIGDIR=/private/tmp/letta-mpl OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 NUMEXPR_NUM_THREADS=1 PYTHONPATH=. /Users/shuoyihu/Documents/GitHub/pyqed/.venv-1/bin/python -m pytest -p no:cacheprovider -q tests/test_letta_ring_two_site.py::test_ring_two_site_optional_polishing_preserves_energy_guard
+
+.                                                                        [100%]
+1 passed in 2.58s
