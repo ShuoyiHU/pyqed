@@ -7,7 +7,10 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.sparse.linalg import LinearOperator, lsmr
 
-from .._letta_one_site_opt.contractions import BlockDiagonalMetric
+from .._letta_one_site_opt.contractions import (
+    BlockDiagonalMetric, DiagonalMetric, _equilibrated_metric_factors,
+)
+from .._letta_compression import MetricCompressionOptions, compress_factors
 from .pair import LETTAPairLayout, LETTASplit
 
 
@@ -17,49 +20,51 @@ class LETTAMetricRefinement:
     right_tensor: np.ndarray
     loss: float
     iterations: int
+    diagnostics: dict | None = None
 
 
 class _MetricSquareRoot:
+    """Blockwise factor S with S^H S equal to the supported overlap metric.
+
+    S need not be Hermitian. Its rank is resolved after column equilibration,
+    so a small coordinate weight alone does not erase a physical fit error.
+    """
+
     def __init__(self, metric, tolerance):
         if not isinstance(metric, BlockDiagonalMetric):
             raise TypeError("metric must be a BlockDiagonalMetric.")
-        decompositions = []
-        scale = 0.0
+        grouped = {}
+        rank = 0
         for block, indices in zip(metric.blocks, metric.indices):
-            block = 0.5 * (block + block.conj().T)
-            values, vectors = np.linalg.eigh(block)
-            decompositions.append((np.asarray(indices), values, vectors))
-            if values.size:
-                scale = max(scale, float(values[-1]))
-        if scale <= 0.0:
-            raise ValueError("the two-site LETTA overlap metric has zero rank.")
-        cutoff = max(
-            float(tolerance),
-            np.finfo(float).eps * metric.size,
-        ) * scale
-        pieces = []
-        for indices, values, vectors in decompositions:
-            retained = values > cutoff
-            if not np.any(retained):
+            if isinstance(metric, DiagonalMetric) and metric.support is not None:
+                keep = metric.support[indices]
+                block, indices = block[np.ix_(keep, keep)], indices[keep]
+            _, factor = _equilibrated_metric_factors(block, tolerance)
+            width = factor.shape[0]
+            if not width:
                 continue
-            pieces.append(
-                (indices, np.sqrt(values[retained]), vectors[:, retained])
-            )
-        if not pieces:
+            grouped.setdefault((factor.shape, factor.dtype), []).append(
+                (indices, indices[:width], factor))
+            rank += width
+        if not rank:
             raise ValueError("the two-site LETTA overlap metric has zero rank.")
-        self.size = metric.size
-        self.dtype = metric.dtype
-        self.pieces = tuple(pieces)
+        self.size, self.dtype = metric.size, metric.dtype
+        self.groups = tuple(tuple(map(np.stack, zip(*pieces)))
+                            for pieces in grouped.values())
 
     def apply(self, vector):
         vector = np.asarray(vector)
-        result = np.zeros(
-            self.size, dtype=np.result_type(self.dtype, vector)
-        )
-        for indices, square_roots, vectors in self.pieces:
-            result[indices] = vectors @ (
-                square_roots * (vectors.conj().T @ vector[indices])
-            )
+        result = np.zeros(self.size, dtype=np.result_type(self.dtype, vector))
+        for indices, target, factors in self.groups:
+            result[target] = (factors @ vector[indices][..., None])[..., 0]
+        return result
+
+    def adjoint(self, vector):
+        vector = np.asarray(vector)
+        result = np.zeros(self.size, dtype=np.result_type(self.dtype, vector))
+        for indices, source, factors in self.groups:
+            result[indices] = (factors.conj().swapaxes(1, 2)
+                               @ vector[source][..., None])[..., 0]
         return result
 
 
@@ -88,6 +93,7 @@ def _optimize_left(
     square_root,
     tolerance,
     indices,
+    lsmr_max_iterations=None,
 ):
     target_shape = layout.merged_shape
     variable_shape = left_tensor.shape
@@ -98,7 +104,7 @@ def _optimize_left(
         return square_root.apply(merged.reshape(-1))
 
     def adjoint(vector):
-        weighted = square_root.apply(vector).reshape(target_shape)
+        weighted = square_root.adjoint(vector).reshape(target_shape)
         result = layout.left_adjoint(weighted, right_tensor).reshape(-1)
         return result if indices is None else result[indices]
 
@@ -115,7 +121,7 @@ def _optimize_left(
         square_root.apply(target),
         atol=tolerance,
         btol=tolerance,
-        maxiter=_lsmr_iterations(variable_size),
+        maxiter=lsmr_max_iterations or _lsmr_iterations(variable_size),
         x0=(
             left_tensor.reshape(-1)
             if indices is None
@@ -135,6 +141,7 @@ def _optimize_right(
     square_root,
     tolerance,
     indices,
+    lsmr_max_iterations=None,
 ):
     target_shape = layout.merged_shape
     variable_shape = right_tensor.shape
@@ -145,7 +152,7 @@ def _optimize_right(
         return square_root.apply(merged.reshape(-1))
 
     def adjoint(vector):
-        weighted = square_root.apply(vector).reshape(target_shape)
+        weighted = square_root.adjoint(vector).reshape(target_shape)
         result = layout.right_adjoint(left_tensor, weighted).reshape(-1)
         return result if indices is None else result[indices]
 
@@ -162,7 +169,7 @@ def _optimize_right(
         square_root.apply(target),
         atol=tolerance,
         btol=tolerance,
-        maxiter=_lsmr_iterations(variable_size),
+        maxiter=lsmr_max_iterations or _lsmr_iterations(variable_size),
         x0=(
             right_tensor.reshape(-1)
             if indices is None
@@ -194,6 +201,7 @@ def metric_als_refine(
     metric_tolerance=1.0e-12,
     left_indices=None,
     right_indices=None,
+    lsmr_max_iterations=None,
 ):
     """Improve a conditional split in the full LETTA wavefunction norm."""
 
@@ -211,6 +219,9 @@ def metric_als_refine(
         raise ValueError("truncation tolerances must be positive.")
     if max_iterations <= 0:
         raise ValueError("max_iterations must be positive.")
+
+    if lsmr_max_iterations is not None and (not isinstance(lsmr_max_iterations, (int, np.integer)) or lsmr_max_iterations <= 0):
+        raise ValueError("lsmr_max_iterations must be a positive integer.")
 
     target_vector = target.reshape(-1)
     square_root = _MetricSquareRoot(metric, metric_tolerance)
@@ -230,6 +241,7 @@ def metric_als_refine(
             square_root,
             tolerance,
             left_indices,
+            lsmr_max_iterations,
         )
         proposed_loss = _metric_loss(
             target_vector, layout, proposed_left, right_tensor, metric
@@ -246,6 +258,7 @@ def metric_als_refine(
             square_root,
             tolerance,
             right_indices,
+            lsmr_max_iterations,
         )
         proposed_loss = _metric_loss(
             target_vector, layout, left_tensor, proposed_right, metric
@@ -264,3 +277,35 @@ def metric_als_refine(
         loss=loss,
         iterations=iterations,
     )
+
+
+def metric_refine(target, layout, initial, metric, *, compression=None,
+                  tolerance=1e-10, max_iterations=8, metric_tolerance=1e-12,
+                  left_indices=None, right_indices=None):
+    """Selectable norm-compression solver; energy refinement is separate."""
+    if not isinstance(layout, LETTAPairLayout) or not isinstance(initial, LETTASplit):
+        raise TypeError("metric_refine requires LETTAPairLayout and LETTASplit.")
+    if np.shape(target) != layout.merged_shape:
+        raise ValueError("target tensor shape does not match the pair layout.")
+    if layout.symmetry is not None:
+        if left_indices is None:
+            left_indices = np.flatnonzero(layout.factor_mask("left"))
+        if right_indices is None:
+            right_indices = np.flatnonzero(layout.factor_mask("right"))
+    compression = compression or MetricCompressionOptions()
+    if not isinstance(compression, MetricCompressionOptions):
+        raise TypeError("compression must be MetricCompressionOptions.")
+    def fallback():
+        fit = metric_als_refine(
+            target, layout, initial, metric, tolerance=tolerance,
+            max_iterations=compression.als_max_iterations or max_iterations,
+            metric_tolerance=metric_tolerance, left_indices=left_indices,
+            right_indices=right_indices,
+            lsmr_max_iterations=compression.lsmr_max_iterations)
+        return fit.left_tensor, fit.right_tensor, fit.loss, fit.iterations
+    fit = compress_factors(
+        target, metric, initial.left_tensor, initial.right_tensor,
+        options=compression, fallback=fallback, layout=layout,
+        metric_tolerance=metric_tolerance, left_indices=left_indices,
+        right_indices=right_indices)
+    return LETTAMetricRefinement(fit.left, fit.right, fit.loss, fit.iterations, fit.diagnostics)

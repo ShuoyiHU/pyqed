@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from pyqed._letta_one_site_opt import (
     AbelianSymmetry,
@@ -240,7 +241,8 @@ def test_symmetry_split_supports_3d_snake_pair_with_shared_left_owned_site():
     assert np.linalg.norm(split.right_tensor[~layout.factor_mask("right")]) == 0.0
 
 
-def test_two_site_z2_matches_dense_run_and_reduces_every_pair_problem():
+@pytest.mark.parametrize("split_method", ["metric-als", "metric-als-energy"])
+def test_two_site_z2_matches_dense_run_and_reduces_every_pair_problem(split_method):
     symmetry = _z2_even()
     mpo = transverse_field_ising_mpo(
         (1, 3), coupling=0.7, field=1.2, basis="x"
@@ -252,7 +254,7 @@ def test_two_site_z2_matches_dense_run_and_reduces_every_pair_problem():
     options = LETTATwoSiteOptions(
         max_sweeps=5,
         tolerance=1.0e-11,
-        split_method="metric-als",
+        split_method=split_method,
         matrix_free=True,
         gauge_mode="qr",
     )

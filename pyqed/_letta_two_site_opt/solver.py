@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from time import perf_counter
+
+from .._letta_compression import MetricCompressionOptions
 
 import numpy as np
 from scipy import linalg
 from scipy.sparse.linalg import ArpackNoConvergence, LinearOperator, eigsh
 
+from .._letta_one_site_opt.contractions import DiagonalMetric, _equilibrated_metric_factors
 from .._letta_one_site_opt.operators import LatticeMPO
 from .._letta_one_site_opt.solver import (
     LETTADMROptions,
     _lowest_generalized_eigenpair,
+    _shift_gauge_and_extend_metric,
     _shift_virtual_gauge,
     letta_dmrg,
 )
@@ -22,30 +27,35 @@ from .contractions import (
 )
 from .energy_refinement import energy_refine_split
 from .pair import LETTAPairLayout, conditional_svd_split
-from .truncation import metric_als_refine
+from .truncation import metric_refine
 
 
 @dataclass(frozen=True)
 class LETTATwoSiteOptions:
+    compression: MetricCompressionOptions = MetricCompressionOptions()
     max_sweeps: int = 8
     tolerance: float = 1.0e-9
-    metric_tolerance: float = 1.0e-12
+    metric_tolerance: float = 1.0e-10
     energy_increase_tolerance: float = 1.0e-10
     eigensolver_tolerance: float = 1.0e-10
     eigensolver_max_iterations: int = 300
     dense_solver_threshold: int = 64
-    split_method: str = "metric-als"
+    split_method: str = "metric-als-energy"
     conditional_svd_cutoff: float = 0.0
     truncation_tolerance: float = 1.0e-10
     truncation_max_iterations: int = 8
     energy_refinement_tolerance: float = 1.0e-10
     energy_refinement_max_iterations: int = 8
     energy_refinement_max_factor_norm_growth: float = 100.0
+    coupled_refinement_max_iterations: int = 8
+    coupled_refinement_metric_tolerance: float = 1.0e-12
+    coupled_refinement_activation_ratio: float = 5.0
     matrix_free: bool = True
     use_sparse_mpo: bool = True
     start_direction: str = "lr"
     alternate: bool = True
-    gauge_mode: str = "qr"
+    gauge_mode: str = "frontier"
+    reduced_sector_growth: bool = False  # open missing SU(2) pair fusion sectors before splitting
     one_site_polish_sweeps: int = 0
     verbosity: int = 0
 
@@ -72,6 +82,15 @@ class LETTAPairUpdate:
     sector_ranks: tuple[int, ...]
     accepted: bool
     full_local_dimension: int | None = None
+    hamiltonian_applications: int = 0
+    energy_refinement_start: str | None = None
+    split_refinement_energy: float | None = None
+    incumbent_refinement_energy: float | None = None
+    energy_refinement_factor_norm_limit: float | None = None
+    split_refinement_within_norm_limit: bool | None = None
+    coupled_refinement_iterations: int = 0
+    coupled_refinement_accepted_steps: int = 0
+    compression_diagnostics: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -83,6 +102,7 @@ class LETTATwoSiteSweep:
     energy_density_change: float
     bond_dimension: int
     updates: tuple[LETTAPairUpdate, ...]
+    elapsed_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -101,35 +121,19 @@ class _BlockMetricWhitening:
     """Implicit blockwise map from Euclidean to metric-normalized vectors."""
 
     def __init__(self, metric, tolerance):
-        decompositions = []
-        scale = 0.0
-        for block, indices in zip(metric.blocks, metric.indices):
-            hermitian = 0.5 * (block + block.conj().T)
-            values, vectors = np.linalg.eigh(hermitian)
-            decompositions.append((indices, values, vectors))
-            if values.size:
-                scale = max(scale, float(values[-1]))
-        if scale <= 0.0:
-            raise ValueError("the two-site LETTA overlap metric has zero rank.")
-        relative_cutoff = max(
-            float(tolerance),
-            np.finfo(float).eps * metric.size,
-        )
-        cutoff = relative_cutoff * scale
-        pieces = []
+        grouped = {}
         offset = 0
-        for indices, values, vectors in decompositions:
-            retained = values > cutoff
-            if not np.any(retained):
+        for block, indices in zip(metric.blocks, metric.indices):
+            if isinstance(metric, DiagonalMetric) and metric.support is not None:
+                keep = metric.support[indices]
+                block, indices = block[np.ix_(keep, keep)], indices[keep]
+            basis, coordinates = _equilibrated_metric_factors(block, tolerance)
+            width = basis.shape[1]
+            if not width:
                 continue
-            values = values[retained]
-            vectors = vectors[:, retained]
-            width = values.size
-            pieces.append((
-                np.asarray(indices),
-                slice(offset, offset + width),
-                values,
-                vectors,
+            grouped.setdefault((basis.shape, basis.dtype), []).append((
+                np.asarray(indices), np.arange(offset, offset + width),
+                basis, coordinates,
             ))
             offset += width
         if offset == 0:
@@ -137,39 +141,32 @@ class _BlockMetricWhitening:
         self.size = metric.size
         self.rank = offset
         self.dtype = metric.dtype
-        self.pieces = tuple(pieces)
+        groups = []
+        for pieces in grouped.values():
+            indices, sources, bases, coordinates = map(np.stack, zip(*pieces))
+            adjoints = np.ascontiguousarray(bases.conj().swapaxes(1, 2))
+            groups.append((indices, sources, bases, adjoints, coordinates))
+        self.groups = tuple(groups)
 
     def to_full(self, reduced):
         reduced = np.asarray(reduced)
-        result = np.zeros(
-            self.size, dtype=np.result_type(self.dtype, reduced)
-        )
-        for indices, source, values, vectors in self.pieces:
-            result[indices] = vectors @ (
-                reduced[source] / np.sqrt(values)
-            )
+        result = np.zeros(self.size, dtype=np.result_type(self.dtype, reduced))
+        for indices, source, bases, _, _ in self.groups:
+            result[indices] = (bases @ reduced[source][..., None])[..., 0]
         return result
 
     def adjoint(self, full):
         full = np.asarray(full)
-        result = np.empty(
-            self.rank, dtype=np.result_type(self.dtype, full)
-        )
-        for indices, target, values, vectors in self.pieces:
-            result[target] = (
-                vectors.conj().T @ full[indices]
-            ) / np.sqrt(values)
+        result = np.empty(self.rank, dtype=np.result_type(self.dtype, full))
+        for indices, target, _, adjoints, _ in self.groups:
+            result[target] = (adjoints @ full[indices][..., None])[..., 0]
         return result
 
     def coordinates(self, full):
         full = np.asarray(full)
-        result = np.empty(
-            self.rank, dtype=np.result_type(self.dtype, full)
-        )
-        for indices, target, values, vectors in self.pieces:
-            result[target] = np.sqrt(values) * (
-                vectors.conj().T @ full[indices]
-            )
+        result = np.empty(self.rank, dtype=np.result_type(self.dtype, full))
+        for indices, target, _, _, coordinates in self.groups:
+            result[target] = (coordinates @ full[indices][..., None])[..., 0]
         return result
 
 
@@ -194,6 +191,7 @@ def _embed_pair_vector(vector, indices, full_dimension):
 
 def _lowest_pair_vector(action, metric, old_vector, options):
     whitening = _BlockMetricWhitening(metric, options.metric_tolerance)
+    old_applied = action(old_vector)
 
     def reduced_action(vector):
         return whitening.adjoint(action(whitening.to_full(vector)))
@@ -225,7 +223,7 @@ def _lowest_pair_vector(action, metric, old_vector, options):
         operator = LinearOperator(
             (whitening.rank, whitening.rank),
             matvec=reduced_action,
-            dtype=np.result_type(old_vector, metric.dtype),
+            dtype=np.result_type(old_vector, metric.dtype, old_applied),
         )
         try:
             _values, vectors = eigsh(
@@ -246,7 +244,7 @@ def _lowest_pair_vector(action, metric, old_vector, options):
     candidate /= np.sqrt(np.vdot(candidate, metric @ candidate))
     trial_basis = np.column_stack([old_vector, candidate])
     applied_basis = np.column_stack(
-        [action(trial_basis[:, column]) for column in range(2)]
+        [old_applied, action(candidate)]
     )
     trial_hamiltonian = trial_basis.conj().T @ applied_basis
     trial_metric = trial_basis.conj().T @ (metric @ trial_basis)
@@ -283,14 +281,21 @@ def _optimize_pair(
         metric_left, metric_right, layout
     )
     if options.matrix_free:
-        full_action = lambda vector: hamiltonian_cache.effective_pair_action(
-            hamiltonian_left, hamiltonian_right, layout, vector
-        )
+        full_action = hamiltonian_cache.prepare_pair_action(
+            hamiltonian_left, hamiltonian_right, layout)
     else:
         hamiltonian = hamiltonian_cache.effective_pair_matrix(
             hamiltonian_left, hamiltonian_right, layout
         )
         full_action = lambda vector: hamiltonian @ vector
+
+    hamiltonian_applications = 0
+    original_action = full_action
+
+    def full_action(vector):
+        nonlocal hamiltonian_applications
+        hamiltonian_applications += 1
+        return original_action(vector)
 
     indices = layout.symmetry_indices() if layout.symmetry is not None else None
     if indices is None:
@@ -321,10 +326,18 @@ def _optimize_pair(
         cutoff=options.conditional_svd_cutoff,
     )
     truncation_iterations = 0
+    compression_diagnostics = None
     energy_refinement_initial_energy = None
     energy_refinement_energy = None
     energy_refinement_iterations = 0
     energy_refinement_accepted_substeps = 0
+    energy_refinement_start = None
+    split_refinement_energy = None
+    incumbent_refinement_energy = None
+    energy_refinement_factor_norm_limit = None
+    split_refinement_within_norm_limit = None
+    coupled_refinement_iterations = 0
+    coupled_refinement_accepted_steps = 0
     left_indices = (
         np.flatnonzero(layout.factor_mask("left").reshape(-1))
         if layout.symmetry is not None
@@ -335,12 +348,15 @@ def _optimize_pair(
         if layout.symmetry is not None
         else None
     )
-    if options.split_method == "metric-als":
-        refinement = metric_als_refine(
+    left_tensor = split.left_tensor.copy()
+    right_tensor = split.right_tensor.copy()
+    if options.split_method in {"metric", "metric-energy", "metric-als", "metric-als-energy"}:
+        refinement = metric_refine(
             optimized_full.reshape(layout.merged_shape),
             layout,
             split,
             full_metric,
+            compression=options.compression,
             tolerance=options.truncation_tolerance,
             max_iterations=options.truncation_max_iterations,
             metric_tolerance=options.metric_tolerance,
@@ -349,14 +365,13 @@ def _optimize_pair(
         )
         left_tensor = refinement.left_tensor.copy()
         right_tensor = refinement.right_tensor.copy()
-        truncation_loss = refinement.loss
         truncation_iterations = refinement.iterations
-    elif options.split_method == "energy-refined":
-        refinement = energy_refine_split(
-            layout,
-            split,
-            full_action,
-            full_metric,
+        compression_diagnostics = refinement.diagnostics
+    if options.split_method in {"energy-refined", "metric-energy", "metric-als-energy"}:
+        # The split can enter a worse fixed-rank basin even when its initial
+        # energy is lower. Compare both starts *after* energy relaxation.
+        initial = replace(split, left_tensor=left_tensor, right_tensor=right_tensor)
+        refinement_options = dict(
             tolerance=options.energy_refinement_tolerance,
             max_iterations=options.energy_refinement_max_iterations,
             metric_tolerance=options.metric_tolerance,
@@ -367,27 +382,73 @@ def _optimize_pair(
             left_indices=left_indices,
             right_indices=right_indices,
         )
+        split_refinement = energy_refine_split(
+            layout, initial, full_action, full_metric,
+            coupled_max_iterations=options.coupled_refinement_max_iterations,
+            coupled_metric_tolerance=options.coupled_refinement_metric_tolerance,
+            coupled_activation_ratio=options.coupled_refinement_activation_ratio,
+            **refinement_options,
+        )
+        incumbent = replace(
+            split,
+            left_tensor=state.tensors[layout.left_site],
+            right_tensor=state.tensors[layout.left_site + 1],
+        )
+        incumbent_refinement = energy_refine_split(
+            layout, incumbent, full_action, full_metric,
+            coupled_max_iterations=options.coupled_refinement_max_iterations,
+            coupled_metric_tolerance=options.coupled_refinement_metric_tolerance,
+            coupled_activation_ratio=options.coupled_refinement_activation_ratio,
+            **refinement_options,
+        )
+        split_refinement_energy = split_refinement.energy
+        incumbent_refinement_energy = incumbent_refinement.energy
+        # ALS can already have amplified null-space components before the
+        # refinement's per-start growth guard runs. Both candidates need the
+        # same budget, measured in the normalized, balanced incumbent gauge.
+        incumbent_norm = float(np.real(np.vdot(
+            old_merged_full, full_metric @ old_merged_full
+        )))
+        incumbent_factor_norm = np.sqrt(
+            np.linalg.norm(state.tensors[layout.left_site])
+            * np.linalg.norm(state.tensors[layout.left_site + 1])
+            / np.sqrt(incumbent_norm)
+        )
+        energy_refinement_factor_norm_limit = float(
+            options.energy_refinement_max_factor_norm_growth * incumbent_factor_norm
+        )
+        split_refinement_within_norm_limit = bool(
+            np.isfinite(split_refinement.max_factor_norm)
+            and split_refinement.max_factor_norm <= energy_refinement_factor_norm_limit
+        )
+        if (not split_refinement_within_norm_limit
+                or incumbent_refinement.energy < split_refinement.energy):
+            refinement = incumbent_refinement
+            energy_refinement_start = "incumbent"
+        else:
+            refinement = split_refinement
+            energy_refinement_start = "split"
         left_tensor = refinement.left_tensor.copy()
         right_tensor = refinement.right_tensor.copy()
-        difference = optimized_full - layout.merge(
-            left_tensor, right_tensor
-        ).reshape(-1)
-        truncation_loss = float(
-            max(0.0, np.real(np.vdot(difference, full_metric @ difference)))
-        )
         energy_refinement_initial_energy = refinement.initial_energy
         energy_refinement_energy = refinement.energy
-        energy_refinement_iterations = refinement.iterations
-        energy_refinement_accepted_substeps = refinement.accepted_substeps
-    else:
-        left_tensor = split.left_tensor.copy()
-        right_tensor = split.right_tensor.copy()
-        unnormalized = layout.merge(left_tensor, right_tensor).reshape(-1)
-        difference = optimized_full - unnormalized
-        truncation_loss = float(
-            max(0.0, np.real(np.vdot(difference, full_metric @ difference)))
+        energy_refinement_iterations = (
+            split_refinement.iterations + incumbent_refinement.iterations
+        )
+        energy_refinement_accepted_substeps = (
+            split_refinement.accepted_substeps + incumbent_refinement.accepted_substeps
+        )
+        coupled_refinement_iterations = (
+            split_refinement.coupled_iterations + incumbent_refinement.coupled_iterations
+        )
+        coupled_refinement_accepted_steps = (
+            split_refinement.coupled_accepted_steps + incumbent_refinement.coupled_accepted_steps
         )
     reconstructed = layout.merge(left_tensor, right_tensor).reshape(-1)
+    difference = optimized_full - reconstructed
+    truncation_loss = float(
+        max(0.0, np.real(np.vdot(difference, full_metric @ difference)))
+    )
     norm = np.real(np.vdot(reconstructed, full_metric @ reconstructed))
     accepted = norm > np.finfo(float).tiny
     if accepted:
@@ -417,6 +478,7 @@ def _optimize_pair(
         conditional_discarded_weight=split.discarded_weight,
         metric_truncation_loss=truncation_loss,
         truncation_iterations=truncation_iterations,
+        compression_diagnostics=compression_diagnostics,
         energy_refinement_initial_energy=energy_refinement_initial_energy,
         energy_refinement_energy=energy_refinement_energy,
         energy_refinement_iterations=energy_refinement_iterations,
@@ -430,6 +492,14 @@ def _optimize_pair(
         sector_ranks=split.sector_ranks,
         accepted=accepted,
         full_local_dimension=old_merged_full.size,
+        hamiltonian_applications=hamiltonian_applications,
+        energy_refinement_start=energy_refinement_start,
+        split_refinement_energy=split_refinement_energy,
+        incumbent_refinement_energy=incumbent_refinement_energy,
+        energy_refinement_factor_norm_limit=energy_refinement_factor_norm_limit,
+        split_refinement_within_norm_limit=split_refinement_within_norm_limit,
+        coupled_refinement_iterations=coupled_refinement_iterations,
+        coupled_refinement_accepted_steps=coupled_refinement_accepted_steps,
     )
 
 
@@ -488,15 +558,29 @@ def _shift_fixed_virtual_gauge(state, site, direction, mode):
     )
 
 
-def _pair_sweep(state, hamiltonian, bond_dim, direction, options):
-    hamiltonian_cache = LETTAPairEnvironmentCache(
-        state, hamiltonian, use_sparse_mpo=options.use_sparse_mpo
-    )
-    metric_cache = IdentityPairEnvironmentCache(state)
+def _pair_sweep(state, hamiltonian, bond_dim, direction, options, *, workspace=None):
+    if workspace is None and options.gauge_mode == "frontier":
+        from .._letta_one_site_opt.gauge import canonicalize_frontier
+
+        # Also prepares the untouched side for non-alternating sweeps. Valid
+        # complete-side certificates are reused on alternating sweeps.
+        canonicalize_frontier(
+            state, 0 if direction == "lr" else state.nsites - 1,
+            tolerance=options.metric_tolerance,
+        )
+    if workspace is None:
+        hamiltonian_cache = LETTAPairEnvironmentCache(
+            state, hamiltonian, use_sparse_mpo=options.use_sparse_mpo)
+        metric_cache = IdentityPairEnvironmentCache(state)
+        build = "build_right_environments" if direction == "lr" else "build_left_environments"
+        hamiltonian_environments = getattr(hamiltonian_cache, build)()
+        metric_environments = getattr(metric_cache, build)()
+    else:
+        hamiltonian_cache, metric_cache, hamiltonian_environments, metric_environments = workspace
     updates = []
     if direction == "lr":
-        hamiltonian_right = hamiltonian_cache.build_right_environments()
-        metric_right = metric_cache.build_right_environments()
+        hamiltonian_right = hamiltonian_environments
+        metric_right = metric_environments
         hamiltonian_boundary = hamiltonian_cache.scalar_boundary()
         metric_boundary = metric_cache.scalar_boundary()
         for site in range(state.nsites - 1):
@@ -516,13 +600,18 @@ def _pair_sweep(state, hamiltonian, bond_dim, direction, options):
                     options,
                 )
             )
-            _shift_fixed_virtual_gauge(
-                state, site, direction, options.gauge_mode
-            )
+            if options.gauge_mode == "frontier":
+                metric_boundary = _shift_gauge_and_extend_metric(
+                    state, site, direction, options, metric_cache, metric_boundary
+                )
+            else:
+                _shift_fixed_virtual_gauge(state, site, direction, options.gauge_mode)
+                metric_boundary = metric_cache.extend_left(metric_boundary, site)
             hamiltonian_boundary = hamiltonian_cache.extend_left(
                 hamiltonian_boundary, site
             )
-            metric_boundary = metric_cache.extend_left(metric_boundary, site)
+            hamiltonian_environments[site + 1] = hamiltonian_boundary
+            metric_environments[site + 1] = metric_boundary
         hamiltonian_boundary = hamiltonian_cache.extend_left(
             hamiltonian_boundary, state.nsites - 1
         )
@@ -530,8 +619,8 @@ def _pair_sweep(state, hamiltonian, bond_dim, direction, options):
             metric_boundary, state.nsites - 1
         )
     else:
-        hamiltonian_left = hamiltonian_cache.build_left_environments()
-        metric_left = metric_cache.build_left_environments()
+        hamiltonian_left = hamiltonian_environments
+        metric_left = metric_environments
         hamiltonian_boundary = hamiltonian_cache.scalar_boundary()
         metric_boundary = metric_cache.scalar_boundary()
         for site in range(state.nsites - 2, -1, -1):
@@ -551,19 +640,29 @@ def _pair_sweep(state, hamiltonian, bond_dim, direction, options):
                     options,
                 )
             )
-            _shift_fixed_virtual_gauge(
-                state, site + 1, direction, options.gauge_mode
-            )
+            if options.gauge_mode == "frontier":
+                metric_boundary = _shift_gauge_and_extend_metric(
+                    state, site + 1, direction, options, metric_cache, metric_boundary
+                )
+            else:
+                _shift_fixed_virtual_gauge(state, site + 1, direction, options.gauge_mode)
+                metric_boundary = metric_cache.extend_right(metric_boundary, site + 1)
             hamiltonian_boundary = hamiltonian_cache.extend_right(
                 hamiltonian_boundary, site + 1
             )
-            metric_boundary = metric_cache.extend_right(
-                metric_boundary, site + 1
-            )
+            hamiltonian_environments[site + 1] = hamiltonian_boundary
+            metric_environments[site + 1] = metric_boundary
         hamiltonian_boundary = hamiltonian_cache.extend_right(
             hamiltonian_boundary, 0
         )
         metric_boundary = metric_cache.extend_right(metric_boundary, 0)
+    full_cut = state.nsites if direction == "lr" else 0
+    hamiltonian_environments[full_cut] = hamiltonian_boundary
+    metric_environments[full_cut] = metric_boundary
+    # The opposite endpoint remains a scalar, not the old completed sweep.
+    empty_cut = 0 if direction == "lr" else state.nsites
+    hamiltonian_environments[empty_cut] = hamiltonian_cache.scalar_boundary()
+    metric_environments[empty_cut] = metric_cache.scalar_boundary()
     energy = float(np.real(hamiltonian_boundary / metric_boundary))
     return tuple(updates), energy
 
@@ -571,6 +670,8 @@ def _pair_sweep(state, hamiltonian, bond_dim, direction, options):
 def _validate_options(options):
     if not isinstance(options, LETTATwoSiteOptions):
         raise TypeError("options must be a LETTATwoSiteOptions instance.")
+    if not isinstance(options.compression, MetricCompressionOptions):
+        raise TypeError("compression must be MetricCompressionOptions.")
     if options.max_sweeps <= 0:
         raise ValueError("max_sweeps must be positive.")
     if (
@@ -585,13 +686,16 @@ def _validate_options(options):
     if options.dense_solver_threshold <= 0:
         raise ValueError("dense_solver_threshold must be positive.")
     if options.split_method not in {
+        "metric",
+        "metric-energy",
         "conditional-svd",
         "metric-als",
+        "metric-als-energy",
         "energy-refined",
     }:
         raise ValueError(
-            "split_method must be 'conditional-svd', 'metric-als', "
-            "or 'energy-refined'."
+            "split_method must be 'conditional-svd', 'metric', 'metric-energy', "
+            "'metric-als', 'metric-als-energy', or 'energy-refined'."
         )
     if options.conditional_svd_cutoff < 0.0:
         raise ValueError("conditional_svd_cutoff must be nonnegative.")
@@ -603,14 +707,53 @@ def _validate_options(options):
         raise ValueError("energy_refinement_tolerance must be positive.")
     if options.energy_refinement_max_iterations <= 0:
         raise ValueError("energy_refinement_max_iterations must be positive.")
+    if (not isinstance(options.coupled_refinement_max_iterations, (int, np.integer))
+            or options.coupled_refinement_max_iterations < 0):
+        raise ValueError("coupled_refinement_max_iterations must be a nonnegative integer.")
+    if (not np.isfinite(options.coupled_refinement_metric_tolerance)
+            or not 0 < options.coupled_refinement_metric_tolerance < 1):
+        raise ValueError("coupled_refinement_metric_tolerance must be finite and between zero and one.")
+    if (not np.isfinite(options.coupled_refinement_activation_ratio)
+            or options.coupled_refinement_activation_ratio < 0):
+        raise ValueError("coupled_refinement_activation_ratio must be finite and nonnegative.")
     if options.energy_refinement_max_factor_norm_growth < 1.0:
         raise ValueError(
             "energy_refinement_max_factor_norm_growth must be at least one."
         )
-    if options.gauge_mode not in {"qr", "scalar", "none"}:
-        raise ValueError("gauge_mode must be 'qr', 'scalar', or 'none'.")
+    if options.gauge_mode not in {"qr", "frontier", "scalar", "none"}:
+        raise ValueError("gauge_mode must be 'qr', 'frontier', 'scalar', or 'none'.")
     if options.one_site_polish_sweeps < 0:
         raise ValueError("one_site_polish_sweeps must be nonnegative.")
+
+
+def _refresh_pair_gauge(state, direction, options, workspace):
+    """Keep unchanged side environments when preparing the next frontier gauge.
+
+    Non-admissible cuts still need the original QR preparation. Its changes
+    invalidate only the prefixes/suffixes containing those changed tensors.
+    """
+    from .._letta_one_site_opt.canonical import tensor_signature
+    from .._letta_one_site_opt.gauge import canonicalize_frontier
+
+    before = [tensor_signature(a) for a in state.tensors]
+    canonicalize_frontier(state, 0 if direction == "lr" else state.nsites - 1,
+                          tolerance=options.metric_tolerance)
+    changed = [i for i, a in enumerate(state.tensors) if tensor_signature(a) != before[i]]
+    if not changed:
+        return
+    hcache, ncache, henv, nenv = workspace
+    if direction == "rl":
+        for site in range(min(changed), state.nsites):
+            henv[site + 1] = hcache.extend_left(henv[site], site)
+            saved = ncache.saved_canonical(site + 1, "lr")
+            nenv[site + 1] = (saved.environment if saved is not None else
+                             ncache.extend_left(nenv[site], site))
+    else:
+        for site in range(max(changed), -1, -1):
+            henv[site] = hcache.extend_right(henv[site + 1], site)
+            saved = ncache.saved_canonical(site, "rl")
+            nenv[site] = (saved.environment if saved is not None else
+                         ncache.extend_right(nenv[site + 1], site))
 
 
 def letta_two_site_dmrg(
@@ -629,6 +772,7 @@ def letta_two_site_dmrg(
 ):
     """Optimize adjacent LETTA tensors with shared-index-aware splitting."""
 
+    solve_started = perf_counter()
     options = LETTATwoSiteOptions() if options is None else options
     _validate_options(options)
     from .._letta_one_site_opt.reduced_operators import ReducedMPOHamiltonian
@@ -679,7 +823,12 @@ def letta_two_site_dmrg(
             tuple(charges) for charges in bond_charges
         ):
             raise ValueError("supplied state and bond_charges do not match.")
-        state = state.copy()
+        if options.gauge_mode == "frontier":
+            from .._letta_one_site_opt.canonical import copy_canonical_state
+
+            state = copy_canonical_state(state)
+        else:
+            state = state.copy()
     if state.nsites < 2:
         raise ValueError("two-site optimization requires at least two sites.")
     if state.nsites != hamiltonian.nsites:
@@ -694,14 +843,37 @@ def letta_two_site_dmrg(
     direction = options.start_direction.lower()
     if direction not in {"lr", "rl"}:
         raise ValueError("start_direction must be 'lr' or 'rl'.")
-    previous_energy = state.expectation(hamiltonian)
+    if options.gauge_mode == "frontier":
+        from .._letta_one_site_opt.gauge import canonicalize_frontier
+        canonicalize_frontier(state, 0 if direction == "lr" else state.nsites - 1,
+                              tolerance=options.metric_tolerance)
+    hamiltonian_cache = LETTAPairEnvironmentCache(
+        state, hamiltonian, use_sparse_mpo=options.use_sparse_mpo)
+    metric_cache = IdentityPairEnvironmentCache(state)
+    build = "build_right_environments" if direction == "lr" else "build_left_environments"
+    hamiltonian_environments = getattr(hamiltonian_cache, build)()
+    metric_environments = getattr(metric_cache, build)()
+    workspace = (hamiltonian_cache, metric_cache, hamiltonian_environments, metric_environments)
+    full_cut = 0 if direction == "lr" else state.nsites
+    previous_energy = float(np.real(hamiltonian_environments[full_cut] / metric_environments[full_cut]))
     history = []
     converged = False
     message = "STOP: MAXIMUM SWEEPS REACHED"
     for sweep in range(1, options.max_sweeps + 1):
+        sweep_start = [tensor.copy() for tensor in state.tensors]
+        if sweep > 1 and options.alternate and options.gauge_mode == "frontier":
+            _refresh_pair_gauge(state, direction, options, workspace)
         updates, energy = _pair_sweep(
-            state, hamiltonian, bond_dim, direction, options
+            state, hamiltonian, bond_dim, direction, options, workspace=workspace
         )
+        # The final local quadratic form is not an independent energy check:
+        # small environment errors can be amplified by large null components.
+        energy = state.expectation(hamiltonian)
+        rejected = (not np.isfinite(energy)
+                    or energy > previous_energy + options.energy_increase_tolerance)
+        if rejected:
+            state.tensors = sweep_start
+            energy = previous_energy
         energy_change = abs(energy - previous_energy)
         density_change = energy_change / state.nsites
         history.append(
@@ -713,6 +885,7 @@ def letta_two_site_dmrg(
                 energy_density_change=density_change,
                 bond_dimension=bond_dim,
                 updates=updates,
+                elapsed_seconds=perf_counter() - solve_started,
             )
         )
         if options.verbosity:
@@ -721,12 +894,22 @@ def letta_two_site_dmrg(
                 f"energy={energy:.12f}, density change={density_change:.3e}"
             )
         previous_energy = energy
+        if rejected:
+            message = "STOP: SWEEP FAILED FRESH ENERGY CHECK"
+            break
         if density_change < options.tolerance:
             converged = True
             message = "CONVERGED: ENERGY DENSITY CHANGE BELOW TOLERANCE"
             break
         if options.alternate:
             direction = "rl" if direction == "lr" else "lr"
+        elif sweep < options.max_sweeps:
+            # A repeated direction needs the opposite side rebuilt after edits.
+            if options.gauge_mode == "frontier":
+                canonicalize_frontier(state, 0 if direction == "lr" else state.nsites - 1,
+                                      tolerance=options.metric_tolerance)
+            hamiltonian_environments[:] = getattr(hamiltonian_cache, build)()
+            metric_environments[:] = getattr(metric_cache, build)()
     two_site_energy = previous_energy
     polish_sweeps = 0
     if options.one_site_polish_sweeps:

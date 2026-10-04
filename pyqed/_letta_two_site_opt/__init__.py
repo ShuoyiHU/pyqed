@@ -1,5 +1,7 @@
 """Two-site variational optimization for finite lattice LETTA states."""
 
+from .._letta_compression import MetricCompressionOptions
+
 from .contractions import (
     IdentityPairEnvironmentCache,
     LETTAPairEnvironmentCache,
@@ -13,7 +15,7 @@ from .solver import (
     LETTATwoSiteSweep,
     letta_two_site_dmrg,
 )
-from .truncation import LETTAMetricRefinement, metric_als_refine
+from .truncation import LETTAMetricRefinement, metric_als_refine, metric_refine
 from .reduced_solver import (
     ReducedPairProblem,
     ReducedPairSplit,
@@ -21,6 +23,7 @@ from .reduced_solver import (
 )
 
 __all__ = [
+    "MetricCompressionOptions",
     "IdentityPairEnvironmentCache",
     "LETTAEnergyRefinement",
     "LETTAPairLayout",
@@ -37,5 +40,6 @@ __all__ = [
     "energy_refine_split",
     "letta_two_site_dmrg",
     "metric_als_refine",
+    "metric_refine",
     "reduced_pair_problem",
 ]

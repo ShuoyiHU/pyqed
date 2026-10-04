@@ -16,11 +16,14 @@ operation: selection changes the variational subspace but does not perturb the
 pre-optimization state.  The optimized bond is returned to its original width
 by fixed-rank ALS in the active one-site LETTA norm, with a streamed scalar
 energy safeguard and ordinary one-site fallback.  Each attempted expansion is
-also compared with an ordinary one-site candidate.  By default, the trimmed
-CBE state may give up at most 20% of the descent achieved by that candidate;
-larger losses select the ordinary update.  Set
-`cbe_baseline_guard_fraction=0.0` for greedy local best-of-two selection or
-`1.0` for the original pre-update-energy guard.
+also compared with an ordinary one-site candidate from the same pre-update
+state. By default (`cbe_baseline_guard_fraction=0.0`), the refined CBE candidate
+must have strictly lower energy than both that ordinary candidate and the
+pre-update state. Ties select the ordinary update; the general energy-increase
+tolerance does not permit a higher-energy CBE candidate in this mode.
+Set `cbe_baseline_guard_fraction=1.0` to require only strict descent from the
+pre-update state. Intermediate fractions retain the exploratory allowance;
+`0.2` reproduces the previous 20%-loss acceptance rule for an ablation.
 
     options = LETTADMROptions(
         matrix_free=True,
@@ -31,6 +34,31 @@ larger losses select the ordinary update.  Set
         cbe_preselection_dimension=2,
     )
     result = letta_dmrg(hamiltonian, state=state, options=options)
+
+After trimming, CBE relaxes both the trimmed factors and the incumbent by
+alternating energy minimization, then keeps the lower-energy result. When this
+local relaxation changes the energy by at most
+`cbe_coupled_energy_threshold * max(1, abs(E))` (default threshold `1e-6`), a
+bounded coupled correction can address directions missed by separate A/B
+updates. It whitens the supported metric of each factor before solving the
+joint tangent metric, and activates only when the joint residual exceeds the
+independent residual by `cbe_coupled_activation_ratio` (default `5`). Every
+accepted backtracking step lowers the streamed physical energy at fixed rank.
+Early coupled steps can change the basin of attraction, so the energy gate is
+part of the algorithm, not just a performance shortcut.
+
+The correction uses factor overlaps and fresh one-site Hamiltonian actions;
+it does not construct a merged pair, pair Hamiltonian, or physical Jacobian.
+Its dense parameter-space solve is an additional cost, separate from the
+streamed selector scaling below. It is skipped when the two factors together
+have more than `cbe_coupled_max_parameters=512` entries, bounding its quadratic
+storage and cubic solve cost. Such bonds continue with ordinary CBE relaxation.
+Use `cbe_coupled_max_iterations=0` to disable it for an ablation (default `8`);
+`cbe_coupled_metric_tolerance=1e-12` controls supported metric directions.
+Update diagnostics report `cbe_coupled_iterations`,
+`cbe_coupled_accepted_steps`, and `cbe_coupled_hamiltonian_applications`,
+including work on the discarded candidate. The last count is included in the
+total Hamiltonian applications; scalar energy contractions remain timing work.
 
 The `exact` selector explicitly constructs the pair metric and tangent
 Jacobian and remains the default correctness oracle.  The active `shrewd`
@@ -237,3 +265,23 @@ Two-site optimization lives in the sibling _letta_two_site_opt package.  The
 exact CBE oracle reuses its shared-physical-axis pair algebra.  The strict
 shrewd path stays in one-site parent spaces, and enabling or disabling CBE does
 not change the legacy one-site path.
+
+## Selectable compression solvers
+
+Both CBE trimming and two-site norm compression accept `compression=MetricCompressionOptions(solver="variable-projection")`. Other choices are `"als"`, `"joint-ls"`, and `"grassmann-newton"`. ALS remains the default. See the [compression solver guide](../_letta_two_site_opt/COMPRESSION.md) for examples, equations, budgets, diagnostics, and limitations.
+## CBE numerical recovery
+
+CBE steps are transactional, including the gauge transformation. After each
+step, a fresh whole-network contraction checks the norm and energy. A numerical
+failure restores the pre-step tensors, clears trial canonical certificates,
+rebuilds the environments, and retries the active site with ordinary one-site
+optimization. The next bond attempts CBE again. This adds fresh contractions
+to prioritize correctness over sweep time.
+
+If a gauge alone fails, the validated one-site update is retained without that
+gauge. If the ordinary update also fails validation, the last valid tensors
+are retained. `cbe_recovery_reason` records the event and
+`cbe_recovery_rejected` distinguishes an unresolved ordinary retry from a
+successful recovery. A sweep containing recovery cannot establish convergence.
+Invalid options and incompatible tensor shapes still raise their original
+errors rather than being disguised as numerical failures.

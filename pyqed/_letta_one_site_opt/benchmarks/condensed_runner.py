@@ -64,7 +64,7 @@ def mps_state_vector(factors):
     return np.squeeze(tensor, axis=-1).reshape(-1)
 
 
-def mps_to_letta(factors, lattice_shape):
+def mps_to_letta(factors, lattice_shape, *, neighborhoods=None):
     """Embed an MPS exactly by making LETTA neighbor legs state-independent."""
 
     factors = tuple(np.asarray(factor) for factor in factors)
@@ -74,6 +74,7 @@ def mps_to_letta(factors, lattice_shape):
         physical_dim=physical_dim,
         bond_dim=1,
         seed=0,
+        neighborhoods=neighborhoods,
     )
     if len(factors) != template.nsites:
         raise ValueError("MPS length does not match the LETTA lattice.")
@@ -95,10 +96,10 @@ def mps_to_letta(factors, lattice_shape):
             + (factor.shape[2],)
         )
         tensors.append(np.broadcast_to(reshaped, target_shape).copy())
-    return LatticeLETTA(lattice_shape, physical_dim, tensors)
+    return LatticeLETTA(lattice_shape, physical_dim, tensors, neighborhoods=template.neighborhoods)
 
 
-def make_shared_initial_state(model: CondensedModel, *, bond_dim=4, seed=731):
+def make_shared_initial_state(model: CondensedModel, *, bond_dim=4, seed=731, neighborhoods=None):
     """Generate one normalized random MPS and its exact LETTA embedding."""
 
     if not isinstance(model, CondensedModel):
@@ -114,12 +115,13 @@ def make_shared_initial_state(model: CondensedModel, *, bond_dim=4, seed=731):
         factor = rng.normal(size=(left, model.physical_dim, right))
         factor /= np.sqrt(factor.size)
         factors.append(factor)
-    norm = np.linalg.norm(mps_state_vector(factors))
+    # Contract a D-by-D norm environment; never expand the many-body vector.
+    norm = np.sqrt(MPS(factors, labels=["lv", "p", "rv"]).norm())
     if not np.isfinite(norm) or norm <= np.finfo(float).tiny:
         raise ValueError("random MPS initialization produced a zero state.")
     factors[0] = factors[0] / norm
     mps = MPS([factor.copy() for factor in factors], labels=["lv", "p", "rv"])
-    letta = mps_to_letta(factors, model.lattice_shape)
+    letta = mps_to_letta(factors, model.lattice_shape, neighborhoods=neighborhoods)
     fingerprint = _hash_arrays(factors)
     energy = float(letta.expectation(model.mpo))
     return SharedInitialState(mps, letta, fingerprint, energy)
@@ -152,6 +154,16 @@ def _letta_one_site_record(result, solver, elapsed, fingerprint, exact_energy):
         if update.cbe_selector is not None
     }
     selector = next(iter(selectors)) if len(selectors) == 1 else None
+    diagnostics = [update.cbe_selection_diagnostics for update in cbe_updates
+                   if update.cbe_selection_diagnostics is not None]
+    metric_kinds = {}
+    trim_metric_kinds = {}
+    for diagnostic in diagnostics:
+        for kind in diagnostic["metric_kinds"]:
+            metric_kinds[kind] = metric_kinds.get(kind, 0) + 1
+    for update in cbe_updates:
+        for kind in update.cbe_trim_metric_kinds:
+            trim_metric_kinds[kind] = trim_metric_kinds.get(kind, 0) + 1
     return {
         "solver": solver,
         "representation": "LETTA",
@@ -167,6 +179,11 @@ def _letta_one_site_record(result, solver, elapsed, fingerprint, exact_energy):
         "parameter_count": int(result.state.parameter_count),
         "cbe_updates": len(cbe_updates),
         "cbe_accepted": len(accepted_cbe),
+        "sweep_cbe_accepted": [
+            sum(update.cbe_expansion_dimension > 0 and not update.cbe_fallback
+                for update in sweep.updates)
+            for sweep in result.history
+        ],
         "cbe_fallbacks": sum(int(update.cbe_fallback) for update in cbe_updates),
         "cbe_baseline_selected": sum(
             int(update.cbe_baseline_selected) for update in cbe_updates
@@ -203,8 +220,14 @@ def _letta_one_site_record(result, solver, elapsed, fingerprint, exact_energy):
         "mean_accepted_trim_loss": _mean(
             update.cbe_trim_loss for update in accepted_cbe
         ),
+        "cbe_incumbent_refinements_selected": sum(
+            update.cbe_energy_refinement_start == "incumbent" and not update.cbe_fallback
+            for update in cbe_updates
+        ),
         "mean_cbe_vs_baseline_energy": _mean(
-            update.cbe_trimmed_energy - update.cbe_baseline_energy
+            (min(update.cbe_refined_energy, update.cbe_incumbent_refined_energy)
+             if update.cbe_refined_energy is not None else update.cbe_trimmed_energy)
+            - update.cbe_baseline_energy
             for update in cbe_updates
             if update.cbe_trimmed_energy is not None
             and update.cbe_baseline_energy is not None
@@ -213,6 +236,30 @@ def _letta_one_site_record(result, solver, elapsed, fingerprint, exact_energy):
             update.cbe_baseline_allowance for update in cbe_updates
         ),
         "sweep_energies": [float(sweep.energy) for sweep in result.history],
+        "sweep_elapsed_seconds": [sweep.elapsed_seconds for sweep in result.history],
+        "sweep_definition": "one directional pass (LR or RL)",
+        "final_energy_density_change": float(result.history[-1].energy_density_change),
+        "local_hamiltonian_applications": sum(update.hamiltonian_applications for update in updates),
+        "cbe_phase_seconds": {
+            phase: sum((update.cbe_timings or {}).get(phase, 0.0) for update in cbe_updates)
+            for phase in ("selection", "expanded_solve", "trim", "energy_refinement", "baseline")
+        },
+        "cbe_selection_seconds": {
+            phase: sum((d["stage_seconds"] or {}).get(phase, 0.) for d in diagnostics)
+            for phase in ("routing", "preselection", "old_metrics", "response",
+                          "tangent_projection", "schur_metric", "restricted_fit")
+        },
+        "cbe_metric_kinds": metric_kinds,
+        "cbe_trim_metric_kinds": trim_metric_kinds,
+        "cbe_max_tangent_relative_residual": max(
+            (d["tangent_relative_residual"] for d in diagnostics), default=0.),
+        "cbe_max_connector_dimension": max(
+            (d["connector_dimension"] for d in diagnostics), default=0),
+        "cbe_largest_tangent_block": max(
+            (shape for d in diagnostics for shape in d["tangent_block_shapes"]),
+            key=lambda shape: shape[0] * shape[1], default=(0, 0)),
+        "cbe_overlap_applications": sum(d["overlap_applications"] for d in diagnostics),
+        "cbe_fit_iterations": sum(d["fit_iterations"] for d in diagnostics),
     }
 
 
@@ -233,6 +280,7 @@ def _letta_two_site_record(result, elapsed, fingerprint, exact_energy):
         "parameter_count": int(result.state.parameter_count),
         "cbe_updates": 0,
         "cbe_accepted": 0,
+        "sweep_cbe_accepted": [0 for sweep in result.history],
         "cbe_fallbacks": 0,
         "cbe_baseline_selected": 0,
         "selector": None,
@@ -251,6 +299,11 @@ def _letta_two_site_record(result, elapsed, fingerprint, exact_energy):
         "mean_cbe_vs_baseline_energy": 0.0,
         "mean_cbe_baseline_allowance": 0.0,
         "sweep_energies": [float(sweep.energy) for sweep in result.history],
+        "sweep_elapsed_seconds": [sweep.elapsed_seconds for sweep in result.history],
+        "sweep_definition": "one directional pass (LR or RL)",
+        "final_energy_density_change": float(result.history[-1].energy_density_change),
+        "local_hamiltonian_applications": sum(update.hamiltonian_applications for update in updates),
+        "cbe_phase_seconds": {},
     }
 
 
@@ -258,6 +311,7 @@ def _mps_two_site_record(dmrg, elapsed, fingerprint, exact_energy):
     energy = float(np.real(dmrg.e_tot))
     factors = dmrg.ground_state.factors
     history = list(dmrg.sweep_history)
+    energies = [float(np.real(row["energy"])) for row in history if row.get("energy") is not None]
     return {
         "solver": "mps_two_site",
         "representation": "MPS",
@@ -273,6 +327,7 @@ def _mps_two_site_record(dmrg, elapsed, fingerprint, exact_energy):
         "parameter_count": int(sum(np.asarray(factor).size for factor in factors)),
         "cbe_updates": 0,
         "cbe_accepted": 0,
+        "sweep_cbe_accepted": [0 for energy in energies],
         "cbe_fallbacks": 0,
         "cbe_baseline_selected": 0,
         "selector": None,
@@ -293,6 +348,12 @@ def _mps_two_site_record(dmrg, elapsed, fingerprint, exact_energy):
             for row in history
             if row.get("energy") is not None
         ],
+        "sweep_definition": "MPS solver sweep_history entry",
+        "final_energy_density_change": (
+            abs(energies[-1] - energies[-2]) / len(factors) if len(energies) > 1 else None
+        ),
+        "local_hamiltonian_applications": None,
+        "cbe_phase_seconds": {},
     }
 
 
@@ -307,6 +368,10 @@ def _run_one_solver(
     max_sweeps,
     tolerance,
     exact_energy,
+    eigensolver_tolerance,
+    eigensolver_max_iterations,
+    cbe_conditional_trim,
+    cbe_energy_refinement_max_iterations,
 ):
     started = time.perf_counter()
     if solver == "letta_two_site":
@@ -319,8 +384,10 @@ def _run_one_solver(
                 tolerance=tolerance,
                 matrix_free=True,
                 use_sparse_mpo=True,
-                split_method="metric-als",
+                split_method="metric-als-energy",
                 one_site_polish_sweeps=0,
+                eigensolver_tolerance=eigensolver_tolerance,
+                eigensolver_max_iterations=eigensolver_max_iterations,
             ),
         )
         return _letta_two_site_record(
@@ -359,6 +426,10 @@ def _run_one_solver(
             cbe_selector=selector,
             cbe_expansion_dimension=expansion_dimension,
             cbe_baseline_guard_fraction=cbe_baseline_guard_fraction,
+            cbe_conditional_trim=cbe_conditional_trim,
+            cbe_energy_refinement_max_iterations=cbe_energy_refinement_max_iterations,
+            eigensolver_tolerance=eigensolver_tolerance,
+            eigensolver_max_iterations=eigensolver_max_iterations,
         ),
     )
     return _letta_one_site_record(
@@ -383,8 +454,14 @@ def run_benchmark(
     seed=731,
     tolerance=1.0e-9,
     exact_max_dimension=4096,
+    eigensolver_tolerance=1.0e-10,
+    eigensolver_max_iterations=300,
+    cbe_conditional_trim=True,
+    cbe_energy_refinement_max_iterations=3,
     solvers=SOLVERS,
     raise_on_failure=False,
+    neighborhoods=None,
+    two_site_max_sweeps=None,
 ):
     """Run selected solvers from one physical state and return JSON-safe data."""
 
@@ -392,6 +469,10 @@ def run_benchmark(
     expansion_dimension = int(expansion_dimension)
     cbe_baseline_guard_fraction = float(cbe_baseline_guard_fraction)
     max_sweeps = int(max_sweeps)
+    if two_site_max_sweeps is not None:
+        two_site_max_sweeps = int(two_site_max_sweeps)
+        if two_site_max_sweeps <= 0:
+            raise ValueError("two_site_max_sweeps must be positive.")
     tolerance = float(tolerance)
     exact_max_dimension = int(exact_max_dimension)
     if bond_dim <= 0 or expansion_dimension <= 0 or max_sweeps <= 0:
@@ -407,7 +488,8 @@ def run_benchmark(
     model = build_model(
         model_name, dimension, size, **dict(model_parameters or {})
     )
-    initial = make_shared_initial_state(model, bond_dim=bond_dim, seed=seed)
+    initial = make_shared_initial_state(model, bond_dim=bond_dim, seed=seed,
+                                        neighborhoods=neighborhoods)
     initial_tensor_hash = _hash_arrays(initial.letta.tensors)
 
     exact_energy = None
@@ -429,9 +511,14 @@ def run_benchmark(
                         bond_dim=bond_dim,
                         expansion_dimension=expansion_dimension,
                         cbe_baseline_guard_fraction=cbe_baseline_guard_fraction,
-                        max_sweeps=max_sweeps,
+                        max_sweeps=(two_site_max_sweeps if solver == "letta_two_site"
+                                    and two_site_max_sweeps is not None else max_sweeps),
                         tolerance=tolerance,
                         exact_energy=exact_energy,
+                        eigensolver_tolerance=eigensolver_tolerance,
+                        eigensolver_max_iterations=eigensolver_max_iterations,
+                        cbe_conditional_trim=cbe_conditional_trim,
+                        cbe_energy_refinement_max_iterations=cbe_energy_refinement_max_iterations,
                     )
                 )
         except Exception as error:
@@ -453,18 +540,28 @@ def run_benchmark(
         "expansion_dimension": expansion_dimension,
         "cbe_baseline_guard_fraction": cbe_baseline_guard_fraction,
         "max_sweeps": max_sweeps,
+        "two_site_max_sweeps": two_site_max_sweeps,
+        "neighborhoods": [list(sites) for sites in initial.letta.neighborhoods],
         "seed": int(seed),
         "tolerance": tolerance,
+        "eigensolver_tolerance": float(eigensolver_tolerance),
+        "eigensolver_max_iterations": int(eigensolver_max_iterations),
+        "cbe_conditional_trim": bool(cbe_conditional_trim),
+        "cbe_energy_refinement_max_iterations": cbe_energy_refinement_max_iterations,
         "initial_energy": initial.energy,
         "exact_energy": exact_energy,
         "initial_state_fingerprint": initial.fingerprint,
         "records": records,
         "solver_failures": failures,
         "cost_note": (
-            "Exact CBE is a pair-metric oracle. Strict CBE streams sparse-MPO "
-            "half contractions, then raises and tangent-projects (H-E*N)psi "
-            "in a restricted expanded one-site metric. It solves only that "
-            "one-site problem and trims in the one-site LETTA metric; its "
+            "Exact CBE is a pair-metric oracle. Strict CBE retains all physical "
+            "connectors, selects conditionally on shared output indices, removes "
+            "both old one-site tangents, and uses a restricted Schur metric. "
+            "Separable metrics use supported SVD; general metrics use ALS. "
+            "Physical frontiers and the one-site cross Gram can increase cost. Each expansion solves "
+            "an expanded one-site problem and a separate baseline, then selects "
+            "a candidate after metric trimming and independent fixed-rank energy "
+            "relaxations of the trim and incumbent (when enabled); its selector "
             "pair-action, pair-metric, and merged-pair counters must stay zero."
         ),
     }
@@ -474,15 +571,20 @@ def format_table(report):
     """Format the stable human-readable comparison used by every entry point."""
 
     lines = [
-        "solver                 energy             error      seconds  swp  conv  cbe-ok  fallback   missing    captured       trim"
+        "solver                 energy             error      seconds  swp  conv     dE/site  local-Hmv  cbe-ok  fallback   missing    captured       trim"
     ]
     for record in report["records"]:
         error = record["energy_error"]
         error_text = "n/a" if error is None else f"{error:.3e}"
+        change = record["final_energy_density_change"]
+        change_text = "n/a" if change is None else f"{change:.2e}"
+        applications = record["local_hamiltonian_applications"]
+        applications_text = "n/a" if applications is None else str(applications)
         lines.append(
             f"{record['solver']:<22} {record['energy']: .12f}  "
             f"{error_text:>11}  {record['elapsed_seconds']:8.3f}  "
             f"{record['sweeps']:3d}  {str(record['converged']):>5}  "
+            f"{change_text:>10}  {applications_text:>9}  "
             f"{record['cbe_accepted']:6d}  {record['cbe_fallbacks']:8d}  "
             f"{record['mean_missing_norm']:8.2e}  "
             f"{record['mean_captured_weight']:10.3f}  "
@@ -490,6 +592,15 @@ def format_table(report):
         )
     for solver, error in report["solver_failures"].items():
         lines.append(f"{solver:<22} FAILED: {error}")
+    lines.append("LETTA swp = one directional pass (LR or RL); two passes make one LR+RL cycle.")
+    lines.append("Strict CBE trim: " + ("shared-physical conditional" if report.get("cbe_conditional_trim", True) else "global (old ablation)"))
+    lines.append("local-Hmv counts local action calls, including discarded CBE solves; it excludes CBE selection contractions and dense one-site solves.")
+    for record in report["records"]:
+        phases = record.get("cbe_phase_seconds", {})
+        if record["solver"].startswith("letta_cbe_"):
+            lines.append(record["solver"] + " phase seconds: " + ", ".join(
+                f"{name}={seconds:.3f}" for name, seconds in phases.items()
+            ))
     lines.append(report["cost_note"])
     return "\n".join(lines)
 

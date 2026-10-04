@@ -15,12 +15,14 @@ from typing import Mapping
 import numpy as np
 
 from ..operators import LatticeMPO
+from .nn_chain_models import CHAIN_MODEL_DEFAULTS, build_chain_terms
 
 
-MODEL_NAMES = ("ising", "heisenberg", "bose_hubbard", "fermi_hubbard")
+LATTICE_MODEL_NAMES = ("ising", "heisenberg", "bose_hubbard", "fermi_hubbard")
+MODEL_NAMES = LATTICE_MODEL_NAMES + ("hubbard_holstein",) + tuple(CHAIN_MODEL_DEFAULTS)
 MODEL_CASES = tuple(
-    (name, dimension) for dimension in ("1d", "2d") for name in MODEL_NAMES
-)
+    (name, dimension) for dimension in ("1d", "2d") for name in LATTICE_MODEL_NAMES
+) + tuple((name, "1d") for name in ("hubbard_holstein", *CHAIN_MODEL_DEFAULTS))
 
 
 @dataclass(frozen=True)
@@ -187,7 +189,7 @@ def _parameters(defaults, supplied):
     result = dict(defaults)
     result.update(supplied)
     for name in result:
-        if name != "max_occupancy":
+        if name not in {"max_occupancy", "max_phonons"}:
             result[name] = _number(result[name], name)
     return result
 
@@ -289,8 +291,39 @@ def _fermi_hubbard_terms(nsites, bonds, parameters):
     return 4, tuple(terms)
 
 
+def _hubbard_holstein_terms(nsites, bonds, parameters):
+    """Paper Eq. (11), plus optional -mu*n; electron-major local basis.
+
+    Each site combines four electron states with phonon occupations 0..nmax.
+    Fermion operators (including Jordan-Wigner parity) act as O_e tensor I_ph.
+    No phonon zero-point constant is included.
+    """
+    try:
+        maximum = index(parameters["max_phonons"])
+    except TypeError as error:
+        raise ValueError("max_phonons must be a nonnegative integer.") from error
+    if maximum < 0:
+        raise ValueError("max_phonons must be a nonnegative integer.")
+    if parameters["omega"] <= 0.:
+        raise ValueError("omega must be positive.")
+    parameters["max_phonons"] = maximum
+    phonon_dim = maximum + 1
+    identity_ph = np.eye(phonon_dim)
+    _, electronic_terms = _fermi_hubbard_terms(nsites, bonds, parameters)
+    terms = [ProductTerm(term.coefficient, {
+        site: np.kron(operator, identity_ph) for site, operator in term.operators.items()
+    }) for term in electronic_terms]
+    annihilation = np.diag(np.sqrt(np.arange(1, phonon_dim)), 1)
+    number_ph = np.diag(np.arange(phonon_dim, dtype=float))
+    charge_deviation = np.diag([-1., 0., 0., 1.])
+    onsite = (parameters["omega"] * np.kron(np.eye(4), number_ph)
+              + parameters["g"] * np.kron(charge_deviation, annihilation + annihilation.T))
+    terms.extend(ProductTerm(1., {site: onsite}) for site in range(nsites))
+    return 4 * phonon_dim, tuple(terms)
+
+
 def build_model(name, dimension, size, **supplied_parameters):
-    """Build one of the four model families in one or two dimensions."""
+    """Build a registered open-boundary condensed-matter benchmark."""
 
     aliases = {
         "tfim": "ising",
@@ -303,10 +336,15 @@ def build_model(name, dimension, size, **supplied_parameters):
     if name not in MODEL_NAMES:
         raise ValueError(f"unknown model {name!r}; choose from {MODEL_NAMES}.")
     dimension = str(dimension).lower()
+    if (name == "hubbard_holstein" or name in CHAIN_MODEL_DEFAULTS) and dimension != "1d":
+        raise ValueError(f"{name} is currently supported only in 1d.")
     lattice_shape, bonds = nearest_neighbor_bonds(dimension, size)
     nsites = int(np.prod(lattice_shape))
 
-    if name == "ising":
+    if name in CHAIN_MODEL_DEFAULTS:
+        parameters = _parameters(CHAIN_MODEL_DEFAULTS[name], supplied_parameters)
+        physical_dim, terms = build_chain_terms(name, nsites, bonds, parameters)
+    elif name == "ising":
         parameters = _parameters({"J": 1.0, "h": 1.0}, supplied_parameters)
         physical_dim, terms = _ising_terms(nsites, bonds, parameters)
     elif name == "heisenberg":
@@ -320,11 +358,19 @@ def build_model(name, dimension, size, **supplied_parameters):
             supplied_parameters,
         )
         physical_dim, terms = _bose_hubbard_terms(nsites, bonds, parameters)
-    else:
+    elif name == "fermi_hubbard":
         parameters = _parameters(
             {"t": 1.0, "U": 4.0, "mu": 2.0}, supplied_parameters
         )
         physical_dim, terms = _fermi_hubbard_terms(nsites, bonds, parameters)
+    else:
+        # Gleis et al., PRL 130, 246402 (2023), Eq. (11).
+        # The paper fixes N=L and S=0; this runner does not restrict sectors.
+        parameters = _parameters(
+            {"t": 1.0, "U": 0.8, "mu": 0.0, "omega": 0.5,
+             "g": np.sqrt(0.2), "max_phonons": 1}, supplied_parameters
+        )
+        physical_dim, terms = _hubbard_holstein_terms(nsites, bonds, parameters)
 
     mpo = product_terms_to_mpo(
         terms,

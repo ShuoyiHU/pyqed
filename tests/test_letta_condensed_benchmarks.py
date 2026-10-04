@@ -29,6 +29,36 @@ def test_mps_embedding_is_the_same_normalized_physical_state():
     assert np.isclose(initial.letta.expectation(model.mpo), expected, atol=1.0e-12)
 
 
+def test_per_sweep_cbe_counts_exclude_fallbacks_and_unexpanded_updates():
+    from pyqed._letta_one_site_opt.benchmarks.condensed_runner import _letta_one_site_record
+    from pyqed._letta_one_site_opt.solver import LETTADMRGResult, LETTASiteUpdate, LETTASweep
+    from pyqed._letta_one_site_opt.state import LatticeLETTA
+
+    def update(expansion, fallback=False):
+        return LETTASiteUpdate(
+            site=0, local_energy=-1., energy=-1., metric_rank=1,
+            local_dimension=1, residual_norm=0., accepted=True,
+            cbe_expansion_dimension=expansion, cbe_fallback=fallback,
+        )
+
+    history = tuple(
+        LETTASweep(index, direction, -1., 0., 0., 1, updates)
+        for index, (direction, updates) in enumerate([
+            ("LR", (update(0), update(1, True))),
+            ("RL", (update(1), update(2), update(1, True))),
+            ("LR", (update(0), update(1))),
+        ], start=1)
+    )
+    result = LETTADMRGResult(
+        LatticeLETTA.random((1, 2), physical_dim=2, bond_dim=1, seed=0),
+        -1., False, 3, history, "test",
+    )
+    record = _letta_one_site_record(result, "letta_cbe_strict", 0., "test", None)
+    assert record["sweep_cbe_accepted"] == [0, 2, 1]
+    assert record["cbe_accepted"] == 3
+    json.dumps(record)
+
+
 def test_tiny_run_returns_all_five_solver_records_and_strict_cost_contract():
     report = run_benchmark(
         "ising",
@@ -55,6 +85,16 @@ def test_tiny_run_returns_all_five_solver_records_and_strict_cost_contract():
         assert isinstance(record["converged"], bool)
         assert record["initial_state_fingerprint"] == report["initial_state_fingerprint"]
         assert record["parameter_count"] > 0
+        assert record["sweep_definition"]
+        assert len(record["sweep_cbe_accepted"]) == len(record["sweep_energies"])
+        assert sum(record["sweep_cbe_accepted"]) == record["cbe_accepted"]
+        if record["representation"] == "LETTA":
+            assert record["final_energy_density_change"] is not None
+            assert record["local_hamiltonian_applications"] >= 0
+            times = record["sweep_elapsed_seconds"]
+            assert len(times) == record["sweeps"]
+            assert times == sorted(times) and min(times) > 0.
+            assert times[-1] <= record["elapsed_seconds"]
 
     strict = next(
         record for record in report["records"] if record["solver"] == "letta_cbe_strict"
@@ -66,10 +106,19 @@ def test_tiny_run_returns_all_five_solver_records_and_strict_cost_contract():
     assert strict["materialized_pair_tensor"] is False
     assert strict["materialized_pair_metric"] is False
     assert strict["materialized_tangent_jacobian"] is False
+    assert strict["cbe_selection_seconds"]["routing"] >= 0.
+    assert strict["cbe_selection_seconds"]["tangent_projection"] >= 0.
+    assert strict["cbe_max_connector_dimension"] > 0
+    assert np.isfinite(strict["cbe_max_tangent_relative_residual"])
+    assert isinstance(strict["cbe_metric_kinds"], dict)
+    assert isinstance(strict["cbe_trim_metric_kinds"], dict)
 
     assert set(report["solver_failures"]) == set()
     json.dumps(report)
     table = format_table(report)
+    assert "dE/site" in table
+    assert "swp" in table
+    assert "local-Hmv" in table
     for solver in SOLVERS:
         assert solver in table
 

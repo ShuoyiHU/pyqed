@@ -6,8 +6,11 @@ from functools import lru_cache
 
 import numpy as np
 import opt_einsum as oe
+from scipy import linalg
 
 from .operators import LatticeMPO
+from .canonical import get_canonical
+from .numpy_contractions import prepare_numpy_contraction
 
 
 class BoundaryMPS:
@@ -346,6 +349,35 @@ def _remove_unit_output_cores(cores, labels, output_labels):
     return cores, tuple(labels), None
 
 
+def _equilibrated_metric_factors(metric, tolerance):
+    """Return whitening and coordinate maps after normalizing Gram columns.
+
+    A small diagonal weight is a coordinate scale, not evidence of a dependent
+    physical direction. Apply the rank cutoff to the correlation matrix instead.
+    Exact zero-norm coordinates are excluded before scaling.
+    """
+    hermitian = 0.5 * (metric + metric.conj().T)
+    diagonal = np.diag(hermitian).real
+    retained = np.flatnonzero(diagonal > 0.)
+    roots = np.sqrt(diagonal[retained])
+    correlation = hermitian[np.ix_(retained, retained)] / roots[:, None] / roots[None, :]
+    correlation = 0.5 * (correlation + correlation.conj().T)
+    try:
+        values, vectors = np.linalg.eigh(correlation)
+    except np.linalg.LinAlgError:
+        # Repeated null eigenvalues can defeat divide-and-conquer even for
+        # finite Gram matrices. Use an independent LAPACK driver in that case.
+        values, vectors = linalg.eigh(correlation, driver="evr", check_finite=True)
+    cutoff = max(float(tolerance), np.finfo(hermitian.real.dtype).eps * len(diagonal))
+    keep = values > cutoff * max(float(values[-1]) if values.size else 0., 0.)
+    values, vectors = values[keep], vectors[:, keep]
+    basis = np.zeros((len(diagonal), len(values)), dtype=hermitian.dtype)
+    coordinates = np.zeros((len(values), len(diagonal)), dtype=hermitian.dtype)
+    basis[retained] = vectors / roots[:, None] / np.sqrt(values)[None, :]
+    coordinates[:, retained] = np.sqrt(values)[:, None] * vectors.conj().T * roots[None, :]
+    return basis, coordinates
+
+
 class BlockDiagonalMetric:
     """Block-diagonal local overlap metric indexed by physical sectors."""
 
@@ -402,36 +434,103 @@ class BlockDiagonalMetric:
             result[np.ix_(index, index)] = block
         return result
 
+    def coordinate_whitening(self, tolerance):
+        """Recognize diagonal metrics using scale-independent correlations."""
+        diagonal = np.zeros(self.size, dtype=float)
+        for block, index in zip(self.blocks, self.indices):
+            values = np.diag(block).real
+            diagonal[index] = values
+            positive = values > 0.
+            if np.any(values < 0.) or np.any(block[~positive] != 0.):
+                return None
+            roots = np.sqrt(values[positive])
+            correlation = block[np.ix_(positive, positive)] / roots[:, None] / roots[None, :]
+            error = np.max(np.sum(np.abs(correlation - np.eye(len(roots))), axis=1), initial=0.)
+            cutoff = max(float(tolerance), np.finfo(float).eps * self.size)
+            if error > min(.1 * cutoff, 32 * np.finfo(float).eps * self.size):
+                return None
+        retained = np.flatnonzero(diagonal > 0.)
+        if not retained.size:
+            return None
+        return retained, 1. / np.sqrt(diagonal[retained])
+
     def whitening_basis(self, tolerance):
         """Return a matrix that maps Euclidean vectors to metric-normalized ones."""
 
-        decompositions = []
-        scale = 0.0
-        for block in self.blocks:
-            hermitian = 0.5 * (block + block.conj().T)
-            values, vectors = np.linalg.eigh(hermitian)
-            decompositions.append((values, vectors))
-            if values.size:
-                scale = max(scale, float(values[-1]))
-        if scale <= 0.0:
-            raise ValueError("the local LETTA overlap metric has zero rank.")
-        relative_cutoff = max(
-            float(tolerance),
-            np.finfo(float).eps * self.size,
-        )
-        cutoff = relative_cutoff * scale
+        coordinates = self.coordinate_whitening(tolerance)
+        if coordinates is not None:
+            retained, scales = coordinates
+            basis = np.zeros((self.size, len(retained)), dtype=self.dtype)
+            basis[retained, np.arange(len(retained))] = scales
+            return basis, len(retained)
         columns = []
-        for index, (values, vectors) in zip(self.indices, decompositions):
-            retained = values > cutoff
-            for local_column in np.nonzero(retained)[0]:
+        for block, index in zip(self.blocks, self.indices):
+            local_basis, _ = _equilibrated_metric_factors(block, tolerance)
+            for local_column in range(local_basis.shape[1]):
                 column = np.zeros(self.size, dtype=self.dtype)
-                column[index] = (
-                    vectors[:, local_column] / np.sqrt(values[local_column])
-                )
+                column[index] = local_basis[:, local_column]
                 columns.append(column)
         if not columns:
             raise ValueError("the local LETTA overlap metric has zero rank.")
         return np.column_stack(columns), len(columns)
+
+
+class DiagonalMetric(BlockDiagonalMetric):
+    """Certified diagonal norm with O(local dimension) storage and actions.
+
+    Dense blocks are materialized only for callers explicitly requesting them,
+    such as existing pair selectors. One-site eigensolvers use coordinates.
+    """
+
+    def __init__(self, diagonal, indices=None, *, support=None):
+        self.diagonal = np.asarray(diagonal).reshape(-1).copy()
+        # Canonical frontiers can certify unresolved singular directions.
+        # Ordinary diagonal coefficients carry no such rank information.
+        self.support = (None if support is None else
+                        np.asarray(support, dtype=bool).reshape(-1).copy())
+        self.size = self.diagonal.size
+        self.shape = (self.size, self.size)
+        self.dtype = self.diagonal.dtype
+        self.indices = ((np.arange(self.size),) if indices is None else tuple(indices))
+
+    @property
+    def blocks(self):
+        return tuple(np.diag(self.diagonal[i]) for i in self.indices)
+
+    def __matmul__(self, value):
+        value = np.asarray(value)
+        if value.shape[0] != self.size:
+            raise ValueError("metric operand has an incompatible leading dimension.")
+        return self.diagonal.reshape((self.size,) + (1,) * (value.ndim - 1)) * value
+
+    def restrict(self, retained_indices):
+        retained_indices = np.asarray(retained_indices, dtype=int)
+        if (retained_indices.ndim != 1 or not retained_indices.size
+                or np.any(retained_indices < 0) or np.any(retained_indices >= self.size)
+                or len(np.unique(retained_indices)) != len(retained_indices)):
+            raise ValueError("retained metric indices are invalid.")
+        return DiagonalMetric(self.diagonal[retained_indices], support=(
+            None if self.support is None else self.support[retained_indices]))
+
+    def to_dense(self):
+        return np.diag(self.diagonal)
+
+    def coordinate_whitening(self, tolerance):
+        scale = float(np.max(self.diagonal))
+        if not np.isfinite(scale) or scale <= 0.:
+            raise ValueError("the local LETTA overlap metric has zero rank.")
+        retained = np.flatnonzero(self.diagonal > 0.)
+        if self.support is not None:
+            retained = retained[self.support[retained]]
+        if not retained.size:
+            raise ValueError("the local LETTA overlap metric has zero rank.")
+        return retained, 1. / np.sqrt(self.diagonal[retained])
+
+    def kind(self, tolerance):
+        indices, scales = self.coordinate_whitening(tolerance)
+        if np.allclose(scales, 1., rtol=0., atol=1e-11):
+            return "identity" if len(indices) == self.size else "supported_identity"
+        return "diagonal"
 
 
 def _environment_operands(environment, labels, slot):
@@ -551,17 +650,22 @@ def _canonical_signature(operands, labels, output):
 
 
 @lru_cache(maxsize=512)
-def _compiled_contraction(signature):
+def _compiled_contraction(signature, *, large_paths=True):
     shapes, labels, output = signature
     inputs = [
         "".join(oe.get_symbol(label) for label in indices) for indices in labels
     ]
     result = "".join(oe.get_symbol(label) for label in output)
     equation = ",".join(inputs) + "->" + result
+    optimize = "greedy"
+    if large_paths and len(shapes) >= 8:
+        from .contraction_paths import large_contraction_path
+
+        optimize = large_contraction_path(equation, signature)
     return oe.contract_expression(
         equation,
         *shapes,
-        optimize="greedy",
+        optimize=optimize,
     )
 
 
@@ -569,6 +673,18 @@ def _contract_operands(operands, labels, output):
     signature = _canonical_signature(operands, labels, output)
     expression = _compiled_contraction(signature)
     return expression(*operands)
+
+
+def _prepare_contraction(operands, labels, output, variable):
+    """Compile a local action and evaluate its fixed sub-contractions once.
+
+    The caller owns the lifetime: fixed tensors/environments must not change
+    during this local solve. No tensor-valued global cache is retained.
+    """
+    signature = _canonical_signature(operands, labels, output)
+    template = (_compiled_contraction(signature, large_paths=False)
+                if len(operands) >= 8 else _compiled_contraction(signature))
+    return prepare_numpy_contraction(template.contraction_list, operands, variable)
 
 
 def _contract(state, mpo, active_site=None):
@@ -587,6 +703,12 @@ def _contract(state, mpo, active_site=None):
 
 class LETTAEnvironmentCache:
     """Reusable exact frontier contractions for one LETTA-MPO sweep."""
+
+    def segment_transfer(self, start, stop):
+        """Freeze an experimental transfer map through sites [start, stop)."""
+        from .transfer import SegmentTransfer
+
+        return SegmentTransfer(self, start, stop)
 
     def __init__(
         self,
@@ -975,10 +1097,14 @@ class LETTAEnvironmentCache:
             effective += _contract_operands(operands, labels, output)
         return effective.reshape(tensor.size, tensor.size)
 
-    def effective_action(self, left, right, site, vector):
+    def effective_action(self, left, right, site, vector, *, adjoint=False):
+        return self.prepare_effective_action(left, right, site, adjoint=adjoint)(vector)
+
+    def prepare_effective_action(self, left, right, site, *, adjoint=False):
+        """Bind the fixed environments for one eigensolve; rebuild after edits."""
         site = int(site)
         tensor = self.state.tensors[site]
-        vector = np.asarray(vector).reshape(tensor.shape)
+        vector = np.empty(tensor.shape, dtype=tensor.dtype)
         neighborhood = self.state.site_neighborhood(site)
         bra_output = (
             (self.bra_virtual[site],)
@@ -990,6 +1116,10 @@ class LETTAEnvironmentCache:
             + tuple(self.ket_physical[index] for index in neighborhood)
             + (self.ket_virtual[site + 1],)
         )
+        if adjoint:
+            # H^H v = conjugate(H^T conjugate(v)). Swap only the active
+            # input/output labels; fixed frontier copies remain intact.
+            bra_output, ket_active = ket_active, bra_output
         operator_labels = self._group_labels(site)[2]
         bra_physical, ket_physical = operator_labels[2:]
         if self.boundary_bond_dim is not None:
@@ -1011,8 +1141,14 @@ class LETTAEnvironmentCache:
                 if label not in used:
                     operands.append(np.ones(dimension))
                     labels.append((label,))
-            return _contract_operands(operands, labels, bra_output).reshape(-1)
-        result = np.zeros(tensor.shape, dtype=np.result_type(left, right, vector))
+            expression = _prepare_contraction(operands, labels, bra_output,
+                                               len(left_operands) + 1 + len(right_operands))
+            def action(value):
+                value = np.asarray(value).reshape(tensor.shape)
+                result = expression(value.conj() if adjoint else value).reshape(-1)
+                return result.conj() if adjoint else result
+            return action
+        expressions = []
         batch_label = -1
         for local_operator, channels in self.transition_groups[site]:
             selected_lefts = []
@@ -1057,18 +1193,38 @@ class LETTAEnvironmentCache:
                 if label not in used:
                     operands.append(np.ones(dimension))
                     labels.append((label,))
-            result += _contract_operands(operands, labels, bra_output)
-        return result.reshape(-1)
+            expressions.append(_prepare_contraction(operands, labels, bra_output, 3))
+        dtype = np.result_type(left, right, self.mpo.factors[site])
+
+        def action(value):
+            value = np.asarray(value).reshape(tensor.shape)
+            if adjoint:
+                value = value.conj()
+            result = np.zeros(tensor.shape, dtype=np.result_type(dtype, value))
+            for expression in expressions:
+                result += expression(value)
+            result = result.reshape(-1)
+            return result.conj() if adjoint else result
+
+        return action
 
 
 class IdentityEnvironmentCache:
     """Exact overlap environments with bra and ket physical labels fused."""
+
+    def segment_transfer(self, start, stop):
+        """Freeze an experimental transfer map through sites [start, stop)."""
+        from .transfer import SegmentTransfer
+
+        return SegmentTransfer(self, start, stop)
 
     def __init__(self, state, *, boundary_bond_dim=None, boundary_cutoff=0.0):
         self.state = state
         self.boundary_bond_dim = boundary_bond_dim
         self.boundary_cutoff = float(boundary_cutoff)
         self.compression_errors = []
+        self.canonical_reuses = 0
+        self.canonical_metric_hits = 0
         nsites = state.nsites
         next_label = 0
 
@@ -1107,6 +1263,24 @@ class IdentityEnvironmentCache:
             )
             for cut in range(nsites + 1)
         )
+
+    @property
+    def canonical_reports(self):
+        saved = getattr(self.state, '_canonical_norm_environments', {})
+        reports = {}
+        for direction, cut in tuple(saved):
+            record = get_canonical(self.state, cut, direction)
+            if record is not None:
+                reports[(direction, cut)] = record.report
+        return reports
+
+    def saved_canonical(self, cut, direction):
+        if self.boundary_bond_dim is not None:
+            return None
+        record = get_canonical(self.state, cut, direction)
+        if record is not None:
+            self.canonical_reuses += 1
+        return record
 
     def _group_labels(self, site):
         neighborhood = self.state.site_neighborhood(site)
@@ -1193,14 +1367,18 @@ class IdentityEnvironmentCache:
         environments = [None] * (self.state.nsites + 1)
         environments[0] = self.scalar_boundary()
         for site in range(self.state.nsites):
-            environments[site + 1] = self.extend_left(environments[site], site)
+            saved = self.saved_canonical(site + 1, "lr")
+            environments[site + 1] = (saved.environment if saved is not None else
+                                      self.extend_left(environments[site], site))
         return environments
 
     def build_right_environments(self):
         environments = [None] * (self.state.nsites + 1)
         environments[-1] = self.scalar_boundary()
         for site in range(self.state.nsites - 1, -1, -1):
-            environments[site] = self.extend_right(environments[site + 1], site)
+            saved = self.saved_canonical(site, "rl")
+            environments[site] = (saved.environment if saved is not None else
+                                  self.extend_right(environments[site + 1], site))
         return environments
 
     def _reduced_metric(self, left, right, site):
@@ -1237,9 +1415,51 @@ class IdentityEnvironmentCache:
                 labels.append((label,))
         return _contract_operands(operands, labels, output)
 
+    def _canonical_metric(self, left, right, site):
+        if self.boundary_bond_dim is not None:
+            return None
+        operands, labels, supports = [], [], []
+        tensor = self.state.tensors[site]
+        physical = tuple(self.physical[p] for p in self.state.site_neighborhood(site))
+        output = (self.bra_virtual[site],) + physical + (self.bra_virtual[site + 1],)
+        for env, cut, direction, virtual in (
+            (left, site, "lr", output[0]), (right, site + 1, "rl", output[-1])
+        ):
+            if cut in {0, self.state.nsites}:
+                if np.asarray(env).shape != () or np.asarray(env) != 1.:
+                    return None
+                operands.append(np.ones(1))
+                supports.append(np.ones(1))
+                labels.append((virtual,))
+                continue
+            record = get_canonical(self.state, cut, direction, env)
+            if record is None or not set(record.physical) <= set(self.state.site_neighborhood(site)):
+                return None
+            operands.append(record.diagonal)
+            supports.append((record.diagonal > max(
+                record.report.tolerance, np.finfo(float).eps * record.report.bond_dimension
+            )).astype(float))
+            labels.append(tuple(self.physical[p] for p in record.physical) + (virtual,))
+        used = set().union(*map(set, labels))
+        for label, dimension in zip(output, tensor.shape):
+            if label not in used:
+                operands.append(np.ones(dimension))
+                supports.append(np.ones(dimension))
+                labels.append((label,))
+        diagonal = _contract_operands(operands, labels, output)
+        flat = np.arange(tensor.size).reshape(tensor.shape)
+        indices = tuple(flat[(slice(None),) + q + (slice(None),)].ravel()
+                        for q in np.ndindex(tensor.shape[1:-1]))
+        self.canonical_metric_hits += 1
+        support = _contract_operands(supports, labels, output) > 0.
+        return DiagonalMetric(diagonal, indices, support=support)
+
     def effective_metric(self, left, right, site):
         site = int(site)
         tensor = self.state.tensors[site]
+        canonical = self._canonical_metric(left, right, site)
+        if canonical is not None:
+            return canonical
         reduced = self._reduced_metric(left, right, site)
         physical_shape = tensor.shape[1:-1]
         flat_indices = np.arange(tensor.size).reshape(tensor.shape)
@@ -1300,7 +1520,17 @@ def network_overlap(state):
     overlap = cache.scalar_boundary()
     for site in range(state.nsites):
         overlap = cache.extend_left(overlap, site)
-    return float(np.real_if_close(overlap))
+    scale = float(np.abs(overlap))
+    if not np.isfinite(scale):
+        raise FloatingPointError("nonfinite LETTA norm contraction")
+    if scale == 0.:
+        return 0.
+    # Test relative roundoff: the state need not be normalized yet, and an
+    # absolute imaginary-part threshold rejects valid large complex states.
+    relative = np.real_if_close(overlap / scale)
+    if np.iscomplexobj(relative):
+        raise FloatingPointError("LETTA norm contraction has a significant imaginary part")
+    return float(relative) * scale
 
 
 def network_expectation(state, mpo):

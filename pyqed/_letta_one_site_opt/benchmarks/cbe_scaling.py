@@ -1,27 +1,32 @@
-"""Deterministic contraction-graph scaling audit for strict LETTA-CBE.
+"""Actual selector contraction/decomposition audit, not a full-update proof.
 
-The audit profiles the actual sparse one-site, streamed selector, and pair
-contraction functions with ``opt_einsum``'s greedy path.  Wall time is not used
-as scaling evidence.  A banded synthetic MPO makes the number of nonzero
-transitions proportional to its width, so the MPO-width exponent is explicit.
+The general physical selector includes connector routing, one-site cross
+Grams, and supported metric fitting. Contraction costs and decomposition
+work proxies are recorded from calls, not inferred from legacy MPS shapes.
+The work proxy excludes uninstrumented NumPy matrix products and is not a
+complete FLOP count. Full-update timing requires the convergence benchmarks.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
+import sys
+from functools import partial
+from types import CodeType
 
 import numpy as np
 import opt_einsum as oe
 
 from ..._letta_two_site_opt import (
+    IdentityPairEnvironmentCache,
     LETTAPairEnvironmentCache,
     LETTAPairLayout,
 )
-from ..._letta_two_site_opt import contractions as pair_contractions
 from .. import cbe as cbe_module
-from .. import contractions as one_site_contractions
 from ..operators import LatticeMPO
+from ..numpy_contractions import _cached_tensordot, prepare_numpy_contraction
 from ..state import LatticeLETTA
 
 
@@ -58,54 +63,116 @@ def _size(value):
     return 1
 
 
-def _path_metrics(operands, labels, output):
-    shapes, canonical_labels, canonical_output = (
-        one_site_contractions._canonical_signature(
-            operands, labels, output
-        )
-    )
-    inputs = [
-        "".join(oe.get_symbol(label) for label in indices)
-        for indices in canonical_labels
-    ]
-    equation = ",".join(inputs) + "->" + "".join(
-        oe.get_symbol(label) for label in canonical_output
-    )
-    _path, information = oe.contract_path(
-        equation,
-        *shapes,
-        shapes=True,
-        optimize="greedy",
-    )
-    largest_operand = max(
-        (int(np.prod(operand.shape)) for operand in operands), default=1
-    )
-    return int(information.opt_cost), max(
-        largest_operand, int(information.largest_intermediate)
-    )
+def _equation_metrics(shapes, equation, removed):
+    inputs, output = equation.split("->")
+    dimensions = {}
+    for labels, shape in zip(inputs.split(","), shapes):
+        for label, dimension in zip(labels, shape):
+            dimensions[label] = max(dimensions.get(label, 1), dimension)
+    result_shape = tuple(dimensions[label] for label in output)
+    cost = oe.helpers.flop_count(set(dimensions), bool(removed), len(shapes), dimensions)
+    largest = max(int(np.prod(shape)) for shape in shapes + [result_shape])
+    return int(cost), largest, result_shape
 
 
-def _profile_call(module, function, *, live_tensors=()):
-    original = module._contract_operands
+def _executed_path_metrics(operands, contraction_list, evaluate_constants):
+    """Count executed steps, including the once-only constant preparation."""
+    shapes = [None if value is None else value.shape for value in operands]
+    for indices, removed, equation, _remaining, _blas in contraction_list:
+        if evaluate_constants and any(shapes[index] is None for index in indices):
+            break
+        selected = [shapes.pop(index) for index in indices]
+        cost, largest, result_shape = _equation_metrics(selected, equation, removed)
+        yield cost, largest
+        shapes.append(result_shape)
+
+
+def _executed_numpy_metrics(values):
+    """Read an executing prepared action without modifying its cached kernels."""
+    shapes = [np.shape(values["value"] if a is None else a) for a in values["fixed"]]
+    steps = values["steps"] if values["remaining"] is None else values["remaining"]
+    for positions, kernel in steps:
+        selected = [shapes.pop(i) for i in positions]
+        if isinstance(kernel, partial) and kernel.func is np.einsum:
+            equation = kernel.args[0]
+            inputs, output = equation.split("->")
+            removed = set(inputs.replace(",", "")) - set(output)
+            cost, largest, result_shape = _equation_metrics(selected, equation, removed)
+        else:
+            if isinstance(kernel, partial) and kernel.func in (np.tensordot, _cached_tensordot):
+                axes, transpose = kernel.keywords["axes"], None
+            else:
+                # The only other prepared kernel is tensordot followed by a
+                # transpose; its two immutable defaults specify those axes.
+                axes, transpose = kernel.__defaults__
+            left, right = selected
+            result_shape = tuple(d for i, d in enumerate(left) if i not in axes[0])
+            result_shape += tuple(d for i, d in enumerate(right) if i not in axes[1])
+            cost = int(np.prod(result_shape)) * int(np.prod([left[i] for i in axes[0]]))
+            cost *= 2 if axes[0] else 1
+            if transpose is not None:
+                result_shape = tuple(result_shape[i] for i in transpose)
+            largest = max(int(np.prod(shape)) for shape in selected + [result_shape])
+        yield cost, largest
+        shapes.append(result_shape)
+
+
+def _profile_call(function, *, live_tensors=()):
+    # Observe execution rather than the LETTA wrappers: prepared expressions
+    # bypass those wrappers and reuse their constant contractions across calls.
+    contract_module = importlib.import_module("opt_einsum.contract")
+    original_contract = contract_module._core_contract
     contractions = []
+    svds, eighs = [], []
+    original_svd, original_eigh = np.linalg.svd, np.linalg.eigh
+    original_profile = sys.getprofile()
+    action_code = next(code for code in prepare_numpy_contraction.__code__.co_consts
+                       if isinstance(code, CodeType) and code.co_name == "action")
 
-    def recorded(operands, labels, output):
-        contractions.append(_path_metrics(operands, labels, output))
-        return original(operands, labels, output)
+    def recorded_execution(frame, event, _argument):
+        if event == "call" and frame.f_code is action_code:
+            contractions.extend(_executed_numpy_metrics(frame.f_locals))
 
-    module._contract_operands = recorded
+    def recorded_contract(operands, contraction_list, backend="auto",
+                          evaluate_constants=False, out=None, **kwargs):
+        contractions.extend(_executed_path_metrics(
+            operands, contraction_list, evaluate_constants
+        ))
+        return original_contract(
+            operands, contraction_list, backend=backend,
+            evaluate_constants=evaluate_constants, out=out, **kwargs
+        )
+
+    def recorded_svd(a, *args, **kwargs):
+        svds.append(a.shape)
+        return original_svd(a, *args, **kwargs)
+
+    def recorded_eigh(a, *args, **kwargs):
+        eighs.append(a.shape)
+        return original_eigh(a, *args, **kwargs)
+
+    contract_module._core_contract = recorded_contract
+    np.linalg.svd, np.linalg.eigh = recorded_svd, recorded_eigh
+    sys.setprofile(recorded_execution)
     try:
         result = function()
     finally:
-        module._contract_operands = original
+        sys.setprofile(original_profile)
+        contract_module._core_contract = original_contract
+        np.linalg.svd, np.linalg.eigh = original_svd, original_eigh
     live_sizes = [int(size) for size in live_tensors]
     live_sizes.append(_size(result))
     live_sizes.extend(size for _cost, size in contractions)
+    live_sizes.extend(int(np.prod(shape)) for shape in svds + eighs)
     return result, {
         "opt_cost": int(sum(cost for cost, _size_ in contractions)),
         "largest_live_tensor": int(max(live_sizes, default=1)),
         "contractions": len(contractions),
         "output_size": _size(result),
+        "svd_calls": len(svds),
+        "eigh_calls": len(eighs),
+        "svd_work_proxy": sum(_svd_work(shape) for shape in svds),
+        "eigh_work_proxy": sum(shape[-1] ** 3 for shape in eighs),
     }
 
 
@@ -145,6 +212,9 @@ def _profile_point(
     layout = LETTAPairLayout.from_state(state, left_site)
     left_tensor = state.tensors[left_site]
     right_tensor = state.tensors[right_site]
+    metric_cache = IdentityPairEnvironmentCache(state)
+    metric_left = metric_cache.build_left_environments()[left_site]
+    metric_right = metric_cache.build_right_environments()[right_site + 1]
 
     if direction == "lr":
         active_site = left_site
@@ -158,7 +228,6 @@ def _profile_point(
         active_right = right_environments[right_site + 1]
 
     _one_site_result, one_site = _profile_call(
-        one_site_contractions,
         lambda: cache.effective_action(
             active_left,
             active_right,
@@ -180,7 +249,6 @@ def _profile_point(
         (bond_dimension + mpo_width - 1) // mpo_width
     ) * mpo_width
     selection, strict_selector = _profile_call(
-        cbe_module,
         lambda: cbe_module.streamed_shrewd_cbe_selection(
             cache,
             left_environments[left_site],
@@ -191,6 +259,8 @@ def _profile_point(
             expansion_dimension=1,
             preselection_dimension=preselection_dimension,
             direction=direction,
+            metric_cache=metric_cache, metric_left=metric_left,
+            metric_right=metric_right, energy=0.,
         ),
         live_tensors=strict_live,
     )
@@ -203,37 +273,18 @@ def _profile_point(
         selection.preselection_output_size or 0,
         selection.final_output_size or 0,
     )
-    left_parent = int(np.prod(left_tensor.shape[:-1]))
-    right_parent = int(np.prod(right_tensor.shape[1:]))
-    if direction == "lr":
-        opposite_shape = (left_parent, bond_dimension * mpo_width)
-        opposite_rank = min(opposite_shape)
-        preselection_shape = (opposite_rank, right_parent)
-        retained_preselection = min(
-            preselection_dimension, *preselection_shape
-        )
-        final_shape = (left_parent, retained_preselection)
-    else:
-        opposite_shape = (bond_dimension * mpo_width, right_parent)
-        opposite_rank = min(opposite_shape)
-        preselection_shape = (left_parent, opposite_rank)
-        retained_preselection = min(
-            preselection_dimension, *preselection_shape
-        )
-        final_shape = (retained_preselection, right_parent)
-    svd_work = (
-        _svd_work(opposite_shape)
-        + _svd_work(preselection_shape)
-        + _svd_work(final_shape)
-    )
-    strict_selector["svd_work_proxy"] = int(svd_work)
     strict_selector["work_proxy"] = int(
-        strict_selector["opt_cost"] + svd_work
+        strict_selector["opt_cost"] + strict_selector["svd_work_proxy"]
+        + strict_selector["eigh_work_proxy"]
     )
+    strict_selector["used_physical_metric"] = True
+    strict_selector["connector_dimension"] = selection.connector_dimension
+    strict_selector["pair_actions"] = selection.pair_action_count
+    strict_selector["pair_metrics"] = selection.pair_metric_count
+    strict_selector["merged_pairs"] = selection.merged_pair_count
 
     pair_tensor = layout.merge(left_tensor, right_tensor)
     _pair_result, pair_action = _profile_call(
-        pair_contractions,
         lambda: cache.effective_pair_action(
             left_environments[left_site],
             right_environments[right_site + 1],
@@ -376,9 +427,12 @@ def run_scaling_profile(
         "mpo_profile": mpo_profile,
         "exponents": exponents,
         "proof": {
-            "pair_actions": 0,
-            "pair_metrics": 0,
-            "merged_pairs": 0,
+            "scope": "selector_and_single_actions_not_full_updates",
+            "universal_one_site_cost": False,
+            **{name: sum(p["strict_selector"][name]
+                         for profile in (bond_profile, physical_profile, mpo_profile)
+                         for p in profile)
+               for name in ("pair_actions", "pair_metrics", "merged_pairs")},
             "path_optimizer": "opt_einsum greedy",
             "timing_used_as_proof": False,
         },

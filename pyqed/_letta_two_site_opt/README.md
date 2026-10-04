@@ -40,10 +40,49 @@ For every adjacent chain pair, the solver:
 4. Initializes the fixed-bond factorization with a conditional SVD.
 5. By default, refines both factors with alternating least squares in the full
    LETTA wavefunction norm.
-6. Evaluates the exact post-truncation Rayleigh quotient and rejects any
+6. Alternately minimizes the pair energy over A with B fixed and B with A
+   fixed, independently starting from the ALS factors and the incumbent A/B
+   tensors. After each relaxation it checks for a much stronger simultaneous
+   A/B direction and, when present, takes bounded coupled descent steps.
+   It selects the lower energy **after** both relaxations among
+   candidates within the incumbent's factor-norm growth budget, retaining the
+   requested bond rank and reusing the same pair environments.
+7. Evaluates the exact post-truncation Rayleigh quotient and rejects any
    energy-increasing proposal.
-7. Shifts a direction-dependent QR gauge without shrinking the requested
+8. Shifts the virtual gauge without shrinking the requested
    virtual-bond allocation.
+
+Choosing a start by its energy before relaxation is insufficient. In the 2×2
+Bose-Hubbard regression (D=2, seed 731), refining only the split stops at
+−11.42410093, while independently relaxing the incumbent pair recovers the
+one-site variational energy near −11.6970934. The merged root and its split can
+remove physical support that subsequent adjacent-pair updates cannot recover.
+This comparison belongs inside each pair update; it is not a final one-site
+polishing sweep and does not guarantee the global variational minimum.
+
+`LETTAPairUpdate.energy_refinement_start` identifies the selected start;
+`split_refinement_energy` and `incumbent_refinement_energy` record both outcomes.
+The refinement iteration and accepted-substep counts include work from both
+starts. This adds a second factor relaxation to energy-refined updates; the
+explicit `conditional-svd` and `metric-als` modes do not run these relaxations.
+
+Both starts share the incumbent's normalized, balanced factor-norm budget,
+controlled by `energy_refinement_max_factor_norm_growth` (default 100). Applying
+that limit only relative to each start lets an already ill-conditioned ALS split
+bypass it. A saved 2×3 Ising pair reproduces a physical energy increase of 0.0216
+despite a lower computed local quotient; the common budget rejects that split
+and retains a stable incumbent relaxation. `energy_refinement_factor_norm_limit`
+and `split_refinement_within_norm_limit` expose the decision. This growth guard
+addresses abrupt amplification; it does not guarantee convergence or prevent
+gradual ill-conditioning over many sweeps.
+
+The default relative overlap cutoff is `metric_tolerance=1e-10`. Retaining
+near-null directions down to `1e-12` can amplify contraction roundoff through
+large tensor coefficients; a 2×3 Ising regression then disagrees with a direct
+wavefunction energy by about 2e-7. The more conservative cutoff restores
+agreement below 1e-9 on that case. It is a numerical support cutoff, not an
+energy stopping tolerance or a general guarantee of stability; stricter
+support experiments can still explicitly request a smaller value.
 
 The Hamiltonian is never materialized in Hilbert space by the production MPO
 path. Dense pair frames and dense pair Hamiltonians are used only in small
@@ -74,8 +113,8 @@ result = letta_two_site_dmrg(
     bond_dim=2,
     options=LETTATwoSiteOptions(
         max_sweeps=4,
-        split_method="metric-als",
-        one_site_polish_sweeps=2,
+        split_method="metric-als-energy",
+        one_site_polish_sweeps=0,
     ),
 )
 ```
@@ -154,8 +193,8 @@ The pair problem restores only local Clebsch--Gordan component spaces. Its SVD
 is performed independently in each intermediate-irrep block, retains or drops
 whole multiplets, and weights discarded norm by the irrep dimension $2j+1$.
 The reduced path currently requires `split_method="conditional-svd"`; it
-rejects `metric-als` and `energy-refined` rather than silently treating those
-dense-LETTA algorithms as irrep-aware.
+rejects `metric-als`, `metric-als-energy`, and `energy-refined` rather than
+silently treating those dense-LETTA algorithms as irrep-aware.
 The current splitter uses the bond sectors allocated when the state is built:
 it can reduce retained multiplicities within those capacities, but does not yet
 discover a previously absent intermediate irrep during a sweep.
@@ -213,14 +252,18 @@ machine details, are recorded in
 `docs/benchmarks/2026-08-28-letta-u1-su2.md`.
 
 `conditional-svd` remains available as a cheaper diagnostic split method.
-`metric-als` is the default because it minimizes truncation error in the
-represented wavefunction norm rather than the raw tensor Frobenius norm.
+`metric-als-energy` is the default: metric ALS first minimizes truncation error
+in the represented wavefunction norm, then alternating factor solves minimize
+the retained pair's Rayleigh quotient. A converged wavefunction fit need not
+be stationary for the energy. The diagnostic `metric-als` option retains the
+ALS-only sequence and can stall above the one-site variational minimum.
 
 ## Fixed-rank energy refinement
 
-The alternative `energy-refined` split avoids metric-ALS. It starts from the
-shared-sector-aware conditional SVD and alternately minimizes the effective
-pair energy over the left and right fixed-rank factors:
+Both `metric-als-energy` and `energy-refined` alternately minimize the effective
+pair energy over the left and right fixed-rank factors. The default starts
+from the ALS factors; the alternative `energy-refined` starts directly from
+the shared-sector-aware conditional SVD, skipping ALS:
 
 $$
 H_A(B)a = E N_A(B)a,
@@ -245,7 +288,7 @@ result = letta_two_site_dmrg(
     bond_dim=2,
     options=LETTATwoSiteOptions(
         max_sweeps=20,
-        split_method="energy-refined",
+        split_method="metric-als-energy",
         energy_refinement_max_iterations=8,
         energy_refinement_tolerance=1.0e-10,
         energy_refinement_max_factor_norm_growth=100.0,
@@ -255,7 +298,60 @@ result = letta_two_site_dmrg(
 
 The energy-refinement iterations reuse batched Hamiltonian contractions for
 the complete left or right factor frame. This avoids applying the pair
-Hamiltonian separately to every frame column.
+Hamiltonian separately to every frame column. These factor eigenproblems are
+dense local problems even when the merged-pair Hamiltonian is matrix-free.
+`metric_truncation_loss` reports the final factors' wavefunction error, which
+can increase during energy minimization. The refinement energy and iteration
+fields separately report the energy optimization. No final one-site polish is
+needed to enable this stage.
+
+### Coupled factor directions
+
+Alternating solves can make very slow progress when changing A and B together
+exposes directions that are weak in either separate factor space. The default
+two-site solver checks the normalized tangent metric after each alternating
+relaxation. With pair frame $F=[F_A,F_B]$, overlap metric $N$, merged tensor
+$\theta$, and $n=\theta^\dagger N\theta$, it forms
+
+$$
+v=F^\dagger N\theta/n,\qquad
+G=F^\dagger NF/n-vv^\dagger,\qquad
+g=F^\dagger(H\theta-E N\theta)/n.
+$$
+
+The supported direction is $-G^+g$. The correction activates only when its
+projected residual exceeds five times the separate A/B residuals in quadrature.
+It backtracks on the Rayleigh quotient of the actual updated factors, preserving
+rank, symmetry masks, and the original factor-norm budget. Every accepted
+coupled step strictly lowers the local energy. No global physical basis or
+final dense projection is used by this algorithm.
+
+`coupled_refinement_max_iterations=8` bounds the extra steps; setting it to zero
+restores alternating-only refinement. `coupled_refinement_metric_tolerance=1e-12`
+controls the tangent pseudoinverse, with a floor set by dtype precision and
+matrix dimension. `coupled_refinement_activation_ratio=5.0` controls the gate;
+zero disables the gate. Pair diagnostics report `coupled_refinement_iterations`
+and `coupled_refinement_accepted_steps`, summed over both starts, including a
+start that is later discarded. The direct `energy_refine_split` helper leaves
+coupled refinement off unless its corresponding arguments are supplied.
+
+This is a numerical convergence improvement, separate from the exact
+contraction optimizations. It resolves the strict small Bose convergence
+regression; it does not certify a global minimum or convergence of larger
+systems. Reproduction and checks are in
+`docs/benchmarks/2026-09-23-letta-coupled-production/`.
+
+For an ALS-only ablation against one-site and the new default, run:
+
+```bash
+PYTHONPATH=. OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+VECLIB_MAXIMUM_THREADS=1 NUMEXPR_NUM_THREADS=1 \
+python -m pyqed._letta_two_site_opt.benchmarks.nn_energy_refinement \
+  --case spin1_heisenberg:4:2 --output /private/tmp/letta-energy.json
+```
+
+The 1D NN results and reproduction commands are recorded in
+`docs/benchmarks/2026-09-18-letta-two-site-energy.md`.
 
 ## One-site versus two-site benchmark
 
@@ -332,3 +428,7 @@ Every pair update records:
   not exposed here because it would weaken the exact per-pair energy safeguard.
 - Two- and three-dimensional model builders are re-exported through the case
   subpackages without duplicating geometry or Hamiltonian code.
+
+## Selectable compression solvers
+
+Both CBE trimming and two-site norm compression accept `compression=MetricCompressionOptions(solver="variable-projection")`. Other choices are `"als"`, `"joint-ls"`, and `"grassmann-newton"`. ALS remains the default. See the [compression solver guide](COMPRESSION.md) for examples, equations, budgets, diagnostics, and limitations.

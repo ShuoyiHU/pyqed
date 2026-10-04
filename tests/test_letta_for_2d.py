@@ -112,6 +112,18 @@ def test_direct_network_contractions_match_dense_reference():
         )
 
 
+def test_complex_network_norm_is_relative_scale_invariant():
+    state = LatticeLETTA.random((2, 3), physical_dim=2, bond_dim=2,
+                                seed=941, real=False)
+    original = state.tensors[0].copy()
+    for scale in (1.e-6, 1., 1.e6):
+        state.tensors[0] = original * scale
+        vector = state.state_vector()
+        expected = float(np.vdot(vector, vector).real)
+        np.testing.assert_allclose(network_overlap(state), expected,
+                                   rtol=2.e-12, atol=0.)
+
+
 def test_cached_frontier_environments_match_full_network_contractions():
     state = LatticeLETTA.random((2, 3), physical_dim=2, bond_dim=2, seed=11)
     mpo = transverse_field_ising_mpo((2, 3), coupling=0.8, field=1.3)
@@ -354,6 +366,8 @@ def test_bond_continuation_improves_4x4_energy_at_fixed_sweep_budget():
     )
 
     assert continued.sweeps == direct.sweeps == 10
+    elapsed = [sweep.elapsed_seconds for sweep in continued.history]
+    assert min(elapsed) > 0. and elapsed == sorted(elapsed)
     assert {sweep.bond_dimension for sweep in continued.history} == {2, 4}
     assert continued.energy < direct.energy - 1.0e-4
     for sweep in continued.history:
@@ -469,7 +483,9 @@ def test_matrix_free_local_solver_matches_dense_local_solver(monkeypatch):
     matrix_free_result = letta_dmrg(
         mpo,
         state=initial,
-        options=LETTADMROptions(max_sweeps=1, matrix_free=True),
+        options=LETTADMROptions(
+            max_sweeps=1, matrix_free=True, dense_solver_threshold=1
+        ),
     )
 
     np.testing.assert_allclose(
@@ -500,7 +516,7 @@ def test_compressed_boundary_solver_matches_exact_when_rank_is_sufficient():
     exact = letta_dmrg(
         mpo,
         state=initial,
-        options=LETTADMROptions(max_sweeps=1, boundary_bond_dim=None),
+        options=LETTADMROptions(max_sweeps=1, boundary_bond_dim=None, gauge_mode="qr"),
     )
     compressed = letta_dmrg(
         mpo,
@@ -509,6 +525,7 @@ def test_compressed_boundary_solver_matches_exact_when_rank_is_sufficient():
             max_sweeps=1,
             boundary_bond_dim=256,
             boundary_cutoff=0.0,
+            gauge_mode="qr",
         ),
     )
 
@@ -516,10 +533,10 @@ def test_compressed_boundary_solver_matches_exact_when_rank_is_sufficient():
     assert compressed.max_boundary_discarded_weight < 1.0e-20
 
 
-def test_truncated_boundary_solver_rejects_unresolved_metric_directions():
+def _truncated_boundary_result():
     shape = (3, 3)
     mpo = transverse_field_ising_mpo(shape, coupling=1.0, field=1.5)
-    result = letta_dmrg(
+    return letta_dmrg(
         mpo,
         lattice_shape=shape,
         bond_dim=4,
@@ -530,12 +547,67 @@ def test_truncated_boundary_solver_rejects_unresolved_metric_directions():
             environment_granularity="column",
             boundary_bond_dim=4,
             boundary_cutoff=1.0e-12,
+            gauge_mode="qr",
         ),
     )
+
+
+def test_truncated_boundary_solver_rejects_unresolved_metric_directions():
+    # Keep an uninstrumented execution as well as the operator audit below.
+    result = _truncated_boundary_result()
     spectral_lower_bound = -(12.0 + 1.5 * 9.0)
 
     assert np.isfinite(result.energy)
     assert result.energy >= spectral_lower_bound - 1.0e-8
+
+
+def test_truncated_boundary_solver_passes_hermitian_operators_to_eigsh(monkeypatch):
+    import pyqed._letta_one_site_opt.solver as solver
+    original = solver.eigsh
+
+    def checked(operator, *args, **kwargs):
+        identity = np.eye(operator.shape[0], dtype=operator.dtype)
+        matrix = np.column_stack([operator @ column for column in identity.T])
+        np.testing.assert_allclose(matrix, matrix.conj().T, atol=1.e-8, rtol=1.e-8)
+        return original(operator, *args, **kwargs)
+
+    monkeypatch.setattr(solver, "eigsh", checked)
+    _truncated_boundary_result()
+
+
+def test_local_action_retains_complex_onsite_operator_with_real_environments():
+    from pyqed._letta_one_site_opt.operators import LatticeMPO
+    state = LatticeLETTA.random((1, 3), physical_dim=2, bond_dim=2, seed=122)
+    identity = np.eye(2).reshape(1, 1, 2, 2)
+    sigma_y = np.array([[0, -1j], [1j, 0]]).reshape(1, 1, 2, 2)
+    mpo = LatticeMPO((identity, sigma_y, identity), lattice_shape=(1, 3))
+    cache = LETTAEnvironmentCache(state, mpo)
+    left, right = cache.build_left_environments()[1], cache.build_right_environments()[2]
+    vector = state.tensors[1].reshape(-1)
+    expected = cache.effective_matrix(left, right, 1) @ vector
+    np.testing.assert_allclose(cache.effective_action(left, right, 1, vector), expected)
+
+
+def test_adjoint_action_matches_complex_dense_reference_without_dense_assembly(monkeypatch):
+    from pyqed._letta_one_site_opt.operators import LatticeMPO
+    rng = np.random.default_rng(124)
+    state = LatticeLETTA.random((2, 3), physical_dim=2, bond_dim=2, seed=123, real=False)
+    factors = [rng.normal(size=(1, 1, 2, 2)) + 1j * rng.normal(size=(1, 1, 2, 2))
+               for _ in range(state.nsites)]
+    mpo = LatticeMPO(factors, lattice_shape=(2, 3))
+    vector = rng.normal(size=state.tensors[2].size) + 1j * rng.normal(size=state.tensors[2].size)
+    for boundary_rank in (None, 2):
+        cache = LETTAEnvironmentCache(state, mpo, boundary_bond_dim=boundary_rank)
+        left, right = cache.build_left_environments()[2], cache.build_right_environments()[3]
+        matrix = cache.effective_matrix(left, right, 2)
+        expected = matrix.conj().T @ vector
+        def forbidden(*args, **kwargs):
+            raise AssertionError("adjoint action assembled a dense local matrix")
+        with monkeypatch.context() as patch:
+            patch.setattr(cache, "effective_matrix", forbidden)
+            np.testing.assert_allclose(
+                cache.effective_action(left, right, 2, vector, adjoint=True),
+                expected, atol=1.e-10, rtol=1.e-10)
 
 
 def test_qr_virtual_gauge_preserves_letta_state():
@@ -689,7 +761,7 @@ def test_dmrg_like_sweeps_lower_energy_and_approach_exact_2x2_ising_result():
     result = letta_dmrg(
         hamiltonian,
         state=initial,
-        options=LETTADMROptions(max_sweeps=8, tolerance=1.0e-10),
+        options=LETTADMROptions(max_sweeps=8, tolerance=1.0e-10, gauge_mode="qr"),
     )
 
     assert result.energy <= initial_energy + 1.0e-10

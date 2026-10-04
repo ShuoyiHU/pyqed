@@ -28,9 +28,14 @@ def _axis_sector_multiplicities(site, axis):
             raise ValueError(
                 f"inconsistent multiplicity for sector {sector!r} on axis {axis}"
             )
-    sectors = tuple(
-        sector for sector in dict.fromkeys(site.qns[axis]) if sector in dims
-    )
+    # Absent physical blocks still occupy their declared basis coordinates.
+    # Otherwise a vacuum/polarized state silently changes a four-state orbital
+    # into a smaller local Hilbert space and shifts MPO physical indices.
+    from collections import Counter
+    declared = Counter(site.qns[axis])
+    for sector, multiplicity in declared.items():
+        dims.setdefault(sector, multiplicity)
+    sectors = tuple(dict.fromkeys(site.qns[axis]))
     return sectors, dims
 
 

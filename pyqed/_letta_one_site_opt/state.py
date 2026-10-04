@@ -39,8 +39,23 @@ def _validate_coordinates(lattice_shape, coordinates):
     return coordinates
 
 
+def _validate_neighborhoods(neighborhoods, nsites):
+    try:
+        neighborhoods = tuple(tuple(index(p) for p in sites) for sites in neighborhoods)
+    except (TypeError, ValueError) as error:
+        raise ValueError("neighborhoods must contain integer site indices.") from error
+    if len(neighborhoods) != nsites:
+        raise ValueError("neighborhoods must contain one entry per tensor.")
+    for site, sites in enumerate(neighborhoods):
+        if not sites or sites[0] != site:
+            raise ValueError("each neighborhood must start with its tensor's own site.")
+        if len(set(sites)) != len(sites) or any(p < 0 or p >= nsites for p in sites):
+            raise ValueError("neighborhood indices must be unique and inside the lattice.")
+    return neighborhoods
+
+
 class LatticeLETTA:
-    r"""Open-boundary LETTA with current and positive-neighbor physical legs.
+    r"""Open-boundary LETTA with configurable physical dependencies.
 
     Sites use NumPy's C-order enumeration unless an explicit coordinate
     permutation is supplied. For a two-dimensional shape ``(Lx, Ly)``, the
@@ -48,6 +63,9 @@ class LatticeLETTA:
     ``(0,0), (0,1), ..., (1,0), ...``. Physical legs are ordered as the
     current site followed by existing positive-axis neighbors, with the last
     coordinate axis first. In 2D this means ``(current, down, right)``.
+    ``neighborhoods`` overrides these defaults with arbitrary physical site
+    indices per tensor, including backward and nonlocal ties. Each entry must
+    start with its home site and contain no duplicates.
     """
 
     def __init__(
@@ -57,6 +75,7 @@ class LatticeLETTA:
         tensors,
         *,
         coordinates=None,
+        neighborhoods=None,
         symmetry=None,
         bond_charges=None,
     ):
@@ -74,8 +93,10 @@ class LatticeLETTA:
         self._coordinate_to_site = {
             coordinate: site for site, coordinate in enumerate(self.coordinates)
         }
-        self._neighborhoods = tuple(
-            self._build_neighborhood(coordinate) for coordinate in self.coordinates
+        self._neighborhoods = (
+            _validate_neighborhoods(neighborhoods, self.nsites)
+            if neighborhoods is not None else
+            tuple(self._build_neighborhood(coordinate) for coordinate in self.coordinates)
         )
         self.tensors = self._validate_tensors(tensors)
         if symmetry is not None and not isinstance(symmetry, AbelianSymmetry):
@@ -115,6 +136,7 @@ class LatticeLETTA:
         seed=None,
         real=True,
         coordinates=None,
+        neighborhoods=None,
         symmetry=None,
         bond_charges=None,
     ):
@@ -130,6 +152,8 @@ class LatticeLETTA:
         coordinate_to_site = {
             coordinate: site for site, coordinate in enumerate(coordinates)
         }
+        if neighborhoods is not None:
+            neighborhoods = _validate_neighborhoods(neighborhoods, len(coordinates))
         rng = np.random.default_rng(seed)
         tensors = []
         nsites = len(coordinates)
@@ -140,6 +164,8 @@ class LatticeLETTA:
                 neighbor[axis] += 1
                 if tuple(neighbor) in coordinate_to_site:
                     nneighbors += 1
+            if neighborhoods is not None:
+                nneighbors = len(neighborhoods[site]) - 1
             left_dim = 1 if site == 0 else bond_dim
             right_dim = 1 if site == nsites - 1 else bond_dim
             shape = (left_dim,) + (physical_dim,) * (1 + nneighbors) + (
@@ -155,6 +181,7 @@ class LatticeLETTA:
             physical_dim,
             tensors,
             coordinates=coordinates,
+            neighborhoods=neighborhoods,
             symmetry=symmetry,
             bond_charges=bond_charges,
         )
@@ -204,6 +231,15 @@ class LatticeLETTA:
             raise IndexError("site index out of range.")
         return self._neighborhoods[site]
 
+    @property
+    def neighborhoods(self):
+        """Physical arguments of each tensor, with its home site first.
+
+        Additional arguments may be nonlocal or earlier in the chain. Their
+        order is the physical-axis order; it is preserved by all state copies.
+        """
+        return self._neighborhoods
+
     def _validate_tensors(self, tensors):
         tensors = [np.asarray(tensor).copy() for tensor in tensors]
         if len(tensors) != self.nsites:
@@ -232,6 +268,7 @@ class LatticeLETTA:
             self.physical_dim,
             [tensor.copy() for tensor in self.tensors],
             coordinates=self.coordinates,
+            neighborhoods=self.neighborhoods,
             symmetry=self.symmetry,
             bond_charges=self.bond_charges,
         )
@@ -244,6 +281,7 @@ class LatticeLETTA:
             self.physical_dim,
             [tensor.copy() for tensor in self.tensors],
             coordinates=self.coordinates,
+            neighborhoods=self.neighborhoods,
         )
 
     def left_virtual_charges(self, site):
@@ -378,6 +416,7 @@ class LatticeLETTA:
             self.physical_dim,
             tensors,
             coordinates=self.coordinates,
+            neighborhoods=self.neighborhoods,
             symmetry=self.symmetry,
             bond_charges=expanded_bond_charges,
         )

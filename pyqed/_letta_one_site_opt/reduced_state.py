@@ -10,7 +10,7 @@ import numpy as np
 from pyqed.mps.nonabelian.coupling import clebsch_gordan, ordered_two_m_values
 
 from .reduced_symmetry import ReducedBasisState, ReducedSymmetry, _sector_irrep
-from .state import _validate_coordinates, _validate_lattice_shape
+from .state import _validate_coordinates, _validate_lattice_shape, _validate_neighborhoods
 
 
 def _multiplicities(sectors):
@@ -37,6 +37,7 @@ class ReducedLatticeLETTA:
         *,
         bond_sectors,
         coordinates=None,
+        neighborhoods=None,
         normalize=True,
     ):
         self.lattice_shape = _validate_lattice_shape(lattice_shape)
@@ -48,7 +49,7 @@ class ReducedLatticeLETTA:
         self._coordinate_to_site = {
             coordinate: site for site, coordinate in enumerate(self.coordinates)
         }
-        self._neighborhoods = tuple(
+        self._neighborhoods = _validate_neighborhoods(neighborhoods, self.nsites) if neighborhoods is not None else tuple(
             self._build_neighborhood(coordinate) for coordinate in self.coordinates
         )
         bond_sectors = tuple(tuple(bond) for bond in bond_sectors)
@@ -71,6 +72,7 @@ class ReducedLatticeLETTA:
         seed=None,
         real=True,
         coordinates=None,
+        neighborhoods=None,
         normalize=True,
     ):
         lattice_shape = _validate_lattice_shape(lattice_shape)
@@ -83,16 +85,18 @@ class ReducedLatticeLETTA:
         coordinate_to_site = {
             coordinate: site for site, coordinate in enumerate(coordinates)
         }
-        neighborhoods = []
-        for coordinate in coordinates:
-            sites = [coordinate_to_site[coordinate]]
-            for axis in reversed(range(len(lattice_shape))):
-                neighbor = list(coordinate)
-                neighbor[axis] += 1
-                neighbor = tuple(neighbor)
-                if neighbor in coordinate_to_site:
-                    sites.append(coordinate_to_site[neighbor])
-            neighborhoods.append(tuple(sites))
+        if neighborhoods is None:
+            neighborhoods = []
+            for coordinate in coordinates:
+                sites = [coordinate_to_site[coordinate]]
+                for axis in reversed(range(len(lattice_shape))):
+                    neighbor = list(coordinate)
+                    neighbor[axis] += 1
+                    neighbor = tuple(neighbor)
+                    if neighbor in coordinate_to_site:
+                        sites.append(coordinate_to_site[neighbor])
+                neighborhoods.append(tuple(sites))
+        neighborhoods = _validate_neighborhoods(neighborhoods, nsites)
 
         rng = np.random.default_rng(seed)
         tensors = []
@@ -134,8 +138,85 @@ class ReducedLatticeLETTA:
             tensors,
             bond_sectors=bond_sectors,
             coordinates=coordinates,
+            neighborhoods=neighborhoods,
             normalize=normalize,
         )
+
+    @classmethod
+    def from_mps(cls, mps, *, symmetry, neighborhoods=None, normalize=False,
+                 physical_representation=None):
+        """Broadcast a fully reduced, left-fused MPS over scalar tie labels.
+
+        Sector multiplicities and amplitudes are preserved, including the
+        normalization of every target-M component. Canonical magnetic-site
+        tensors are deliberately rejected: deleting their magnetic axes is
+        not a Wigner--Eckart reduction. Some DMRG decompositions drop metadata;
+        for those, explicitly supply ``physical_representation='fully_reduced_su2'``.
+        Block dimensions, fusion orientation, and boundaries are still checked.
+        """
+        from .reduced_contraction import _axis_sector_multiplicities
+        from pyqed.mps.nonabelian.tensor import NonabelianTensor
+
+        sites = tuple(mps)
+        if not sites:
+            raise ValueError('MPS must contain at least one site')
+        if not isinstance(symmetry, ReducedSymmetry):
+            raise TypeError('symmetry must be ReducedSymmetry')
+        if physical_representation not in {None, 'fully_reduced_su2'}:
+            raise ValueError('MPS import requires a fully reduced physical representation')
+        neighborhoods = _validate_neighborhoods(
+            tuple((i,) for i in range(len(sites))) if neighborhoods is None else neighborhoods,
+            len(sites))
+        bonds = []
+        tensors = []
+        previous_right = None
+        physical = dict(zip(symmetry.physical_basis.sectors,
+                            symmetry.physical_basis.multiplicities))
+        for i, site in enumerate(sites):
+            if (not isinstance(site, NonabelianTensor) or site.rank != 3
+                    or (physical_representation or site.metadata.get('physical_basis')) != 'fully_reduced_su2'):
+                raise ValueError('MPS import requires explicitly fully reduced SU(2) sites')
+            nontrivial_fusion = any(leg is not None and
+                (axis == 1 or len(leg.child_legs) != 1 or leg.coupling != 'left')
+                for axis, leg in enumerate(site.fusion_legs))
+            if list(site.dirs) != [-1, 1, 1] or nontrivial_fusion:
+                raise ValueError('MPS import requires unfused left-coupled site legs')
+            layouts = [_axis_sector_multiplicities(site, axis) for axis in range(3)]
+            left, phys, right = (layout[1] for layout in layouts)
+            if phys != physical:
+                raise ValueError('MPS physical multiplicities do not match symmetry')
+            if i == 0 and left != {symmetry.identity: 1}:
+                raise ValueError('MPS left boundary must be the vacuum multiplet')
+            if i and left != previous_right:
+                raise ValueError('adjacent MPS sector multiplicities disagree')
+            if i == len(sites)-1 and right != {symmetry.sector: 1}:
+                raise ValueError('MPS right boundary does not match the target multiplet')
+            if i < len(sites)-1:
+                bonds.append(tuple(q for q in layouts[2][0] for _ in range(right[q])))
+            previous_right = right
+            blocks = {}
+            nties = len(neighborhoods[i])-1
+            for key, block in site.data.items():
+                block = np.asarray(block)
+                shape = block.shape[:2] + (1,)*nties + block.shape[2:]
+                full = block.shape[:2] + (symmetry.physical_basis.reduced_dim,)*nties + block.shape[2:]
+                blocks[key] = np.broadcast_to(block.reshape(shape), full).copy()
+            tensors.append(blocks)
+        return cls((1, len(sites)), symmetry, tensors, bond_sectors=bonds,
+                   neighborhoods=neighborhoods, normalize=normalize)
+
+    @property
+    def neighborhoods(self):
+        return self._neighborhoods
+
+    @property
+    def bond_dimensions(self):
+        """Number of complete multiplets on each internal bond."""
+        return tuple(len(bond) for bond in self.bond_sectors)
+
+    @property
+    def magnetic_bond_dimensions(self):
+        return tuple(sum(_sector_irrep(q).dim for q in bond) for bond in self.bond_sectors)
 
     @property
     def ndim(self):
@@ -239,6 +320,7 @@ class ReducedLatticeLETTA:
             ),
             bond_sectors=self.bond_sectors,
             coordinates=self.coordinates,
+            neighborhoods=self.neighborhoods,
             normalize=False,
         )
 
@@ -332,18 +414,11 @@ class ReducedLatticeLETTA:
         return vector
 
     def norm(self):
-        # Contract only local CG component spaces. This is polynomial in the
-        # explicit frontier dimensions and avoids the full state vector.
-        from .reduced_contraction import (
-            CanonicalEnvironmentChain,
-            identity_canonical_factors,
-        )
+        from .reduced_norm import ReducedNormChain
         from .reduced_frontier import ReducedFrontier
 
         sites = tuple(ReducedFrontier.from_state(self).to_mps(self))
-        value = CanonicalEnvironmentChain.build(
-            sites, identity_canonical_factors(sites)
-        ).expectation()
+        value = ReducedNormChain.build(sites).expectation()
         # The open right boundary contains the complete target multiplet, so
         # the invariant contraction sums identical norms over all of its
         # magnetic components.  ``state_vector`` and the optimizer use one
@@ -388,14 +463,17 @@ class ReducedLatticeLETTA:
                 tensor[key] = tensor[key] * scale
         return self
 
-    def normalize(self):
+    def normalize(self, *, center=0, balance=True):
+        center = index(center)
+        if not 0 <= center < self.nsites:
+            raise ValueError('normalization center must be a valid site')
         norm_squared = self.norm()
-        if norm_squared <= np.finfo(float).tiny:
+        if not np.isfinite(norm_squared) or norm_squared <= np.finfo(float).tiny:
             raise ValueError("cannot normalize a numerically zero reduced LETTA state")
         scale = norm_squared ** -0.5
-        for key in tuple(self.tensors[0]):
-            self.tensors[0][key] = self.tensors[0][key] * scale
-        return self.balance_scalar_gauge()
+        for key in tuple(self.tensors[center]):
+            self.tensors[center][key] = self.tensors[center][key] * scale
+        return self.balance_scalar_gauge() if balance else self
 
 
 __all__ = ["ReducedLatticeLETTA"]

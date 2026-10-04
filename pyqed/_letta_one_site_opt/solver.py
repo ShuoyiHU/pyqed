@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from time import perf_counter
+
+from .._letta_compression import MetricCompressionOptions
 
 import numpy as np
 from scipy import linalg, sparse
+from scipy.sparse.linalg import LinearOperator, eigsh
 
 from .contractions import (
     BlockDiagonalMetric,
+    _equilibrated_metric_factors,
+    DiagonalMetric,
     IdentityEnvironmentCache,
     LETTAEnvironmentCache,
     network_operator_matrix,
@@ -19,13 +25,14 @@ from .state import LatticeLETTA
 
 @dataclass(frozen=True)
 class LETTADMROptions:
+    compression: MetricCompressionOptions = MetricCompressionOptions()
     max_sweeps: int = 8
     tolerance: float = 1.0e-9
     metric_tolerance: float = 1.0e-12
     energy_increase_tolerance: float = 1.0e-9
     start_direction: str = "lr"
     alternate: bool = True
-    gauge_mode: str = "qr"
+    gauge_mode: str = "frontier"  # "frontier" whitens admissible complete environments.
     environment_granularity: str = "site"
     use_sparse_mpo: bool = True
     matrix_free: bool = True
@@ -45,7 +52,15 @@ class LETTADMROptions:
     cbe_refinement_max_iterations: int = 4
     cbe_projection_tolerance: float = 1.0e-10
     cbe_projection_max_iterations: int = 100
-    cbe_baseline_guard_fraction: float = 0.2
+    cbe_baseline_guard_fraction: float = 0.0
+    cbe_conditional_trim: bool = True
+    cbe_energy_refinement_max_iterations: int = 32
+    cbe_energy_refinement_tolerance: float = 1.0e-10
+    cbe_coupled_max_iterations: int = 8
+    cbe_coupled_metric_tolerance: float = 1.0e-12
+    cbe_coupled_activation_ratio: float = 5.0
+    cbe_coupled_energy_threshold: float = 1.0e-6
+    cbe_coupled_max_parameters: int = 512
     verbosity: int = 0
 
 
@@ -59,6 +74,10 @@ class LETTASiteUpdate:
     residual_norm: float
     accepted: bool
     full_local_dimension: int | None = None
+    hamiltonian_applications: int = 0
+    metric_kind: str = "general"
+    cbe_timings: dict[str, float] | None = None
+    cbe_selection_diagnostics: dict | None = None
     cbe_expansion_dimension: int = 0
     cbe_selector: str | None = None
     cbe_preselection_dimension: int | None = None
@@ -76,6 +95,8 @@ class LETTASiteUpdate:
     cbe_materialized_pair_metric: bool | None = None
     cbe_materialized_tangent_jacobian: bool | None = None
     cbe_trim_method: str | None = None
+    cbe_trim_metric_kinds: tuple[str, ...] = ()
+    cbe_compression_diagnostics: tuple[dict, ...] = ()
     cbe_missing_norm: float | None = None
     cbe_captured_weight: float | None = None
     cbe_selection_loss: float | None = None
@@ -87,6 +108,16 @@ class LETTASiteUpdate:
     cbe_baseline_allowance: float | None = None
     cbe_baseline_selected: bool = False
     cbe_fallback: bool = False
+    cbe_recovery_reason: str | None = None
+    cbe_recovery_rejected: bool = False
+    cbe_refined_energy: float | None = None
+    cbe_incumbent_refined_energy: float | None = None
+    cbe_energy_refinement_start: str | None = None
+    cbe_energy_refinement_iterations: int = 0
+    cbe_energy_refinement_substeps: int = 0
+    cbe_coupled_iterations: int = 0
+    cbe_coupled_accepted_steps: int = 0
+    cbe_coupled_hamiltonian_applications: int = 0
 
 
 @dataclass(frozen=True)
@@ -98,6 +129,7 @@ class LETTASweep:
     energy_density_change: float
     bond_dimension: int
     updates: tuple[LETTASiteUpdate, ...]
+    elapsed_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -109,6 +141,8 @@ class LETTADMRGResult:
     history: tuple[LETTASweep, ...]
     message: str
     max_boundary_discarded_weight: float = 0.0
+    canonical_environment_reuses: int = 0
+    canonical_metric_hits: int = 0
 
 
 def _allocate_schedule_sweeps(number_of_stages, max_sweeps):
@@ -154,27 +188,23 @@ def automatic_bond_schedule(target_bond_dim, max_sweeps):
 
 def _lowest_generalized_eigenpair(hamiltonian, metric, metric_tolerance):
     hamiltonian = 0.5 * (hamiltonian + hamiltonian.conj().T)
-    if isinstance(metric, BlockDiagonalMetric):
+    coordinates = (metric.coordinate_whitening(metric_tolerance)
+                   if isinstance(metric, BlockDiagonalMetric) else None)
+    if coordinates is not None:
+        retained, scales = coordinates
+        metric_rank = len(retained)
+        reduced_hamiltonian = (hamiltonian[np.ix_(retained, retained)]
+                               * scales[:, None] * scales[None, :])
+    elif isinstance(metric, BlockDiagonalMetric):
         basis, metric_rank = metric.whitening_basis(metric_tolerance)
     else:
         metric = 0.5 * (metric + metric.conj().T)
-        metric_values, metric_vectors = np.linalg.eigh(metric)
-        scale = max(float(metric_values[-1]), 0.0)
-        if scale == 0.0:
+        basis, _ = _equilibrated_metric_factors(metric, metric_tolerance)
+        metric_rank = basis.shape[1]
+        if metric_rank == 0:
             raise ValueError("the local LETTA overlap metric has zero rank.")
-        relative_cutoff = max(
-            float(metric_tolerance),
-            np.finfo(float).eps * metric.shape[0],
-        )
-        cutoff = relative_cutoff * scale
-        retained = metric_values > cutoff
-        if not np.any(retained):
-            raise ValueError("the local LETTA overlap metric has zero rank.")
-        basis = metric_vectors[:, retained] / np.sqrt(
-            metric_values[retained]
-        )[None, :]
-        metric_rank = int(np.count_nonzero(retained))
-    reduced_hamiltonian = basis.conj().T @ hamiltonian @ basis
+    if coordinates is None:
+        reduced_hamiltonian = basis.conj().T @ hamiltonian @ basis
     reduced_hamiltonian = 0.5 * (
         reduced_hamiltonian + reduced_hamiltonian.conj().T
     )
@@ -183,7 +213,11 @@ def _lowest_generalized_eigenpair(hamiltonian, metric, metric_tolerance):
         subset_by_index=[0, 0],
         check_finite=False,
     )
-    vector = basis @ vectors[:, 0]
+    if coordinates is None:
+        vector = basis @ vectors[:, 0]
+    else:
+        vector = np.zeros(metric.size, dtype=np.result_type(hamiltonian, metric.dtype))
+        vector[retained] = scales * vectors[:, 0]
     norm = np.vdot(vector, metric @ vector)
     if np.real(norm) <= np.finfo(float).tiny:
         raise ValueError("the optimized local LETTA tensor has zero norm.")
@@ -390,97 +424,97 @@ def _optimize_site_from_environments(
         residual_norm=residual,
         accepted=accepted,
         full_local_dimension=old_tensor.size,
+        metric_kind=(effective_metric.kind(options.metric_tolerance)
+                     if isinstance(effective_metric, DiagonalMetric) else "general"),
     )
 
 
-def _lowest_matrix_free_eigenpair(action, metric, metric_tolerance):
-    if isinstance(metric, BlockDiagonalMetric):
+def _lowest_matrix_free_eigenpair(
+    action, metric, metric_tolerance, *, initial_vector=None,
+    tolerance=1.0e-10, max_iterations=300, action_dtype=None,
+):
+    """Solve in the supported metric with a warm-started restarted Lanczos.
+
+    Iteration limits have SciPy/ARPACK semantics (restart iterations). Failure
+    to converge propagates to the caller rather than accepting a partial Ritz
+    vector as a converged local solve.
+    """
+    coordinates = (metric.coordinate_whitening(metric_tolerance)
+                   if isinstance(metric, BlockDiagonalMetric) else None)
+    if coordinates is not None:
+        retained, scales = coordinates
+        rank, metric_dtype = len(retained), metric.dtype
+
+        def lift(vector):
+            result = np.zeros(metric.size, dtype=np.result_type(metric.dtype, vector))
+            result[retained] = scales * vector
+            return result
+
+        def project(vector):
+            return scales * np.asarray(vector)[retained]
+
+    elif isinstance(metric, BlockDiagonalMetric):
         basis, rank = metric.whitening_basis(metric_tolerance)
         metric_dtype = metric.dtype
     else:
         metric = 0.5 * (metric + metric.conj().T)
-        metric_values, metric_vectors = np.linalg.eigh(metric)
-        scale = max(float(metric_values[-1]), 0.0)
-        if scale == 0.0:
-            raise ValueError("the local LETTA overlap metric has zero rank.")
-        relative_cutoff = max(
-            float(metric_tolerance),
-            np.finfo(float).eps * metric.shape[0],
-        )
-        retained = metric_values > relative_cutoff * scale
-        basis = metric_vectors[:, retained] / np.sqrt(
-            metric_values[retained]
-        )[None, :]
+        basis, _ = _equilibrated_metric_factors(metric, metric_tolerance)
         rank = basis.shape[1]
+        if rank == 0:
+            raise ValueError("the local LETTA overlap metric has zero rank.")
         metric_dtype = metric.dtype
 
-    def reduced_action(vector):
-        return basis.conj().T @ action(basis @ vector)
+    if coordinates is None:
+        def lift(vector):
+            return basis @ vector
 
-    if rank == 1:
-        reduced_vector = np.ones(1, dtype=metric_dtype)
+        def project(vector):
+            return basis.conj().T @ vector
+
+    def reduced_action(vector):
+        return project(action(lift(vector)))
+
+    dtype = np.result_type(metric_dtype, initial_vector if initial_vector is not None else float)
+    if initial_vector is None:
+        initial = np.ones(rank, dtype=dtype)
     else:
-        reduced_vector = _lowest_lanczos_vector(
-            reduced_action,
-            rank,
-            metric_dtype,
+        # B^H N x are the coordinates of x in the metric-orthonormal basis B.
+        initial = project(metric @ np.asarray(initial_vector))
+        if np.linalg.norm(initial) <= np.finfo(float).tiny:
+            initial = np.ones(rank, dtype=dtype)
+    initial = initial / np.linalg.norm(initial)
+    if rank <= 2:
+        # Complex ARPACK requires k < N - 1; these systems are trivial.
+        identity = np.eye(rank, dtype=dtype)
+        reduced = np.column_stack([reduced_action(column) for column in identity.T])
+        _, vectors = linalg.eigh(0.5 * (reduced + reduced.conj().T))
+        reduced_vector = vectors[:, 0]
+    else:
+        # A real initial tensor does not imply a real Hamiltonian. Callers
+        # with an existing action result can supply its dtype without a probe.
+        if action_dtype is None:
+            action_dtype = np.asarray(action(lift(initial))).dtype
+        dtype = np.result_type(dtype, action_dtype)
+        operator = LinearOperator((rank, rank), matvec=reduced_action, dtype=dtype)
+        _, vectors = eigsh(
+            operator, k=1, which="SA", v0=initial,
+            tol=tolerance, maxiter=max_iterations,
         )
-    vector = basis @ reduced_vector
+        reduced_vector = vectors[:, 0]
+    vector = lift(reduced_vector)
     vector /= np.sqrt(np.vdot(vector, metric @ vector))
     applied = action(vector)
     energy = float(np.real(np.vdot(vector, applied)))
-    residual = np.linalg.norm(applied - energy * (metric @ vector))
+    residual_vector = applied - energy * (metric @ vector)
+    supported_residual = np.linalg.norm(project(residual_vector))
+    # Preserve the physical residual as a diagnostic. A hard absolute cutoff
+    # here is inappropriate for ill-conditioned metrics or approximate boundary
+    # environments; ARPACK controls the reduced solve and the update below
+    # independently checks variational descent.
+    if not np.isfinite(supported_residual) or not np.isfinite(energy):
+        raise FloatingPointError("the local eigensolver returned a nonfinite residual")
+    residual = np.linalg.norm(residual_vector)
     return energy, vector, rank, float(residual)
-
-
-def _lowest_lanczos_vector(action, dimension, dtype, tolerance=1.0e-11):
-    """Return the lowest Ritz vector using stable full reorthogonalization."""
-
-    vector = np.ones(dimension, dtype=dtype)
-    vector /= np.linalg.norm(vector)
-    previous = np.zeros_like(vector)
-    previous_beta = 0.0
-    basis = []
-    diagonal = []
-    off_diagonal = []
-    coefficients = np.ones(1, dtype=dtype)
-
-    for iteration in range(dimension):
-        basis.append(vector)
-        residual = np.asarray(action(vector), dtype=dtype)
-        if iteration:
-            residual -= previous_beta * previous
-        alpha = float(np.real(np.vdot(vector, residual)))
-        diagonal.append(alpha)
-        residual -= alpha * vector
-        for _ in range(2):
-            for basis_vector in basis:
-                residual -= basis_vector * np.vdot(basis_vector, residual)
-        beta = float(np.linalg.norm(residual))
-
-        tridiagonal = np.diag(diagonal)
-        if off_diagonal:
-            indices = np.arange(len(off_diagonal))
-            tridiagonal[indices, indices + 1] = off_diagonal
-            tridiagonal[indices + 1, indices] = off_diagonal
-        values, vectors = np.linalg.eigh(tridiagonal)
-        coefficients = vectors[:, 0]
-        ritz_scale = max(1.0, abs(float(values[0])))
-        if (
-            beta <= np.finfo(float).eps
-            or (
-                iteration >= 3
-                and beta * abs(coefficients[-1]) <= tolerance * ritz_scale
-            )
-        ):
-            break
-        off_diagonal.append(beta)
-        previous = vector
-        previous_beta = beta
-        vector = residual / beta
-
-    result = np.column_stack(basis) @ coefficients
-    return result / np.linalg.norm(result)
 
 
 def _optimize_site_matrix_free(
@@ -496,9 +530,18 @@ def _optimize_site_matrix_free(
     old_vector = old_tensor.reshape(-1)
     if indices is not None:
         old_vector = old_vector[indices]
+    hamiltonian_applications = 0
+    original_action = action
+
+    def action(vector):
+        nonlocal hamiltonian_applications
+        hamiltonian_applications += 1
+        return original_action(vector)
+
+    old_applied = action(old_vector)
     old_energy = float(
         np.real(
-            np.vdot(old_vector, action(old_vector))
+            np.vdot(old_vector, old_applied)
             / np.vdot(old_vector, effective_metric @ old_vector)
         )
     )
@@ -507,12 +550,14 @@ def _optimize_site_matrix_free(
             action,
             effective_metric,
             options.metric_tolerance,
+            initial_vector=old_vector,
+            tolerance=options.eigensolver_tolerance,
+            max_iterations=options.eigensolver_max_iterations,
+            action_dtype=old_applied.dtype,
         )
     )
     trial_basis = np.column_stack([old_vector, candidate])
-    applied_basis = np.column_stack(
-        [action(trial_basis[:, column]) for column in range(2)]
-    )
+    applied_basis = np.column_stack([old_applied, action(candidate)])
     trial_hamiltonian = trial_basis.conj().T @ applied_basis
     trial_metric = trial_basis.conj().T @ (
         effective_metric @ trial_basis
@@ -523,8 +568,9 @@ def _optimize_site_matrix_free(
         options.metric_tolerance,
     )
     vector = trial_basis @ coefficients
-    vector /= np.sqrt(np.vdot(vector, effective_metric @ vector))
-    applied = action(vector)
+    normalization = np.sqrt(np.real(np.vdot(vector, effective_metric @ vector)))
+    vector /= normalization
+    applied = (applied_basis @ coefficients) / normalization
     residual = np.linalg.norm(
         applied - local_energy * (effective_metric @ vector)
     )
@@ -545,6 +591,9 @@ def _optimize_site_matrix_free(
         residual_norm=float(residual),
         accepted=accepted,
         full_local_dimension=old_tensor.size,
+        hamiltonian_applications=hamiltonian_applications,
+        metric_kind=(effective_metric.kind(options.metric_tolerance)
+                     if isinstance(effective_metric, DiagonalMetric) else "general"),
     )
 
 
@@ -586,24 +635,26 @@ def _update_from_cached_environments(
     if options.matrix_free and (
         options.cbe_enabled or active_dimension > options.dense_solver_threshold
     ):
+        prepared = hamiltonian_cache.prepare_effective_action(
+            hamiltonian_left, hamiltonian_right, site)
+        adjoint = (hamiltonian_cache.prepare_effective_action(
+            hamiltonian_left, hamiltonian_right, site, adjoint=True)
+            if compression_error > 0.0 else None)
+
+        def full_action(vector):
+            applied = prepared(vector)
+            if adjoint is not None:
+                # Match the Hermitian part for independently compressed sides.
+                applied = .5 * (applied + adjoint(vector))
+            return applied
         if indices is None:
-            action = lambda vector: hamiltonian_cache.effective_action(
-                hamiltonian_left,
-                hamiltonian_right,
-                site,
-                vector,
-            )
+            action = full_action
         else:
             full_dimension = state.tensors[site].size
 
             def action(vector):
                 full = _embed_local_vector(vector, indices, full_dimension)
-                applied = hamiltonian_cache.effective_action(
-                    hamiltonian_left,
-                    hamiltonian_right,
-                    site,
-                    full,
-                )
+                applied = full_action(full)
                 return applied[indices]
 
             effective_metric = _restrict_metric(effective_metric, indices)
@@ -641,13 +692,18 @@ def _shift_scalar_gauge(state, site, direction):
 
 
 def _shift_virtual_gauge(state, site, direction, mode="qr"):
+    from .gauge import _row_preserving_qr
+    if mode == "frontier":
+        from .gauge import shift_frontier_gauge
+        shift_frontier_gauge(state, site, direction)
+        return
     if mode == "none":
         return
     if mode == "scalar":
         _shift_scalar_gauge(state, site, direction)
         return
     if mode != "qr":
-        raise ValueError("gauge_mode must be 'qr', 'scalar', or 'none'.")
+        raise ValueError("gauge_mode must be 'qr', 'frontier', 'scalar', or 'none'.")
 
     if state.symmetry is not None:
         _shift_symmetry_virtual_gauge(state, site, direction)
@@ -659,7 +715,7 @@ def _shift_virtual_gauge(state, site, direction, mode="qr"):
             return
         tensor = state.tensors[site]
         matrix = tensor.reshape(-1, tensor.shape[-1])
-        q, r = np.linalg.qr(matrix, mode="reduced")
+        q, r = _row_preserving_qr(matrix)
         state.tensors[site] = q.reshape(tensor.shape[:-1] + (q.shape[1],))
         state.tensors[neighbor] = np.tensordot(
             r,
@@ -675,13 +731,26 @@ def _shift_virtual_gauge(state, site, direction, mode="qr"):
         return
     tensor = state.tensors[site]
     matrix = tensor.reshape(tensor.shape[0], -1)
-    q, r = np.linalg.qr(matrix.T, mode="reduced")
+    q, r = _row_preserving_qr(matrix.T)
     state.tensors[site] = q.T.reshape((q.shape[1],) + tensor.shape[1:])
     state.tensors[neighbor] = np.tensordot(
         state.tensors[neighbor],
         r.T,
         axes=([-1], [0]),
     )
+
+
+def _shift_gauge_and_extend_metric(state, site, direction, options, cache, boundary):
+    if options.gauge_mode == "frontier":
+        from .gauge import shift_frontier_gauge
+        outgoing, _report = shift_frontier_gauge(
+            state, site, direction, cache=cache, incoming=boundary,
+            tolerance=options.metric_tolerance,
+        )
+        return outgoing
+    _shift_virtual_gauge(state, site, direction, options.gauge_mode)
+    extend = cache.extend_left if direction == "lr" else cache.extend_right
+    return extend(boundary, site)
 
 
 def _charge_groups(charges):
@@ -693,6 +762,7 @@ def _charge_groups(charges):
 
 def _shift_symmetry_virtual_gauge(state, site, direction):
     """Apply QR independently in every virtual charge block."""
+    from .gauge import _row_preserving_qr
 
     if direction == "lr":
         neighbor = site + 1
@@ -707,7 +777,7 @@ def _shift_symmetry_virtual_gauge(state, site, direction):
         for columns in _charge_groups(state.right_virtual_charges(site)):
             rows = np.flatnonzero(np.any(mask[:, columns], axis=1))
             block = matrix[np.ix_(rows, columns)]
-            q, r = np.linalg.qr(block, mode="reduced")
+            q, r = _row_preserving_qr(block)
             width = columns.size
             padded_q = np.zeros((rows.size, width), dtype=q.dtype)
             padded_r = np.zeros((width, width), dtype=r.dtype)
@@ -737,7 +807,7 @@ def _shift_symmetry_virtual_gauge(state, site, direction):
     for rows in _charge_groups(state.left_virtual_charges(site)):
         columns = np.flatnonzero(np.any(mask[rows, :], axis=0))
         block = matrix[np.ix_(rows, columns)]
-        q, r = np.linalg.qr(block.T, mode="reduced")
+        q, r = _row_preserving_qr(block.T)
         width = rows.size
         padded_q = np.zeros((columns.size, width), dtype=q.dtype)
         padded_r = np.zeros((width, width), dtype=r.dtype)
@@ -806,13 +876,11 @@ def _cached_mpo_sweep(
                     options,
                 )
             )
-            _shift_virtual_gauge(state, site, direction, options.gauge_mode)
+            metric_boundary = _shift_gauge_and_extend_metric(
+                state, site, direction, options, metric_cache, metric_boundary
+            )
             hamiltonian_boundary = hamiltonian_cache.extend_left(
                 hamiltonian_boundary,
-                site,
-            )
-            metric_boundary = metric_cache.extend_left(
-                metric_boundary,
                 site,
             )
             hamiltonian_environments[site + 1] = hamiltonian_boundary
@@ -837,13 +905,11 @@ def _cached_mpo_sweep(
                     options,
                 )
             )
-            _shift_virtual_gauge(state, site, direction, options.gauge_mode)
+            metric_boundary = _shift_gauge_and_extend_metric(
+                state, site, direction, options, metric_cache, metric_boundary
+            )
             hamiltonian_boundary = hamiltonian_cache.extend_right(
                 hamiltonian_boundary,
-                site,
-            )
-            metric_boundary = metric_cache.extend_right(
-                metric_boundary,
                 site,
             )
             hamiltonian_environments[site] = hamiltonian_boundary
@@ -858,6 +924,16 @@ def _cached_mpo_sweep(
     )
 
 
+def _extend_saved_environment(cache, environment, site, direction):
+    if isinstance(cache, IdentityEnvironmentCache):
+        cut = site + 1 if direction == "lr" else site
+        saved = cache.saved_canonical(cut, direction)
+        if saved is not None:
+            return saved.environment
+    extend = cache.extend_left if direction == "lr" else cache.extend_right
+    return extend(environment, site)
+
+
 def _build_environment_checkpoints(cache, direction, block_size):
     nsites = cache.state.nsites
     block_size = int(block_size)
@@ -867,7 +943,7 @@ def _build_environment_checkpoints(cache, direction, block_size):
         environment = cache.scalar_boundary()
         checkpoints = {nsites: environment}
         for site in range(nsites - 1, -1, -1):
-            environment = cache.extend_right(environment, site)
+            environment = _extend_saved_environment(cache, environment, site, "rl")
             if site % block_size == 0:
                 checkpoints[site] = environment
         return checkpoints
@@ -875,7 +951,7 @@ def _build_environment_checkpoints(cache, direction, block_size):
         environment = cache.scalar_boundary()
         checkpoints = {0: environment}
         for site in range(nsites):
-            environment = cache.extend_left(environment, site)
+            environment = _extend_saved_environment(cache, environment, site, "lr")
             cut = site + 1
             if cut % block_size == 0 or cut == nsites:
                 checkpoints[cut] = environment
@@ -909,8 +985,8 @@ def _cached_mpo_column_sweep(
                 local_hamiltonian[site] = hamiltonian_cache.extend_right(
                     local_hamiltonian[site + 1], site
                 )
-                local_metric[site] = metric_cache.extend_right(
-                    local_metric[site + 1], site
+                local_metric[site] = _extend_saved_environment(
+                    metric_cache, local_metric[site + 1], site, "rl"
                 )
             for site in range(start, end):
                 updates.append(
@@ -926,11 +1002,12 @@ def _cached_mpo_column_sweep(
                         options,
                     )
                 )
-                _shift_virtual_gauge(state, site, direction, options.gauge_mode)
+                metric_boundary = _shift_gauge_and_extend_metric(
+                    state, site, direction, options, metric_cache, metric_boundary
+                )
                 hamiltonian_boundary = hamiltonian_cache.extend_left(
                     hamiltonian_boundary, site
                 )
-                metric_boundary = metric_cache.extend_left(metric_boundary, site)
             next_hamiltonian[end] = hamiltonian_boundary
             next_metric[end] = metric_boundary
     else:
@@ -951,8 +1028,8 @@ def _cached_mpo_column_sweep(
                 local_hamiltonian[site + 1] = hamiltonian_cache.extend_left(
                     local_hamiltonian[site], site
                 )
-                local_metric[site + 1] = metric_cache.extend_left(
-                    local_metric[site], site
+                local_metric[site + 1] = _extend_saved_environment(
+                    metric_cache, local_metric[site], site, "lr"
                 )
             for site in range(end - 1, start - 1, -1):
                 updates.append(
@@ -968,11 +1045,12 @@ def _cached_mpo_column_sweep(
                         options,
                     )
                 )
-                _shift_virtual_gauge(state, site, direction, options.gauge_mode)
+                metric_boundary = _shift_gauge_and_extend_metric(
+                    state, site, direction, options, metric_cache, metric_boundary
+                )
                 hamiltonian_boundary = hamiltonian_cache.extend_right(
                     hamiltonian_boundary, site
                 )
-                metric_boundary = metric_cache.extend_right(metric_boundary, site)
             next_hamiltonian[start] = hamiltonian_boundary
             next_metric[start] = metric_boundary
 
@@ -1037,11 +1115,13 @@ def _letta_dmrg_with_bond_schedule(
     bond_charges,
     options,
     schedule,
+    solve_started,
 ):
     dimensions, stage_sweeps = schedule
     current_state = state
     history = []
     max_discarded_weight = 0.0
+    canonical_reuses = canonical_hits = 0
     start_direction = options.start_direction.lower()
     final_result = None
 
@@ -1064,6 +1144,7 @@ def _letta_dmrg_with_bond_schedule(
             bond_dimension_schedule=None,
             bond_schedule_sweeps=None,
         )
+        stage_elapsed = perf_counter() - solve_started
         final_result = letta_dmrg(
             hamiltonian,
             state=current_state,
@@ -1083,10 +1164,13 @@ def _letta_dmrg_with_bond_schedule(
                 sweep,
                 sweep=offset + local_sweep,
                 bond_dimension=dimension,
+                elapsed_seconds=stage_elapsed + sweep.elapsed_seconds,
             )
             for local_sweep, sweep in enumerate(final_result.history, start=1)
         )
         current_state = final_result.state
+        canonical_reuses += final_result.canonical_environment_reuses
+        canonical_hits += final_result.canonical_metric_hits
         max_discarded_weight = max(
             max_discarded_weight,
             final_result.max_boundary_discarded_weight,
@@ -1102,6 +1186,8 @@ def _letta_dmrg_with_bond_schedule(
         history=tuple(history),
         message=final_result.message,
         max_boundary_discarded_weight=max_discarded_weight,
+        canonical_environment_reuses=canonical_reuses,
+        canonical_metric_hits=canonical_hits,
     )
 
 
@@ -1121,9 +1207,12 @@ def letta_dmrg(
 ):
     """Optimize a finite lattice LETTA by alternating one-site eigensweeps."""
 
+    solve_started = perf_counter()
     options = LETTADMROptions() if options is None else options
     if not isinstance(options, LETTADMROptions):
         raise TypeError("options must be a LETTADMROptions instance.")
+    if not isinstance(options.compression, MetricCompressionOptions):
+        raise TypeError("compression must be MetricCompressionOptions.")
     if options.max_sweeps <= 0:
         raise ValueError("max_sweeps must be positive.")
     if (
@@ -1137,8 +1226,10 @@ def letta_dmrg(
         raise ValueError("eigensolver_max_iterations must be positive.")
     if options.dense_solver_threshold <= 0:
         raise ValueError("dense_solver_threshold must be positive.")
-    if options.gauge_mode not in {"qr", "scalar", "none"}:
-        raise ValueError("gauge_mode must be 'qr', 'scalar', or 'none'.")
+    if options.gauge_mode not in {"qr", "frontier", "scalar", "none"}:
+        raise ValueError("gauge_mode must be 'qr', 'frontier', 'scalar', or 'none'.")
+    if options.gauge_mode == "frontier" and options.boundary_bond_dim is not None:
+        raise ValueError("frontier gauges require exact boundary environments.")
     if options.environment_granularity not in {"site", "column"}:
         raise ValueError("environment_granularity must be 'site' or 'column'.")
     if options.boundary_bond_dim is not None and options.boundary_bond_dim <= 0:
@@ -1171,6 +1262,21 @@ def letta_dmrg(
         raise ValueError("cbe_selection_tolerance must be positive.")
     if options.cbe_refinement_max_iterations <= 0:
         raise ValueError("cbe_refinement_max_iterations must be positive.")
+    if options.cbe_energy_refinement_max_iterations < 0:
+        raise ValueError("cbe_energy_refinement_max_iterations must be nonnegative.")
+    if options.cbe_energy_refinement_tolerance <= 0.0:
+        raise ValueError("cbe_energy_refinement_tolerance must be positive.")
+    for name in ("cbe_coupled_max_iterations", "cbe_coupled_max_parameters"):
+        value = getattr(options, name)
+        if not isinstance(value, (int, np.integer)) or value < 0:
+            raise ValueError(f"{name} must be a nonnegative integer.")
+    for name in ("cbe_coupled_metric_tolerance", "cbe_coupled_activation_ratio",
+                 "cbe_coupled_energy_threshold"):
+        value = getattr(options, name)
+        if not np.isfinite(value) or value <= 0.0:
+            raise ValueError(f"{name} must be finite and positive.")
+    if options.cbe_coupled_metric_tolerance >= 1.0:
+        raise ValueError("cbe_coupled_metric_tolerance must be less than one.")
     if options.cbe_projection_tolerance <= 0.0:
         raise ValueError("cbe_projection_tolerance must be positive.")
     if options.cbe_projection_max_iterations <= 0:
@@ -1226,6 +1332,7 @@ def letta_dmrg(
             bond_charges=bond_charges,
             options=options,
             schedule=schedule,
+            solve_started=solve_started,
         )
     direction = options.start_direction.lower()
     if direction not in {"lr", "rl"}:
@@ -1252,8 +1359,20 @@ def letta_dmrg(
             tuple(charges) for charges in bond_charges
         ):
             raise ValueError("supplied state and bond_charges do not match.")
-        state = state.copy()
+        if options.gauge_mode == "frontier":
+            from .canonical import copy_canonical_state
+            state = copy_canonical_state(state)
+        else:
+            state = state.copy()
     hamiltonian = _validate_hamiltonian(hamiltonian, state)
+    if options.gauge_mode == "frontier":
+        if not isinstance(hamiltonian, LatticeMPO):
+            raise ValueError("frontier gauge sweeps require an MPO Hamiltonian.")
+        from .gauge import canonicalize_frontier
+        canonicalize_frontier(
+            state, 0 if direction == "lr" else state.nsites - 1,
+            tolerance=options.metric_tolerance,
+        )
     if options.cbe_enabled and not isinstance(hamiltonian, LatticeMPO):
         raise ValueError("LETTA-CBE currently requires an MPO Hamiltonian.")
     if options.cbe_enabled and state.symmetry is not None:
@@ -1314,6 +1433,8 @@ def letta_dmrg(
             )
         else:
             previous_energy = state.expectation(hamiltonian)
+        if options.cbe_enabled:
+            previous_energy = state.expectation(hamiltonian)
     else:
         previous_energy = state.expectation(hamiltonian)
     history = []
@@ -1346,7 +1467,7 @@ def letta_dmrg(
                 metric_environments = metric_cache.build_left_environments()
         sweep_start = (
             [tensor.copy() for tensor in state.tensors]
-            if compressed_sweep
+            if isinstance(hamiltonian, LatticeMPO)
             else None
         )
         compressed_sweep_rejected = False
@@ -1365,10 +1486,13 @@ def letta_dmrg(
                 direction,
                 options,
             )
-            if compressed_sweep:
+            if isinstance(hamiltonian, LatticeMPO):
+                # Cached quadratic forms can lose accuracy in a poorly
+                # conditioned gauge, even with uncompressed environments.
+                # Base acceptance and stopping on a fresh whole-network energy.
                 exact_sweep_energy = state.expectation(hamiltonian)
                 if (
-                    exact_sweep_energy
+                    not np.isfinite(exact_sweep_energy) or exact_sweep_energy
                     > previous_energy + options.energy_increase_tolerance
                 ):
                     state.tensors = [
@@ -1400,6 +1524,7 @@ def letta_dmrg(
                 energy_density_change=energy_density_change,
                 bond_dimension=nominal_bond_dimension,
                 updates=updates,
+                elapsed_seconds=perf_counter() - solve_started,
             )
         )
         if options.verbosity:
@@ -1409,16 +1534,24 @@ def letta_dmrg(
                 f"dE/site={energy_density_change:.3e}"
             )
         if compressed_sweep_rejected:
-            message = "STOP: COMPRESSED BOUNDARY SWEEP FAILED EXACT ENERGY CHECK"
+            message = ("STOP: COMPRESSED BOUNDARY SWEEP FAILED EXACT ENERGY CHECK"
+                       if compressed_sweep else "STOP: SWEEP FAILED FRESH ENERGY CHECK")
             break
-        if energy_density_change <= options.tolerance:
+        if energy_density_change <= options.tolerance and not any(
+            update.cbe_recovery_reason for update in updates
+        ):
             converged = True
             message = "CONVERGENCE: SWEEP ENERGY DENSITY CHANGE <= TOLERANCE"
             break
         previous_energy = energy
         if options.alternate:
             direction = "rl" if direction == "lr" else "lr"
-        elif isinstance(hamiltonian, LatticeMPO):
+        elif isinstance(hamiltonian, LatticeMPO) and sweep < options.max_sweeps:
+            if options.gauge_mode == "frontier":
+                canonicalize_frontier(
+                    state, 0 if direction == "lr" else state.nsites - 1,
+                    tolerance=options.metric_tolerance,
+                )
             if options.environment_granularity == "column":
                 block_size = int(np.prod(state.lattice_shape[1:]))
                 build_direction = "rl" if direction == "lr" else "lr"
@@ -1451,4 +1584,6 @@ def letta_dmrg(
         history=tuple(history),
         message=message,
         max_boundary_discarded_weight=max(compression_errors, default=0.0),
+        canonical_environment_reuses=getattr(metric_cache, "canonical_reuses", 0),
+        canonical_metric_hits=getattr(metric_cache, "canonical_metric_hits", 0),
     )

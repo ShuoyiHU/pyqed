@@ -17,29 +17,53 @@ from .reduced_symmetry import ReducedPhysicalBasis, _sector_irrep
 
 @dataclass(frozen=True)
 class ReducedMPOHamiltonian:
-    """Compact reduced MPO plus an exact local magnetic-component view."""
+    """Scalar MPO with native reduced contractions and a component reference.
 
-    factors: tuple
+    ``factors`` optionally preserves the builder's original reduced view.
+    Native sweeps compile ``canonical_factors`` into an explicitly irreducible
+    operator MPO once, independently of the builder's virtual spin labels.
+    ``contraction_backend='components'`` selects the validation reference.
+    """
+
+    factors: tuple | None
     canonical_factors: tuple
     name: str = "reduced MPO"
+    contraction_backend: str = "reduced"
 
     def __post_init__(self):
-        factors = tuple(self.factors)
+        if self.contraction_backend not in {'reduced', 'components'}:
+            raise ValueError('contraction_backend must be reduced or components')
+        factors = None if self.factors is None else tuple(self.factors)
         canonical = tuple(self.canonical_factors)
-        if not factors or len(factors) != len(canonical):
+        if not canonical or (factors is not None and len(factors) != len(canonical)):
             raise ValueError(
                 "factors and canonical_factors must be nonempty equal-length chains"
             )
         object.__setattr__(self, "factors", factors)
         object.__setattr__(self, "canonical_factors", canonical)
 
+    def native_mpo(self, physical_basis):
+        """Compile and cache an irreducible operator MPO for reduced sweeps."""
+        from .reduced_mpo_compile import SpinTensorMPO
+        cached = getattr(self, '_native_mpo_cache', None)
+        if cached is None:
+            cached = {}
+            object.__setattr__(self, '_native_mpo_cache', cached)
+        if physical_basis not in cached:
+            cached[physical_basis] = SpinTensorMPO.compile(self.canonical_factors, physical_basis)
+        return cached[physical_basis]
+
     def __len__(self):
-        return len(self.factors)
+        return len(self.canonical_factors)
 
     def __iter__(self):
+        if self.factors is None:
+            raise TypeError('this Hamiltonian exposes canonical_factors only')
         return iter(self.factors)
 
     def __getitem__(self, item):
+        if self.factors is None:
+            raise TypeError('this Hamiltonian exposes canonical_factors only')
         return self.factors[item]
 
 

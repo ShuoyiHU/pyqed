@@ -31,6 +31,8 @@ from .reduced_operators import (
     physical_leg_from_reduced_basis,
 )
 from .reduced_state import ReducedLatticeLETTA
+from .reduced_norm import ReducedNormChain, left_canonical_reduced_sites
+from .reduced_environment import ReducedEnvironmentChain
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,8 @@ class ReducedLocalProblem:
     metric: np.ndarray | None = None
     hamiltonian_action: object | None = None
     metric_action: object | None = None
+    metric_scale: float | None = None
+    metric_projector_factory: object | None = None
 
     @property
     def local_dimension(self):
@@ -99,11 +103,11 @@ def _validate_reduced_mpo(hamiltonian, state):
         )
     wrapped = isinstance(hamiltonian, ReducedMPOHamiltonian)
     factors = (
-        hamiltonian.factors
+        (hamiltonian.factors or ())
         if wrapped
         else tuple(hamiltonian)
     )
-    if len(factors) != state.nsites:
+    if (not wrapped or hamiltonian.factors is not None) and len(factors) != state.nsites:
         raise ValueError(
             f"reduced MPO has {len(factors)} factors, expected {state.nsites}"
         )
@@ -138,13 +142,15 @@ def _validate_reduced_mpo(hamiltonian, state):
             "a reduced MPO chain must use either rank-coupled factors at every "
             "site or scalar factors at every site"
         )
-    if all(rank_coupled) and not wrapped:
+    if factors and all(rank_coupled) and not wrapped:
         raise ValueError(
             "rank-coupled factors require ReducedMPOHamiltonian with an exact "
             "canonical_factors view; raw rank-coupled chains are ambiguous "
             "beyond two sites"
         )
     if wrapped:
+        if len(hamiltonian.canonical_factors) != state.nsites:
+            raise ValueError('canonical MPO must contain one factor per site')
         canonical_expected = physical_leg_from_reduced_basis(
             state.physical_basis, fully_reduced=False
         )
@@ -343,18 +349,19 @@ def _projected_canonical_local_problem(
     frontier = ReducedFrontier.from_state(state)
     sites = tuple(frontier.to_mps(state))
     embedding = frontier.site_embedding(state, site)
+    if hamiltonian.contraction_backend == 'reduced':
+        return _native_local_problem(state, hamiltonian, site, sites, embedding,
+                                     matrix_free, dense_solver_threshold)
     hamiltonian_chain = CanonicalEnvironmentChain.build(
         sites, hamiltonian.canonical_factors
     )
-    metric_chain = CanonicalEnvironmentChain.build(
-        sites, identity_canonical_factors(sites)
-    )
+    metric_chain = ReducedNormChain.build(sites)
     hamiltonian_action = lambda vector: _canonical_source_action(
         hamiltonian_chain, sites, embedding, site, vector
     )
-    metric_action = lambda vector: _canonical_source_action(
-        metric_chain, sites, embedding, site, vector
-    )
+    metric_action = lambda vector: embedding.adjoint(embedding.pack_target(
+        metric_chain.local_action(site, embedding.unpack_target(embedding.apply(vector)))
+    ))
     if bool(matrix_free) and embedding.source_size > int(dense_solver_threshold):
         return ReducedLocalProblem(
             site=int(site),
@@ -366,7 +373,7 @@ def _projected_canonical_local_problem(
 
     source_frame = _expanded_source_frame(sites, embedding, site)
     local_h = hamiltonian_chain.local_matrix(site, source_frame)
-    metric = metric_chain.local_matrix(site, source_frame)
+    metric = np.column_stack([metric_action(v) for v in np.eye(embedding.source_size)])
     return ReducedLocalProblem(
         site=int(site),
         frame=None,
@@ -376,6 +383,57 @@ def _projected_canonical_local_problem(
         hamiltonian_action=hamiltonian_action,
         metric_action=metric_action,
     )
+
+
+def _native_local_problem(state, hamiltonian, site, sites, embedding,
+                          matrix_free, dense_solver_threshold, *, chains=None):
+    if chains is None:
+        h_chain = ReducedEnvironmentChain.build(sites, hamiltonian.native_mpo(state.physical_basis))
+        n_chain = ReducedNormChain.build(sites)
+    else:
+        h_chain, n_chain = chains
+    def action(chain, vector):
+        blocks = embedding.unpack_target(embedding.apply(vector))
+        return embedding.adjoint(embedding.pack_target(chain.local_action(site, blocks)))
+    h_action = lambda v: action(h_chain, v)
+    n_action = lambda v: action(n_chain, v)
+    h, n = None, None
+    if not matrix_free or embedding.source_size <= dense_solver_threshold:
+        identity = np.eye(embedding.source_size)
+        h = np.column_stack([h_action(v) for v in identity])
+        n = np.column_stack([n_action(v) for v in identity])
+        h = .5*(h+h.conj().T)
+        n = .5*(n+n.conj().T)
+    return ReducedLocalProblem(site=int(site), frame=None, embedding=embedding,
+        hamiltonian=h, metric=n, hamiltonian_action=h_action, metric_action=n_action,
+        metric_scale=n_chain.metric_scale(site, embedding.target_layout.keys, embedding=embedding),
+        metric_projector_factory=lambda tol: n_chain.local_projector(site, embedding, tol))
+
+
+class ReducedSweepContext:
+    """Moving native environments for one-site sweeps with frontier gauges."""
+
+    def __init__(self, state, hamiltonian):
+        self.state, self.hamiltonian = state, hamiltonian
+        self.frontier = ReducedFrontier.from_state(state)
+        self.embeddings = tuple(self.frontier.site_embedding(state, i) for i in range(state.nsites))
+        self.sites = list(self.frontier.to_mps(state))
+        self.h_chain = ReducedEnvironmentChain.build(self.sites, hamiltonian.native_mpo(state.physical_basis))
+        self.n_chain = ReducedNormChain.build(self.sites)
+
+    def synchronize(self, indices):
+        changes = {}
+        for i in indices:
+            a = self.sites[i].copy()
+            a.data = self.embeddings[i].expand_blocks(self.state.tensors[i])
+            changes[i] = self.sites[i] = a
+        self.h_chain.replace_sites(changes)
+        self.n_chain.replace_sites(changes)
+
+    def local_problem(self, site, options):
+        return _native_local_problem(self.state, self.hamiltonian, site, self.sites,
+            self.embeddings[site], options.matrix_free, options.dense_solver_threshold,
+            chains=(self.h_chain, self.n_chain))
 
 
 def reduced_local_frame(state, site):
@@ -485,6 +543,12 @@ def _matrix_free_generalized_davidson(problem, options, initial_vector):
     initial_vector = np.asarray(initial_vector, dtype=complex).reshape(-1)
     if initial_vector.size != problem.local_dimension:
         raise ValueError("initial_vector has incompatible local dimension")
+    dimension = problem.local_dimension
+    lindep = max(float(options.metric_tolerance), np.finfo(float).eps*dimension)
+    factory = getattr(problem, 'metric_projector_factory', None)
+    projector = None if factory is None else factory(lindep)
+    if projector is not None:
+        initial_vector = projector(initial_vector)
     metric_initial = problem.apply_metric(initial_vector)
     norm_squared = float(np.real(np.vdot(initial_vector, metric_initial)))
     if not np.isfinite(norm_squared) or norm_squared <= np.finfo(float).tiny:
@@ -498,6 +562,18 @@ def _matrix_free_generalized_davidson(problem, options, initial_vector):
     )
     max_space = min(dimension, 48)
     minimum_explored = min(dimension, max_space, 16)
+    metric_scale = getattr(problem, 'metric_scale', None)
+    if metric_scale is None:
+        # Generic reference paths have no analytic bound. Estimate the scale
+        # in the supported space; native LETTA supplies a Kronecker bound.
+        probe = metric_initial.copy()
+        metric_scale = 0.
+        for _ in range(8):
+            norm = np.linalg.norm(probe)
+            if norm == 0:
+                break
+            probe = problem.apply_metric(probe/norm)
+            metric_scale = max(metric_scale, float(np.linalg.norm(probe)))
     basis = initial_vector[:, None]
     metric_basis = metric_initial[:, None]
     hamiltonian_basis = problem.apply_hamiltonian(initial_vector)[:, None]
@@ -505,20 +581,30 @@ def _matrix_free_generalized_davidson(problem, options, initial_vector):
 
     def metric_orthogonalize(candidate, metric_candidate=None):
         candidate = np.asarray(candidate, dtype=complex).reshape(-1)
+        if projector is not None:
+            candidate = projector(candidate)
+            metric_candidate = None
         metric_candidate = (
             problem.apply_metric(candidate)
             if metric_candidate is None
             else np.asarray(metric_candidate, dtype=complex).reshape(-1)
         )
+        original_norm = abs(float(np.real(np.vdot(candidate, metric_candidate))))
         for _ in range(2):
             overlaps = basis.conj().T @ metric_candidate
             candidate = candidate - basis @ overlaps
             metric_candidate = metric_candidate - metric_basis @ overlaps
+        # Subtracting cached N-vectors can leave cancellation noise after the
+        # actual vector has entered the metric nullspace. Reapply N and compare
+        # with the *pre-orthogonalization* norm before amplifying that noise.
+        metric_candidate = problem.apply_metric(candidate)
         metric_norm_squared = float(np.real(np.vdot(candidate, metric_candidate)))
         scale = float(np.linalg.norm(candidate) * np.linalg.norm(metric_candidate))
+        euclidean_norm_squared = float(np.real(np.vdot(candidate, candidate)))
         if (
             not np.isfinite(metric_norm_squared)
-            or metric_norm_squared <= lindep * max(scale, np.finfo(float).tiny)
+            or metric_norm_squared <= lindep * max(original_norm, scale,
+                metric_scale*euclidean_norm_squared, np.finfo(float).tiny)
         ):
             return None, None
         normalization = np.sqrt(metric_norm_squared)
@@ -641,6 +727,11 @@ def _solve_local_problem(problem, options, *, initial_vector):
 def _mpo_expectation(state, factors, *, stable=False):
     if isinstance(factors, ReducedMPOHamiltonian):
         sites = tuple(ReducedFrontier.from_state(state).to_mps(state))
+        if factors.contraction_backend == 'reduced':
+            if stable:
+                sites = left_canonical_reduced_sites(sites)
+            chain = ReducedEnvironmentChain.build(sites, factors.native_mpo(state.physical_basis))
+            return chain.expectation()
         chain = CanonicalEnvironmentChain.build(
             sites, factors.canonical_factors
         )
@@ -666,14 +757,9 @@ def _energy(state, hamiltonian, *, stable=False):
         numerator = _mpo_expectation(state, hamiltonian, stable=stable)
         if isinstance(hamiltonian, ReducedMPOHamiltonian):
             sites = tuple(ReducedFrontier.from_state(state).to_mps(state))
-            metric_chain = CanonicalEnvironmentChain.build(
-                sites, identity_canonical_factors(sites)
-            )
-            denominator = (
-                metric_chain.stable_expectation()
-                if stable
-                else metric_chain.expectation()
-            )
+            if stable:
+                sites = left_canonical_reduced_sites(sites)
+            denominator = ReducedNormChain.build(sites).expectation()
         else:
             denominator = _mpo_expectation(
                 state, _identity_mpo_factors(tuple(hamiltonian))
@@ -684,12 +770,12 @@ def _energy(state, hamiltonian, *, stable=False):
     return float(np.real(np.vdot(vector, hamiltonian @ vector) / denominator))
 
 
-def optimize_reduced_site(state, hamiltonian, site, options):
+def optimize_reduced_site(state, hamiltonian, site, options, *, context=None):
     """Solve and accept one exact reduced local generalized eigenproblem."""
 
     from .solver import LETTASiteUpdate
 
-    problem = reduced_local_problem(
+    problem = context.local_problem(site, options) if context is not None else reduced_local_problem(
         state,
         hamiltonian,
         site,
@@ -704,6 +790,10 @@ def optimize_reduced_site(state, hamiltonian, site, options):
     old_blocks = {
         key: block.copy() for key, block in state.tensors[int(site)].items()
     }
+    # Cached local H/N contractions can lose accuracy near the metric nullspace.
+    # Decide acceptance with an independently QR-conditioned reduced contraction,
+    # also when the eigensolver uses moving environments. This does not expand
+    # a determinant vector or change the variational state.
     old_energy = _energy(state, hamiltonian, stable=True)
     state.tensors[int(site)] = problem.embedding.unpack_source(vector)
     new_energy = _energy(state, hamiltonian, stable=True)
@@ -712,7 +802,17 @@ def optimize_reduced_site(state, hamiltonian, site, options):
         state.tensors[int(site)] = old_blocks
         new_energy = old_energy
     else:
-        state.balance_scalar_gauge()
+        # The invariant MPO metric sums target M, whereas state.norm uses one
+        # component. Restore the public convention without disturbing other
+        # sites' conditional gauges (also necessary for non-singlets).
+        if context is None:
+            state.normalize(center=int(site), balance=options.gauge_mode != 'frontier')
+        else:
+            norm = float(np.real(np.vdot(vector, problem.apply_metric(vector))))
+            state.tensors[int(site)] = problem.embedding.unpack_source(
+                vector*np.sqrt((state.target_two_j+1)/norm))
+    if context is not None:
+        context.synchronize([site])
     return LETTASiteUpdate(
         site=int(site),
         local_energy=local_energy,
@@ -742,21 +842,36 @@ def reduced_letta_dmrg(hamiltonian, *, state, options):
     direction = str(options.start_direction).lower()
     if direction not in {"lr", "rl"}:
         raise ValueError("start_direction must be 'lr' or 'rl'")
+    if options.gauge_mode == 'frontier':
+        from .reduced_gauge import canonicalize_reduced_frontier, shift_reduced_frontier_gauge
+        canonicalize_reduced_frontier(state, 0 if direction == 'lr' else state.nsites-1,
+                                      tolerance=options.metric_tolerance)
     previous_energy = _energy(state, hamiltonian, stable=True)
     history = []
     converged = False
     message = "STOP: MAXIMUM SWEEPS REACHED"
     nominal_bond = max((len(bond) for bond in state.bond_sectors), default=1)
+    context = (ReducedSweepContext(state, hamiltonian)
+        if isinstance(hamiltonian, ReducedMPOHamiltonian)
+        and hamiltonian.contraction_backend == 'reduced' and options.gauge_mode == 'frontier' else None)
     for sweep in range(1, int(options.max_sweeps) + 1):
         sites = (
             range(state.nsites)
             if direction == "lr"
             else range(state.nsites - 1, -1, -1)
         )
-        updates = tuple(
-            optimize_reduced_site(state, hamiltonian, site, options)
-            for site in sites
-        )
+        updates = []
+        for site in sites:
+            updates.append(optimize_reduced_site(state, hamiltonian, site, options, context=context))
+            if options.gauge_mode == 'frontier':
+                cut = site+1 if direction == 'lr' else site
+                if 0 < cut < state.nsites:
+                    shift_reduced_frontier_gauge(state, cut, direction,
+                        tolerance=options.metric_tolerance,
+                        environment=None if context is None else (context.n_chain, context.frontier))
+                    if context is not None:
+                        context.synchronize([cut-1, cut])
+        updates = tuple(updates)
         energy = _energy(state, hamiltonian, stable=True)
         change = abs(energy - previous_energy)
         density_change = change / state.nsites

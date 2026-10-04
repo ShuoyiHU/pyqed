@@ -1,7 +1,10 @@
 """Shared finite-LETTA state, contractions, and one-site optimization."""
 
+from .._letta_compression import MetricCompressionOptions
+
 from .contractions import (
     BlockDiagonalMetric,
+    DiagonalMetric,
     BoundaryMPS,
     IdentityEnvironmentCache,
     LETTAEnvironmentCache,
@@ -27,6 +30,14 @@ from .solver import (
     letta_dmrg,
 )
 from .state import LatticeLETTA
+from .transfer import SegmentTransfer, CompressedSegmentTransfer
+from .gauge import (
+    FrontierGaugeCut,
+    FrontierGaugeReport,
+    canonicalize_frontier,
+    frontier_gauge_cuts,
+    shift_frontier_gauge,
+)
 from .symmetry import AbelianSymmetry
 from .reduced_symmetry import (
     ReducedBasisState,
@@ -34,6 +45,9 @@ from .reduced_symmetry import (
     ReducedSymmetry,
 )
 from .reduced_state import ReducedLatticeLETTA
+from .reduced_gauge import (
+    canonicalize_reduced_frontier, reduced_frontier_grams, shift_reduced_frontier_gauge,
+)
 from .reduced_frontier import (
     FrontierSiteEmbedding,
     ReducedFrontier,
@@ -54,7 +68,19 @@ from .reduced_solver import (
 )
 
 __all__ = [
+    "canonicalize_reduced_frontier",
+    "reduced_frontier_grams",
+    "shift_reduced_frontier_gauge",
+    "SegmentTransfer",
+    "CompressedSegmentTransfer",
+    "MetricCompressionOptions",
+    "FrontierGaugeCut",
+    "FrontierGaugeReport",
+    "canonicalize_frontier",
+    "frontier_gauge_cuts",
+    "shift_frontier_gauge",
     "BlockDiagonalMetric",
+    "DiagonalMetric",
     "AbelianSymmetry",
     "BoundaryMPS",
     "IdentityEnvironmentCache",

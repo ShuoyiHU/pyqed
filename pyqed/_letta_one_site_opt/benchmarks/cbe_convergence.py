@@ -206,6 +206,7 @@ def _one_site_record(result, solver, elapsed, fingerprint, exact_energy):
             update.cbe_baseline_allowance for update in expanded_updates
         ),
         "sweep_energies": [float(sweep.energy) for sweep in result.history],
+        "sweep_elapsed_seconds": [sweep.elapsed_seconds for sweep in result.history],
     }
     return record
 
@@ -218,6 +219,7 @@ def _two_site_record(result, elapsed, fingerprint, exact_energy):
     ]
     return {
         "solver": "two_site",
+        "sweep_elapsed_seconds": [sweep.elapsed_seconds for sweep in result.history],
         "initial_state_fingerprint": fingerprint,
         "energy": float(result.energy),
         "energy_error": (
@@ -344,6 +346,15 @@ def run_comparison(
             )
         if _state_fingerprint(initial_state) != fingerprint:
             raise RuntimeError("a benchmark solver mutated the shared initial state.")
+        record.update(
+            converged=bool(result.converged),
+            sweep_definition="one directional pass (LR or RL)",
+            final_energy_density_change=float(result.history[-1].energy_density_change),
+            local_hamiltonian_applications=sum(
+                update.hamiltonian_applications
+                for sweep in result.history for update in sweep.updates
+            ),
+        )
         records.append(record)
 
     return {
@@ -360,13 +371,14 @@ def run_comparison(
         "records": records,
         "cost_note": (
             "The exact selector materializes the pair metric and tangent "
-            "Jacobian. The strict shrewd selector streams weighted half "
-            "contractions through sparse MPO transitions, then raises and "
-            "tangent-projects (H-E*N)psi in a restricted expanded one-site "
-            "metric. It solves only that one-site problem and trims in the "
-            "one-site LETTA metric. It invokes no pair action, pair metric, "
-            "or merged-pair tensor. See the cbe_scaling benchmark for "
-            "opt_einsum path evidence for the Hamiltonian contractions."
+            "Jacobian. Strict CBE preserves physical connectors and selects "
+            "within legal shared-output blocks, using the full old tangent "
+            "projector and a restricted Schur metric. Supported separable "
+            "metrics use SVD; other metrics use ALS. Each expanded update solves a one-site candidate and "
+            "a separate ordinary baseline, with one-site-metric trimming. "
+            "The strict selector invokes no pair action, pair metric, "
+            "or merged-pair tensor. This alone does not imply single-site cost; "
+            "physical frontiers and one-site cross-Gram factorization also count."
         ),
     }
 
@@ -384,7 +396,7 @@ def _parse_shape(value):
 def _print_table(report):
     print(
         "solver             energy             error          seconds  "
-        "cbe-ok  fallback  baseline  missing-norm  captured  dE-expand   dE-trim"
+        "swp  conv     dE/site  cbe-ok  fallback  baseline  missing-norm  captured  dE-expand   dE-trim"
     )
     for record in report["records"]:
         error = record["energy_error"]
@@ -394,6 +406,8 @@ def _print_table(report):
             f"{record['energy']: .12f}  "
             f"{error_text:>11}  "
             f"{record['elapsed_seconds']:7.3f}  "
+            f"{record['sweeps']:3d}  {str(record['converged']):>5}  "
+            f"{record['final_energy_density_change']:10.2e}  "
             f"{record['cbe_accepted']:6d}  "
             f"{record['cbe_fallbacks']:8d}  "
             f"{record['cbe_baseline_selected']:8d}  "
@@ -402,6 +416,7 @@ def _print_table(report):
             f"{record['mean_expanded_energy_gain']:9.3e}  "
             f"{record['mean_trimmed_energy_gain']:9.3e}"
         )
+    print("LETTA swp = one directional pass (LR or RL); two passes make one LR+RL cycle.")
     print(report["cost_note"])
 
 

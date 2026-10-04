@@ -22,6 +22,7 @@ SCRIPTS = (
     "heisenberg_2d.py",
     "bose_hubbard_2d.py",
     "fermi_hubbard_2d.py",
+    "hubbard_holstein_1d.py",
 )
 SOLVERS = (
     "letta_one_site",
@@ -95,6 +96,10 @@ def test_each_model_script_click_runs_from_an_unrelated_directory(
             "1",
             "--exact-max-dimension",
             "1",
+            "--eigensolver-tolerance",
+            "1e-9",
+            "--eigensolver-max-iterations",
+            "200",
         ],
         cwd=tmp_path,
         env=environment,
@@ -103,17 +108,24 @@ def test_each_model_script_click_runs_from_an_unrelated_directory(
         timeout=120,
     )
     assert completed.returncode == 0, completed.stderr
+    assert "FAILED" not in completed.stdout, completed.stdout
+    assert "dE/site" in completed.stdout
+    assert "swp" in completed.stdout
     for solver in SOLVERS:
         assert solver in completed.stdout
 
 
-def test_suite_registry_contains_all_eight_cases():
+def test_suite_registry_contains_original_models_and_nn_chains():
     from pyqed._letta_one_site_opt.benchmarks.run_condensed_suite import (
         SUITE_CASES,
         run_suite,
     )
 
-    assert len(SUITE_CASES) == 8
+    from pyqed._letta_one_site_opt.benchmarks.nn_chain_models import CHAIN_MODEL_DEFAULTS
+
+    assert len(SUITE_CASES) == 9 + len(CHAIN_MODEL_DEFAULTS)
+    assert ("hubbard_holstein", "1d") in SUITE_CASES
+    assert all((name, "1d") in SUITE_CASES for name in CHAIN_MODEL_DEFAULTS)
     report = run_suite(
         length=2,
         shape=(2, 2),
@@ -123,5 +135,5 @@ def test_suite_registry_contains_all_eight_cases():
         exact_max_dimension=1,
         solvers=("letta_one_site",),
     )
-    assert len(report["cases"]) == 8
+    assert len(report["cases"]) == len(SUITE_CASES)
     assert report["failures"] == {}

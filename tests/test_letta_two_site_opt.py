@@ -44,7 +44,7 @@ def _dense_pair_frame(state, layout):
 
 
 def test_two_site_defaults_use_environment_weighted_truncation():
-    assert LETTATwoSiteOptions().split_method == "metric-als"
+    assert LETTATwoSiteOptions().split_method == "metric-als-energy"
     assert LETTATwoSiteOptions().energy_refinement_max_iterations == 8
 
 

@@ -1,0 +1,1960 @@
+{
+  "base": "e0dff433a8ddd002c794d07228d284aa5879496c",
+  "sources": {
+    "bg": {
+      "path": "/Users/shuoyihu/Documents/GitHub/pyqed",
+      "head": "26addb2bb6b881445ec55b00d5fd4d3e38c1984c"
+    },
+    "qc": {
+      "path": "/Users/shuoyihu/Documents/ChatGPT/LETTA/pyqed-letta-qchem",
+      "head": "81a46266222cfd5421d715046ab51cec65b32b87"
+    }
+  },
+  "files": [
+    {
+      "path": "examples/qchem/abelian_dmrgscf.py",
+      "bg_sha256": "0087753670f697a3756440cdb7aebdbe99511b9c6ff4da44e70bcfc1691ce18a",
+      "qc_sha256": "0087753670f697a3756440cdb7aebdbe99511b9c6ff4da44e70bcfc1691ce18a",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/benchmark_am1_mopac.py",
+      "bg_sha256": "32f693887375ff405e20131b74b32c8c8315ab901012b2d4794a8abe81f28d6c",
+      "qc_sha256": "32f693887375ff405e20131b74b32c8c8315ab901012b2d4794a8abe81f28d6c",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/benchmark_casci.py",
+      "bg_sha256": "b69e050baeea4597027cb4607fd9318b018c91d34edb5b01d95858cc4de83eea",
+      "qc_sha256": "b69e050baeea4597027cb4607fd9318b018c91d34edb5b01d95858cc4de83eea",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/benchmark_casci_pcm_pyscf.py",
+      "bg_sha256": "857104ca43d4028dfbee3f69f8258de10912d5225804357a5ea1e908ef27476d",
+      "qc_sha256": "857104ca43d4028dfbee3f69f8258de10912d5225804357a5ea1e908ef27476d",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/benchmark_cd_orca.py",
+      "bg_sha256": "bb489862a7b98924524505c91d3ef743c13cb378e974f917f14b8fe1c0cdf914",
+      "qc_sha256": "bb489862a7b98924524505c91d3ef743c13cb378e974f917f14b8fe1c0cdf914",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/benchmark_feco5_pyqed.py",
+      "qc_sha256": "dc2be3d89c58b76254bb5951a14fbd1165b2a486361b5e3a9f9136b55264090c",
+      "integration": "qc"
+    },
+    {
+      "path": "examples/qchem/benchmark_feco5_pyqed_matched.py",
+      "qc_sha256": "b6c03844f74ef9f0a84715f482d73a847bc06c70e2256c452cbf86396524a482",
+      "integration": "qc"
+    },
+    {
+      "path": "examples/qchem/benchmark_ir_rks_h2o_vs_pyscf.py",
+      "bg_sha256": "3838ee0b0a9db193686b7d40afec9a7ded5bc0dc29fc9b108de1c0ce18a00a5e",
+      "qc_sha256": "3838ee0b0a9db193686b7d40afec9a7ded5bc0dc29fc9b108de1c0ce18a00a5e",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/benchmark_letta_native_su2.py",
+      "qc_sha256": "bfd9b4bf75c2a9dede91def7f646cb520031ef9c8017d96817e7d5c146bb45f1",
+      "integration": "qc"
+    },
+    {
+      "path": "examples/qchem/benchmark_letta_symmetry_speed.py",
+      "qc_sha256": "a1bfd8ca0c1f8afe59260892d745aebe71af7d62174087955da41371143bf09b",
+      "integration": "qc"
+    },
+    {
+      "path": "examples/qchem/benchmark_om2_published.py",
+      "bg_sha256": "520580f66b8efb475815de8cc66402e88a68f0abdc2c66da61a00d75392d235d",
+      "qc_sha256": "520580f66b8efb475815de8cc66402e88a68f0abdc2c66da61a00d75392d235d",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/benchmark_pcm_rhf_pyscf.py",
+      "bg_sha256": "bc6a8344caae12913ef4c66d4e52f32ca244cba057b013eb04b41de5918e5e62",
+      "qc_sha256": "bc6a8344caae12913ef4c66d4e52f32ca244cba057b013eb04b41de5918e5e62",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/benchmark_qcdmrg_vs_pyscf_dmrg.py",
+      "bg_sha256": "80aabb083dbcf85216b5a08ef5ac4c8e94ba26e9f5ceae7e2fd9f675c211dcc6",
+      "qc_sha256": "80aabb083dbcf85216b5a08ef5ac4c8e94ba26e9f5ceae7e2fd9f675c211dcc6",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/benchmark_qmps_exactness.py",
+      "bg_sha256": "a05b2223c107e5c611f8826ef82243fd20210323e76ad4ec90fc9fba8e67a03e",
+      "qc_sha256": "a05b2223c107e5c611f8826ef82243fd20210323e76ad4ec90fc9fba8e67a03e",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/benchmark_second_order_casscf-gugroup\u2019s Mac Pro.py",
+      "bg_sha256": "d3a2473a6643f5b35f810171f4f6d01841b9a591d3376acb5a36a45ac87d5516",
+      "qc_sha256": "d3a2473a6643f5b35f810171f4f6d01841b9a591d3376acb5a36a45ac87d5516",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/benchmark_second_order_casscf.py",
+      "bg_sha256": "dae7e58a1337971128feae0eae11a1cb219756d9247f1aca72396377454569a2",
+      "qc_sha256": "dae7e58a1337971128feae0eae11a1cb219756d9247f1aca72396377454569a2",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/benchmark_soc_vs_pyscf.py",
+      "bg_sha256": "c679e4a6b9b8e60e8760862c9af03ad6f7bf2316df541820efbde54de874dd2e",
+      "qc_sha256": "c679e4a6b9b8e60e8760862c9af03ad6f7bf2316df541820efbde54de874dd2e",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/benchmark_su2_block2_step.py",
+      "bg_sha256": "455a61012df471c8f0e8ba5fbcab4811245021416c864425f4ef97e7a49c6a2f",
+      "qc_sha256": "455a61012df471c8f0e8ba5fbcab4811245021416c864425f4ef97e7a49c6a2f",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/benchmark_su2_component_kernel.py",
+      "bg_sha256": "b524ad8892528dab5ea2104052d35973e361f02f2c02081a7f12a74dc5903604",
+      "qc_sha256": "b524ad8892528dab5ea2104052d35973e361f02f2c02081a7f12a74dc5903604",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/benchmark_su2_readiness.py",
+      "bg_sha256": "b781d0b74b5418cd88119bd3c29aafc065714b28202b128b19e8a37eb9a8eaf5",
+      "qc_sha256": "b781d0b74b5418cd88119bd3c29aafc065714b28202b128b19e8a37eb9a8eaf5",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/benchmark_tddft_pcm_cd_pyscf.py",
+      "bg_sha256": "a438b3420be369cd65aa02fec9a3951cea75d74feb072728cef26c025243bb27",
+      "qc_sha256": "a438b3420be369cd65aa02fec9a3951cea75d74feb072728cef26c025243bb27",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/benchmark_water_block2_letta.py",
+      "qc_sha256": "4070b8cb679e205b54a8b2e8dc50ac738f495ad4b7eceeff475074c032018111",
+      "integration": "qc"
+    },
+    {
+      "path": "examples/qchem/benchmark_water_su2.py",
+      "qc_sha256": "1fc60d3fce24e8068d824f1507d7cb9671f080cb20f922a7bed8313dc78cdc96",
+      "integration": "qc"
+    },
+    {
+      "path": "examples/qchem/benchmark_x2c_rhf_vs_pyscf.py",
+      "bg_sha256": "72753937b1151332eaa66b5a3ffe9599db272d7465400d65609d5c0e8364e3de",
+      "qc_sha256": "72753937b1151332eaa66b5a3ffe9599db272d7465400d65609d5c0e8364e3de",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/benzene_density_pyvista.py",
+      "bg_sha256": "1b3305b3400e697fb0f35ebc15c44b0941df5301f54b2b3a23b6b18871febfe7",
+      "qc_sha256": "1b3305b3400e697fb0f35ebc15c44b0941df5301f54b2b3a23b6b18871febfe7",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/bo_hamiltonian_derivatives.py",
+      "bg_sha256": "2d95c83ff850fa4f5c389fe45b531de3a879fdf2bea1644c996628d889c168f6",
+      "qc_sha256": "2d95c83ff850fa4f5c389fe45b531de3a879fdf2bea1644c996628d889c168f6",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/bo_hamiltonian_derivatives_normal_modes.py",
+      "bg_sha256": "ac62a7d4ee4bbf0ccbc09b7bc8a0bffc27563a1e1d3a86870d537407fd49e314",
+      "qc_sha256": "ac62a7d4ee4bbf0ccbc09b7bc8a0bffc27563a1e1d3a86870d537407fd49e314",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/cacsi_tdm_pyscf.py",
+      "bg_sha256": "f470165dfea32fd81cda8cbe78f3bc04880ce784aee5a9609e6802d23ce61609",
+      "qc_sha256": "f470165dfea32fd81cda8cbe78f3bc04880ce784aee5a9609e6802d23ce61609",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/casci_triplet.py",
+      "bg_sha256": "0824c54eb92a8523bdaa55d7420362a009de809ec8d9e1ac9d84c5f5b440b2e4",
+      "qc_sha256": "0824c54eb92a8523bdaa55d7420362a009de809ec8d9e1ac9d84c5f5b440b2e4",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/casscf.py",
+      "bg_sha256": "5fee2337b98079056529abf1ed0b8d410284a5dd75c29773b580602394c30b19",
+      "qc_sha256": "5fee2337b98079056529abf1ed0b8d410284a5dd75c29773b580602394c30b19",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/casscf_compare_vs_pyscf.py",
+      "bg_sha256": "ce9f543b512c11b520715fe9898287035104b14c2f4fd761cb6b439f53fbd890",
+      "qc_sha256": "ce9f543b512c11b520715fe9898287035104b14c2f4fd761cb6b439f53fbd890",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/casscf_factor_vs_dense.py",
+      "bg_sha256": "4a1164ace4bb8ebad135f433963deed6d4002afc6f02f00e6a854bbadb74c552",
+      "qc_sha256": "4a1164ace4bb8ebad135f433963deed6d4002afc6f02f00e6a854bbadb74c552",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/cd_pcm_methyl_lactate.py",
+      "bg_sha256": "804ac95d7075c1cf09155e638e4dba2e49abd35ef77e4d2cb71cab529ad0b797",
+      "qc_sha256": "804ac95d7075c1cf09155e638e4dba2e49abd35ef77e4d2cb71cab529ad0b797",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/check_water_block2.py",
+      "qc_sha256": "d2444917fa9f6ba213af33a3d9e1865e2091f13737b161780a1d9b051c0523d4",
+      "integration": "qc"
+    },
+    {
+      "path": "examples/qchem/cocasci_factor_vs_dense.py",
+      "bg_sha256": "3025aa63baa5933e8be8559bf682461f813ab7097796bc8fcf67c81b264f336d",
+      "qc_sha256": "3025aa63baa5933e8be8559bf682461f813ab7097796bc8fcf67c81b264f336d",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/comp2_h2o.py",
+      "bg_sha256": "833e17b0cffd0ec3d96a93b294ef00d312208397656e6ea012374eb6a2839495",
+      "qc_sha256": "833e17b0cffd0ec3d96a93b294ef00d312208397656e6ea012374eb6a2839495",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/compare_casci_nac_pyscf.py",
+      "bg_sha256": "968e9f98e017c4078f827fc807d51364d0debb81f3092ab7ad6729c2fcd72958",
+      "qc_sha256": "968e9f98e017c4078f827fc807d51364d0debb81f3092ab7ad6729c2fcd72958",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/compare_ir_pyscf.py",
+      "bg_sha256": "900a4697099c44e8d120f376a44d968f45c395fd959228351fa8f1e921428124",
+      "qc_sha256": "900a4697099c44e8d120f376a44d968f45c395fd959228351fa8f1e921428124",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/compare_mcscf_nac_pyscf.py",
+      "bg_sha256": "17d799b47a171c59336cdd5fb21a962021165e8e41d40460cc516b5db11df745",
+      "qc_sha256": "17d799b47a171c59336cdd5fb21a962021165e8e41d40460cc516b5db11df745",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/compare_om2_g2_heats.py",
+      "bg_sha256": "407e89c3f69e60fc698c57f797bfb43d65ae76727002e4b50adad9cac8089f96",
+      "qc_sha256": "407e89c3f69e60fc698c57f797bfb43d65ae76727002e4b50adad9cac8089f96",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/compare_su2_block2_operator_terms.py",
+      "bg_sha256": "537370840d2cca15c90da5dafdd8c98ca54b64e564dd3b2c6671512b4d32c96e",
+      "qc_sha256": "537370840d2cca15c90da5dafdd8c98ca54b64e564dd3b2c6671512b4d32c96e",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/debug_su2_fully_reduced_path.py",
+      "bg_sha256": "54a8097fb6842d92a16dbf4e7582ed5da17176e05793aa9c0d91a21afda1f66f",
+      "qc_sha256": "54a8097fb6842d92a16dbf4e7582ed5da17176e05793aa9c0d91a21afda1f66f",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/dmrgscf-gugroup\u2019s Mac Pro.py",
+      "bg_sha256": "b5078d9743e1084e2ae324bd4450914ce1c2f427960adb846b19c3bf1599d7a9",
+      "qc_sha256": "b5078d9743e1084e2ae324bd4450914ce1c2f427960adb846b19c3bf1599d7a9",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/dmrgscf.py",
+      "bg_sha256": "3dd453a18e1bf7b138f3a4991ebb41c6e4a6c4a8d455c1364658648e8d9aa730",
+      "qc_sha256": "3dd453a18e1bf7b138f3a4991ebb41c6e4a6c4a8d455c1364658648e8d9aa730",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/ed.py",
+      "bg_sha256": "dc6dbe76ce9225253f4cd49fd7eca947fcc327c2857d9c6395c803c92111e386",
+      "qc_sha256": "dc6dbe76ce9225253f4cd49fd7eca947fcc327c2857d9c6395c803c92111e386",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/fci.py",
+      "bg_sha256": "6ddee590007acc308404e3969a5e2d9871ff8301f8a15ca2a60b2a8e8b93a4ad",
+      "qc_sha256": "6ddee590007acc308404e3969a5e2d9871ff8301f8a15ca2a60b2a8e8b93a4ad",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/fe_bpy3_compare_jk_pyscf.py",
+      "bg_sha256": "36874c41c3f6e2674f7995bba6aab85f6b63aa627f23606201c29bdd0952ef5d",
+      "qc_sha256": "36874c41c3f6e2674f7995bba6aab85f6b63aa627f23606201c29bdd0952ef5d",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/fe_bpy3_pcm_rhf_feasibility.py",
+      "bg_sha256": "c72570927ed1535429ec8c691421087e8e86663078aca6f664cf8fe61dc8469a",
+      "qc_sha256": "c72570927ed1535429ec8c691421087e8e86663078aca6f664cf8fe61dc8469a",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/fe_bpy3_pyqed_rhf_test.py",
+      "bg_sha256": "f202366cfc5a48b584bd7f9dae8135641e1d3d4c5d00b4b8c0a731ba02eecac2",
+      "qc_sha256": "f202366cfc5a48b584bd7f9dae8135641e1d3d4c5d00b4b8c0a731ba02eecac2",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/fe_bpy3_pyscf_geomopt.py",
+      "bg_sha256": "3ed68212df159167f69d8af70eb8e4eb4b660d4c3f16e06ba8bbd636ed01275a",
+      "qc_sha256": "3ed68212df159167f69d8af70eb8e4eb4b660d4c3f16e06ba8bbd636ed01275a",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/fe_bpy3_pyscf_ri_feasibility.py",
+      "bg_sha256": "b817f7d121c92dfe135359c74dd46e77e654be676e04f870e1d8cde859038b15",
+      "qc_sha256": "b817f7d121c92dfe135359c74dd46e77e654be676e04f870e1d8cde859038b15",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/fe_casci_pcm_feasibility.py",
+      "bg_sha256": "522a0a068e290c8a0d3d687a2d6d05550bab0f53dc95ce3f367f5b3cc7922a86",
+      "qc_sha256": "522a0a068e290c8a0d3d687a2d6d05550bab0f53dc95ce3f367f5b3cc7922a86",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/gdvr_h2_hhg.py",
+      "bg_sha256": "3fbd81a3554d6cdb2a5c8b543c8e453052319f81d57350bab307bfc7e3ca879a",
+      "qc_sha256": "3fbd81a3554d6cdb2a5c8b543c8e453052319f81d57350bab307bfc7e3ca879a",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/gdvr_h2_rhf.py",
+      "bg_sha256": "95c4983c6ae426bdbff1ab2e373b703dd712db009044384dfd335b27bb15b732",
+      "qc_sha256": "95c4983c6ae426bdbff1ab2e373b703dd712db009044384dfd335b27bb15b732",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/gdvr_h2_vs_gto.py",
+      "bg_sha256": "42af065ca39bed324f9487a66706fb9a985b29a3d5d74bb7ce71ba6cb4f831b6",
+      "qc_sha256": "42af065ca39bed324f9487a66706fb9a985b29a3d5d74bb7ce71ba6cb4f831b6",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/gdvr_h4_rhf.py",
+      "bg_sha256": "b789ef0a0f7ef9d52fad798c389c6040d954afc1a2fafd9ecbab8cce47bb3ac4",
+      "qc_sha256": "b789ef0a0f7ef9d52fad798c389c6040d954afc1a2fafd9ecbab8cce47bb3ac4",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/gdvr_h4_rhf_lz4_nz63.py",
+      "bg_sha256": "008bd8e0c9288df0328437a303b3eb04555162157c86c2c7fcadf4e2ab521086",
+      "qc_sha256": "008bd8e0c9288df0328437a303b3eb04555162157c86c2c7fcadf4e2ab521086",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/gdvr_he4_rhf_lz4_nz63.py",
+      "bg_sha256": "c8058337f7be2c60a8e74eda4662a530425967ba5090de31eee1e59e16bb9657",
+      "qc_sha256": "c8058337f7be2c60a8e74eda4662a530425967ba5090de31eee1e59e16bb9657",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/gdvr_li2_pec.py",
+      "bg_sha256": "40c3d986aab31490fe960ab498b1acc4e4690846fe27f0338a4ad5583f358a64",
+      "qc_sha256": "40c3d986aab31490fe960ab498b1acc4e4690846fe27f0338a4ad5583f358a64",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/gdvr_li2_rttdhf.py",
+      "bg_sha256": "86a14cb97600cc1ae44babe5772ba9b9c40f210d7bf37babe2cb17e50eb831ee",
+      "qc_sha256": "86a14cb97600cc1ae44babe5772ba9b9c40f210d7bf37babe2cb17e50eb831ee",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/gdvr_li_chain.py",
+      "bg_sha256": "8d7f7d3838a6d75ef604425c1901624d42cb166fd639e2d3572b12e7eb4ba75f",
+      "qc_sha256": "8d7f7d3838a6d75ef604425c1901624d42cb166fd639e2d3572b12e7eb4ba75f",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/gdvr_split_operator_calibration.py",
+      "bg_sha256": "7f733536d6b76614c19a39345f51fbc976065ce549b3696aa8a364ae0d26321c",
+      "qc_sha256": "7f733536d6b76614c19a39345f51fbc976065ce549b3696aa8a364ae0d26321c",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/gdvr_taylor_calibration.py",
+      "bg_sha256": "034f70203f1727cb578a961d9566b8787a51a50402c59b33d41b7cf12374e7fd",
+      "qc_sha256": "034f70203f1727cb578a961d9566b8787a51a50402c59b33d41b7cf12374e7fd",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/gdvr_tddmrg_h2_hhg.py",
+      "bg_sha256": "4866a56e4217ac50e65b1a6c593cdde5c7581caa8d226a34a5fae47c712c6176",
+      "qc_sha256": "4866a56e4217ac50e65b1a6c593cdde5c7581caa8d226a34a5fae47c712c6176",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/gdvr_tddmrg_vs_rttdhf.py",
+      "bg_sha256": "4bac578a0b21f79f608642b46102794a1a78792626a8206bbe56eb3e435a1419",
+      "qc_sha256": "4bac578a0b21f79f608642b46102794a1a78792626a8206bbe56eb3e435a1419",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/gdvr_tdvp_vs_tenpy.py",
+      "bg_sha256": "9c882b7c3dff2e941170a13f05c6f3b74e05a32c85f0b1a7916634925b21378a",
+      "qc_sha256": "9c882b7c3dff2e941170a13f05c6f3b74e05a32c85f0b1a7916634925b21378a",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/gw_bse_ri.py",
+      "bg_sha256": "bf617df9e736a88865793e0fe1232413b6c4b957ac9e4817148e8573770bdd9b",
+      "qc_sha256": "bf617df9e736a88865793e0fe1232413b6c4b957ac9e4817148e8573770bdd9b",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/gw_qsgw.py",
+      "bg_sha256": "ba045291a90e056ec62c01934973b7149991a5bbe25464ac2c9b1db6562ef99d",
+      "qc_sha256": "ba045291a90e056ec62c01934973b7149991a5bbe25464ac2c9b1db6562ef99d",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/h2.py",
+      "bg_sha256": "434a445e2fb1ebc064e01942cd575f7f9f82b388a84fcfdbcc9c73694acd4163",
+      "qc_sha256": "434a445e2fb1ebc064e01942cd575f7f9f82b388a84fcfdbcc9c73694acd4163",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/h2o_density_pyvista.py",
+      "bg_sha256": "417a1e7ea5a75a33bd6a084dedd43d9c9f7691c9ed27c5def0a9458c3d0d46b0",
+      "qc_sha256": "417a1e7ea5a75a33bd6a084dedd43d9c9f7691c9ed27c5def0a9458c3d0d46b0",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/h8_exact_10states.py",
+      "bg_sha256": "4d425baaaacee7545e65b1598cd8684f99d3e72b705453e53c16bb6a01923820",
+      "qc_sha256": "4d425baaaacee7545e65b1598cd8684f99d3e72b705453e53c16bb6a01923820",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/hessian.py",
+      "bg_sha256": "1f98bfa7e3534ea5470ed19f8e0fe023483fb8dcacd18bffac673111da38cebe",
+      "qc_sha256": "1f98bfa7e3534ea5470ed19f8e0fe023483fb8dcacd18bffac673111da38cebe",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/letta_active_space.md",
+      "qc_sha256": "d8964483de8166383fbdec6a1e4960eb4138c819d22a82c4a36bc6102609130a",
+      "integration": "qc"
+    },
+    {
+      "path": "examples/qchem/letta_ground_state.md",
+      "qc_sha256": "d5481abd52409fb8a346c864fb8bb13beedb9c5d558b97b40ab74b8b7fc06827",
+      "integration": "qc"
+    },
+    {
+      "path": "examples/qchem/letta_native_su2.md",
+      "qc_sha256": "d16ade3b45c7ca9175730c6cedec9a08b56c73f21928a1e7f4b384d30552a370",
+      "integration": "qc"
+    },
+    {
+      "path": "examples/qchem/letta_symmetry.md",
+      "qc_sha256": "4211903d6cc1bf1c9a3467a8bf55c14aeb41eb07d9b4ae62fe4440eebabed928",
+      "integration": "qc"
+    },
+    {
+      "path": "examples/qchem/letta_symmetry.py",
+      "qc_sha256": "752d5d6b5d7f5a979fd55fc205cb6fd8fc3560869e4b510702e2cbea23f88109",
+      "integration": "qc"
+    },
+    {
+      "path": "examples/qchem/lif_casscf_scan.py",
+      "bg_sha256": "c43e7d82c87aa921892d41042102a1cefa969c489a5844f96ea94171d2a1f8b0",
+      "qc_sha256": "c43e7d82c87aa921892d41042102a1cefa969c489a5844f96ea94171d2a1f8b0",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/lif_cocas_scan.py",
+      "bg_sha256": "2316484b69be765087356eea36984a16f34687ec1bf2b0bd925898fc1bb8b30d",
+      "qc_sha256": "2316484b69be765087356eea36984a16f34687ec1bf2b0bd925898fc1bb8b30d",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/membrane_cd_from_openmm_pdb.py",
+      "bg_sha256": "405b5b85a5866d221a7456a6fe314313321f01796e71a0b2a981799555e679aa",
+      "qc_sha256": "405b5b85a5866d221a7456a6fe314313321f01796e71a0b2a981799555e679aa",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/membrane_cd_native_md_calc.py",
+      "bg_sha256": "2c8f671b0f373628bd4d0de9b4db6911a41b61dbc965911605e22090a449ad11",
+      "qc_sha256": "2c8f671b0f373628bd4d0de9b4db6911a41b61dbc965911605e22090a449ad11",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/membrane_cd_openmm_calc.py",
+      "bg_sha256": "3575fa6775dbbe790253beeb686a966f5032c6571d436fa5b4e7d7e4869b5597",
+      "qc_sha256": "3575fa6775dbbe790253beeb686a966f5032c6571d436fa5b4e7d7e4869b5597",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/membrane_cd_openmm_indole.py",
+      "bg_sha256": "888e76996098d4c8a646da7264af788559ebc89373ae85820debaf456eb5ca8b",
+      "qc_sha256": "888e76996098d4c8a646da7264af788559ebc89373ae85820debaf456eb5ca8b",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/membrane_cd_openmm_tryptophan.py",
+      "bg_sha256": "a687a48c60b8ed36aa6f7290dbcdb1a722c94ac1d404fe6ac7c20bca1e5e03eb",
+      "qc_sha256": "a687a48c60b8ed36aa6f7290dbcdb1a722c94ac1d404fe6ac7c20bca1e5e03eb",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/membrane_cd_workflow.py",
+      "bg_sha256": "317cf9cdf541f156cd9f50d7423c2aa71ed8139ff1f34afab457656904782390",
+      "qc_sha256": "317cf9cdf541f156cd9f50d7423c2aa71ed8139ff1f34afab457656904782390",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/mol.py",
+      "bg_sha256": "0e8cd0df4490e1d9cbe3f8e17f3a4cdce0f5fb5c470a9a2232b19c6411f1fbbf",
+      "qc_sha256": "0e8cd0df4490e1d9cbe3f8e17f3a4cdce0f5fb5c470a9a2232b19c6411f1fbbf",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/mps_domain_wall_q_tdmps.py",
+      "bg_sha256": "c6d7a0404aba54a7597bb21296f1fae797d87f4f4e61e1c133050a49ce940609",
+      "qc_sha256": "c6d7a0404aba54a7597bb21296f1fae797d87f4f4e61e1c133050a49ce940609",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/mps_three_electrons_q.py",
+      "bg_sha256": "bd41ce7534680b71cb748a2d253587da43342c6af8aef3fa91e2b4d4693fd6b5",
+      "qc_sha256": "bd41ce7534680b71cb748a2d253587da43342c6af8aef3fa91e2b4d4693fd6b5",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/mps_three_electrons_q_dmrg.py",
+      "bg_sha256": "e10731ab0cd4b034e17cd0b08c1eb5d6a3773c145b1c6125b16294d3f2a4a955",
+      "qc_sha256": "e10731ab0cd4b034e17cd0b08c1eb5d6a3773c145b1c6125b16294d3f2a4a955",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/plot_lif_casscf_scan.py",
+      "bg_sha256": "031fe2d537a1b24153cad6dd2c7d8798a5b5684ae1266310968c1d632edf7e27",
+      "qc_sha256": "031fe2d537a1b24153cad6dd2c7d8798a5b5684ae1266310968c1d632edf7e27",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/plot_lif_casscf_vs_pyscf.py",
+      "bg_sha256": "eaf758626976bf13dc924b9514f842b1a8b54589b101fea4ceef584afbc2db43",
+      "qc_sha256": "eaf758626976bf13dc924b9514f842b1a8b54589b101fea4ceef584afbc2db43",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/plot_lif_cocas_scan.py",
+      "bg_sha256": "1bcc18575bbd32b8564cd8eab125e4f672a76a3de141cd1b00907d0114b3d02e",
+      "qc_sha256": "1bcc18575bbd32b8564cd8eab125e4f672a76a3de141cd1b00907d0114b3d02e",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/refine_water_su2.py",
+      "qc_sha256": "e698aec63ac551ad4b61e6311daf3d9f0a2de999a2701ec8da2cf4a58c53ece5",
+      "integration": "qc"
+    },
+    {
+      "path": "examples/qchem/report_water_su2.py",
+      "qc_sha256": "ab6a8580812875112398ac684f7996e977e94a4eb0c10ef49045c11e4dd9aa1e",
+      "integration": "qc"
+    },
+    {
+      "path": "examples/qchem/rttdhf.py",
+      "bg_sha256": "dcfda6b871f60122012349c7d8c5138001b075cff21de830a1dbf3e419792a9d",
+      "qc_sha256": "dcfda6b871f60122012349c7d8c5138001b075cff21de830a1dbf3e419792a9d",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/rttdhf_h2_kick_spectrum.py",
+      "bg_sha256": "e7bf607be13ecd0399844a51ab44f8f98186e89631e0b33a89579cb795c729fa",
+      "qc_sha256": "e7bf607be13ecd0399844a51ab44f8f98186e89631e0b33a89579cb795c729fa",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/rttdhf_hf_kick_spectrum.py",
+      "bg_sha256": "996a61c0de5fd558562e6e95b266060e1542aafb835ccfef518290fd4a932b6a",
+      "qc_sha256": "996a61c0de5fd558562e6e95b266060e1542aafb835ccfef518290fd4a932b6a",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/sa_casscf_factor.py",
+      "bg_sha256": "5525f09a571aba39095810b8987406e9f7dd7a4f843b24fd70d1ef49c4e5a7be",
+      "qc_sha256": "5525f09a571aba39095810b8987406e9f7dd7a4f843b24fd70d1ef49c4e5a7be",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/soc.py",
+      "bg_sha256": "001a23e4c5c50ce2cc24045bb53905d72a2c4f48a6fffcfe069874b9c8e679a9",
+      "qc_sha256": "001a23e4c5c50ce2cc24045bb53905d72a2c4f48a6fffcfe069874b9c8e679a9",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/solvent_pyqed.py",
+      "bg_sha256": "9022356fe32155e157cf9471b3b5f70c278c9e7c212f4f08009306299e812b3e",
+      "qc_sha256": "9022356fe32155e157cf9471b3b5f70c278c9e7c212f4f08009306299e812b3e",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/su2dmrg.py",
+      "bg_sha256": "f913f287572fe3f897ddb280d89729e71cc371ac8e7375ca4c3e8ceb2b6669b7",
+      "qc_sha256": "f913f287572fe3f897ddb280d89729e71cc371ac8e7375ca4c3e8ceb2b6669b7",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/tddmrg_h2_threeway_compare.py",
+      "bg_sha256": "eae9e0e028a675892b7c3643c118ba72d8c858604f2545d7123e9cf087daede0",
+      "qc_sha256": "eae9e0e028a675892b7c3643c118ba72d8c858604f2545d7123e9cf087daede0",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/tddmrg_h4_gto.md",
+      "bg_sha256": "dc97f2ae74d03ee45130d793e29dde9d2c0a29cd76b1ae113804dfce64f8a498",
+      "qc_sha256": "dc97f2ae74d03ee45130d793e29dde9d2c0a29cd76b1ae113804dfce64f8a498",
+      "integration": "excluded unrelated example/generated auxiliary; preserved in originals and snapshot"
+    },
+    {
+      "path": "examples/qchem/tddmrg_h4_gto.py",
+      "bg_sha256": "b876b65c971daf87235373acfd303a271849dae6a4aec04e9a645e0e96e76e6a",
+      "qc_sha256": "b876b65c971daf87235373acfd303a271849dae6a4aec04e9a645e0e96e76e6a",
+      "integration": "excluded unrelated example/generated auxiliary; preserved in originals and snapshot"
+    },
+    {
+      "path": "examples/qchem/tddmrg_h4_mu_compare.py",
+      "bg_sha256": "5e7d67bdb052e36eb8d66e15142ef81cc5a413f7de0d849ff77b0b890e486ec4",
+      "qc_sha256": "5e7d67bdb052e36eb8d66e15142ef81cc5a413f7de0d849ff77b0b890e486ec4",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/tddmrg_h4_zpulse.py",
+      "bg_sha256": "f9b23bf5b2e1009f1b0bf5cf76ab822cdb61a9f7012ec0e36cf549d83091c36e",
+      "qc_sha256": "f9b23bf5b2e1009f1b0bf5cf76ab822cdb61a9f7012ec0e36cf549d83091c36e",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/tddmrg_zpulse.py",
+      "bg_sha256": "9c0747ea2cda1cd85115b2f32e826520c7fb9f2447962ceecaff793e0f3e1e93",
+      "qc_sha256": "9c0747ea2cda1cd85115b2f32e826520c7fb9f2447962ceecaff793e0f3e1e93",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/tdscf.py",
+      "bg_sha256": "d91ba8ffaef7ecbb98efb9bb8264fa3964d9dec8233b592535d086b278ca09d2",
+      "qc_sha256": "d91ba8ffaef7ecbb98efb9bb8264fa3964d9dec8233b592535d086b278ca09d2",
+      "integration": "identical"
+    },
+    {
+      "path": "examples/qchem/validate_water_su2_results.py",
+      "qc_sha256": "3329548d230e1987415e535b14fc02955795eeff99315fd02166f76cd3eee119",
+      "integration": "qc"
+    },
+    {
+      "path": "pyqed/_letta_compression.py",
+      "bg_sha256": "08a516cd3fdf026b09eeac9ba3b8867e1088565e10c7dfeab7638c7b3af7c8a6",
+      "qc_sha256": "08a516cd3fdf026b09eeac9ba3b8867e1088565e10c7dfeab7638c7b3af7c8a6",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_for_2d_vu/__init__.py",
+      "bg_sha256": "4b951646c6bfe67da3e24685b77c3cec7986d7d8fef8965db17611de2ec55431",
+      "qc_sha256": "4b951646c6bfe67da3e24685b77c3cec7986d7d8fef8965db17611de2ec55431",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_for_2d_vu/examples/__init__.py",
+      "bg_sha256": "f3d3aaded06b33736cde6ddc206ca4c3f8ad970225fc625e60878a39a58452ad",
+      "qc_sha256": "f3d3aaded06b33736cde6ddc206ca4c3f8ad970225fc625e60878a39a58452ad",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_for_2d_vu/examples/tfim_comparison.py",
+      "bg_sha256": "30c2a9887b20741a0b6b69be8f68d85f2230007e2afacbde3dc26d7a1b35a430",
+      "qc_sha256": "30c2a9887b20741a0b6b69be8f68d85f2230007e2afacbde3dc26d7a1b35a430",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_for_2d_vu/examples/tfim_plane.py",
+      "bg_sha256": "6454ea2198e419f7ebebe386add752a510b1a8026a75cfb8d3a7e39f47eb4db7",
+      "qc_sha256": "6454ea2198e419f7ebebe386add752a510b1a8026a75cfb8d3a7e39f47eb4db7",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_for_2d_vu/operators.py",
+      "bg_sha256": "fb52cff25de01839189bd843a98919d7ede6a247f763b35459354841ccb91003",
+      "qc_sha256": "fb52cff25de01839189bd843a98919d7ede6a247f763b35459354841ccb91003",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_for_2d_vu/plane_autodiff.py",
+      "bg_sha256": "9f0aa562f28792dc4dec2da96dd5b8744c729e2679295680ac5f3f9063e5551a",
+      "qc_sha256": "9f0aa562f28792dc4dec2da96dd5b8744c729e2679295680ac5f3f9063e5551a",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_for_2d_vu/plane_environment.py",
+      "bg_sha256": "d3d25bc3948e0f606e2bbd020f9b0056ead16681bba538d0558b3d250df4f259",
+      "qc_sha256": "d3d25bc3948e0f606e2bbd020f9b0056ead16681bba538d0558b3d250df4f259",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_for_2d_vu/plane_operators.py",
+      "bg_sha256": "d7fb9675da1cad8177f76d0b36d00273f5ab6275aef4d651302a6bf13815dcaa",
+      "qc_sha256": "d7fb9675da1cad8177f76d0b36d00273f5ab6275aef4d651302a6bf13815dcaa",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_for_2d_vu/plane_solver.py",
+      "bg_sha256": "62c9d57e487cd47b652d8151a87442720696b3a27fd789a37da1e858417a406e",
+      "qc_sha256": "62c9d57e487cd47b652d8151a87442720696b3a27fd789a37da1e858417a406e",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_for_2d_vu/plane_state.py",
+      "bg_sha256": "962fa1df88209ec8a8f37ed3fb765ec15dbe03dc638d9190b288e0c969f23a67",
+      "qc_sha256": "962fa1df88209ec8a8f37ed3fb765ec15dbe03dc638d9190b288e0c969f23a67",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_for_2d_vu/solver.py",
+      "bg_sha256": "81d948e5fca2c9b6e11c0868b7d42a38305fa1ff82fb14ba1f21ee0f1c916665",
+      "qc_sha256": "81d948e5fca2c9b6e11c0868b7d42a38305fa1ff82fb14ba1f21ee0f1c916665",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_for_2d_vu/state.py",
+      "bg_sha256": "1902905f91d1ce8753b8f1a742f39728ed86eff82e2e034da1d67b571e635291",
+      "qc_sha256": "1902905f91d1ce8753b8f1a742f39728ed86eff82e2e034da1d67b571e635291",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/OPEN_BOUNDARY.md",
+      "bg_sha256": "05a7619efc1acb3eeb4e3f2ad96a528f262a7480759a49bc47dfa6f02b435258",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/PERIODIC.md",
+      "bg_sha256": "e4a764f94295e10921a270b6644055ffa0d4aff76e0b574ff72bd6f91b39fb46",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/README.md",
+      "bg_sha256": "c19126f114a2b7a7d820573ae285c322578ac39f53b9278b7c27bd6ff2d9b293",
+      "qc_sha256": "d03276f4a682546f88f25b765f49de318a45edb1883b430cf53123ef7541e6a4",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/TRANSFER_COMPRESSION.md",
+      "bg_sha256": "4f52a0cdb500e9798b7b56e024b654a3794667577846f73b0ed3e369665fddf2",
+      "qc_sha256": "4f52a0cdb500e9798b7b56e024b654a3794667577846f73b0ed3e369665fddf2",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/__init__.py",
+      "bg_sha256": "7597fca2dd2b99ac4105f076e664a886f5f5ecb608a28c4d6e2728b4d5b84a52",
+      "qc_sha256": "68f0aad834fd8b8202031953e1378d58b90ad6943f6719533936f37d5c2e48b7",
+      "integration": "qc"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/_letta_for_2d/__init__.py",
+      "bg_sha256": "9d5eaaee50f4eb6e89496a4f7ecc941821e30717400fb3c9856d1f9a515bdf1c",
+      "qc_sha256": "9d5eaaee50f4eb6e89496a4f7ecc941821e30717400fb3c9856d1f9a515bdf1c",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/_letta_for_2d/examples/__init__.py",
+      "bg_sha256": "f0ce361337219c808c4cd2f4c1c7c995e3a97b28b7b7121c1b77e9c0b735115f",
+      "qc_sha256": "f0ce361337219c808c4cd2f4c1c7c995e3a97b28b7b7121c1b77e9c0b735115f",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/_letta_for_2d/examples/ising_comparison.py",
+      "bg_sha256": "5aa6b4c2e296a1bf32cd65e5c6ad1022dcf10d7e4caff713643bbfded7815b9d",
+      "qc_sha256": "5aa6b4c2e296a1bf32cd65e5c6ad1022dcf10d7e4caff713643bbfded7815b9d",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/_letta_for_2d/operators.py",
+      "bg_sha256": "92e2225943ad579201a29e1f176a884fea596d89d543715bffe9546467502a7d",
+      "qc_sha256": "92e2225943ad579201a29e1f176a884fea596d89d543715bffe9546467502a7d",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/_letta_for_3d/__init__.py",
+      "bg_sha256": "60b4ed343292ec042c28e000bc75ef6f46b79e0e135acb3d65124dc7b925e464",
+      "qc_sha256": "60b4ed343292ec042c28e000bc75ef6f46b79e0e135acb3d65124dc7b925e464",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/_letta_for_3d/examples/__init__.py",
+      "bg_sha256": "39e0a29189d064cb805453d1a35e08d2cf5637c56aa42d6fdc557609cc8161f9",
+      "qc_sha256": "39e0a29189d064cb805453d1a35e08d2cf5637c56aa42d6fdc557609cc8161f9",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/_letta_for_3d/examples/collect_tfi_jg_scan.py",
+      "bg_sha256": "8071c82ae51e2184d26786f8fe268788b078e50378a3df5394f3610c00aa78d6",
+      "qc_sha256": "8071c82ae51e2184d26786f8fe268788b078e50378a3df5394f3610c00aa78d6",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/_letta_for_3d/examples/count_tfi_variational_parameters.py",
+      "bg_sha256": "d823b554373f0b585fb40b8482ecef33781ce1099f33ee81ae35784cbec54efd",
+      "qc_sha256": "d823b554373f0b585fb40b8482ecef33781ce1099f33ee81ae35784cbec54efd",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/_letta_for_3d/examples/ising_comparison.py",
+      "bg_sha256": "cb654404e409fb4edb1ce32d68daa22a5aa9dd8766c42ba9b5537d7e6ca95e0f",
+      "qc_sha256": "cb654404e409fb4edb1ce32d68daa22a5aa9dd8766c42ba9b5537d7e6ca95e0f",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/_letta_for_3d/examples/tfi_jg_scan_qr_fixed.py",
+      "bg_sha256": "3c15cf66fe9ca80116d9a4153cd24f4a6758c23b3491de01e0edcc96cef58975",
+      "qc_sha256": "3c15cf66fe9ca80116d9a4153cd24f4a6758c23b3491de01e0edcc96cef58975",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/_letta_for_3d/geometry.py",
+      "bg_sha256": "d428bc34d679088f9894a68e4b3841452d2a50d8ab07e1ffcff288668e64c167",
+      "qc_sha256": "d428bc34d679088f9894a68e4b3841452d2a50d8ab07e1ffcff288668e64c167",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/_letta_for_3d/letta.py",
+      "bg_sha256": "b57e4fb689bbb038790dacce6caf546dddf5754262770e80f6c88afdeba18e28",
+      "qc_sha256": "b57e4fb689bbb038790dacce6caf546dddf5754262770e80f6c88afdeba18e28",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/_letta_for_3d/mps.py",
+      "bg_sha256": "7e1c12fe0fbbc57a9e866bcb4c2829d168c61f0670bdd2e4ff1a9db86c160a02",
+      "qc_sha256": "7e1c12fe0fbbc57a9e866bcb4c2829d168c61f0670bdd2e4ff1a9db86c160a02",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/_letta_for_3d/operators.py",
+      "bg_sha256": "4e94ed35ad4acaf913c537d94fea6c0077da4642b1b54c652f3280c0c73864f3",
+      "qc_sha256": "4e94ed35ad4acaf913c537d94fea6c0077da4642b1b54c652f3280c0c73864f3",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/README.md",
+      "bg_sha256": "c6ed6e9a769bab3936b50fc42d674173bbebf470108cf633778d18c523f25168",
+      "qc_sha256": "c6ed6e9a769bab3936b50fc42d674173bbebf470108cf633778d18c523f25168",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/bose_hubbard.py",
+      "bg_sha256": "f79cd00434a63d2558caa0bbf00e4184a178f1536aaaa3f3233d08c00b32fa26",
+      "qc_sha256": "f79cd00434a63d2558caa0bbf00e4184a178f1536aaaa3f3233d08c00b32fa26",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/cluster_medium_high/README.md",
+      "bg_sha256": "e7398a9f481e6d11a7874d0db1572a56ce773f85fe97ff3505e002d249d4aac5",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/cluster_medium_high/run_high_accuracy.py",
+      "bg_sha256": "9f22a78107258522d80ad549b13500ee799e00f21c0f36ebf2e0f5ab0c0c1914",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/cluster_medium_high/stage_bundle.py",
+      "bg_sha256": "c2fc00b847a77acfab000969ddddd305dbeec11e202b9340eef3d3f072951b37",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/cluster_medium_high/submit_high_accuracy.sh",
+      "bg_sha256": "72a7362090006d0670f5960d6012d00dc8aca80a2caff90f888f58e98644445c",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/cluster_oct02/README.md",
+      "bg_sha256": "15e6867ad867eb633dc99443f75397b8e533e73e756cbb7afbb3656887ce346e",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/cluster_oct02/plot_histories.py",
+      "bg_sha256": "e8f524fbc6e38bd1fecb71f778046c45371bee5eb7f38682a86da1103e3a4e19",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/cluster_oct02/run_rectangles.py",
+      "bg_sha256": "d736208041b6434179bc20c327ec39723463e627020155d839b029b4d0aec0fb",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/cluster_oct02/stage_bundle.py",
+      "bg_sha256": "e54b3f26eb1691e837d4c906c6df495c685119a510d3bc48bb30637c1cf3214c",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/cluster_oct02/submit_rectangles.sh",
+      "bg_sha256": "78456b4037166ab1776fcfe600fa8172b859b3544c3e846c042b93a3e79bed1f",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/cluster_oct04/README.md",
+      "bg_sha256": "6b64a6fe9384ddcd5f3015f5d98728acaff8a6bd11c3129df50f954747d975d3",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/cluster_oct04/run_rectangles.py",
+      "bg_sha256": "36036bef2ed94c758f0ddd5415b62e89f6ab1cd26fb516a512b03e029e8794b8",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/cluster_oct04/stage_bundle.py",
+      "bg_sha256": "0c1b2cb43881dc8ed641b8c2b7936241efe1c2d9b85004a5c7ea0cf186221c39",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/cluster_oct04/submit_rectangles.sh",
+      "bg_sha256": "7e1313e8bea0794c818df407745761aeafc9d46c3c17238e33676f23e154f12f",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/cluster_sept18/README.md",
+      "bg_sha256": "893aaa13d6c6ef6eeb79d87013a3675c5c7a8c78019fa5b0f3bee0885bfd856d",
+      "qc_sha256": "893aaa13d6c6ef6eeb79d87013a3675c5c7a8c78019fa5b0f3bee0885bfd856d",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/cluster_sept18/run_large_2d.py",
+      "bg_sha256": "e7cd00937b4993a1bcef57df924e6a986d346dc7d7d587d1eb1a0282f9ca7f3c",
+      "qc_sha256": "e7cd00937b4993a1bcef57df924e6a986d346dc7d7d587d1eb1a0282f9ca7f3c",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/cluster_sept18/stage_bundle.py",
+      "bg_sha256": "1558ed17adc9b82ad918cd19f9b64693cf1fa2eb27f29b154e54c7266a609f9e",
+      "qc_sha256": "1558ed17adc9b82ad918cd19f9b64693cf1fa2eb27f29b154e54c7266a609f9e",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/cluster_sept18/submit_large_2d.sh",
+      "bg_sha256": "921427a33b547efa838f436e4dfdae25fe1890e101abddef1f4e78de849c6d22",
+      "qc_sha256": "921427a33b547efa838f436e4dfdae25fe1890e101abddef1f4e78de849c6d22",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/cluster_sept27/README.md",
+      "bg_sha256": "1470973ee19a14e153bd2a4b689c67b3496e37b6650ded38b331463e4ac8ca7e",
+      "qc_sha256": "1470973ee19a14e153bd2a4b689c67b3496e37b6650ded38b331463e4ac8ca7e",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/cluster_sept27/audit_results.py",
+      "bg_sha256": "cdcfca54d2e90d2d10044dc264eff063327733146f35b5fd7d2989c96955f42f",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/cluster_sept27/run_compression.py",
+      "bg_sha256": "c0ca25f7bb8b059afe25b10543960cd550db40f04c7a653b0cc5b61f7b403013",
+      "qc_sha256": "491fef1e059d0e9c23e5b7a53f6284eff9b039eebe84bf5ab604b6e215a2aefb",
+      "integration": "CONFLICT"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/cluster_sept27/stage_bundle.py",
+      "bg_sha256": "c12c9204c080de69d6499cf06c86e481e08a9bd624911bc4e7a45b2c05a43d43",
+      "qc_sha256": "c12c9204c080de69d6499cf06c86e481e08a9bd624911bc4e7a45b2c05a43d43",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/cluster_sept27/submit_compression.sh",
+      "bg_sha256": "f58de461918c6faa976b58df178f0ff505625c1df7c057ae47df97ee2c010810",
+      "qc_sha256": "f58de461918c6faa976b58df178f0ff505625c1df7c057ae47df97ee2c010810",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/compare.py",
+      "bg_sha256": "b73f33e3a5a6ea1168b36c2158a4f7ad83037c712d65a9627c379de8fd66b2d3",
+      "qc_sha256": "b73f33e3a5a6ea1168b36c2158a4f7ad83037c712d65a9627c379de8fd66b2d3",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/fermi_hubbard.py",
+      "bg_sha256": "54011cf76766273d713b3fd628e8c4fb2c39ad2dc96c02c8af28cbb57ecfd037",
+      "qc_sha256": "54011cf76766273d713b3fd628e8c4fb2c39ad2dc96c02c8af28cbb57ecfd037",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/heisenberg.py",
+      "bg_sha256": "296dfdcde4f9dfc740248c11e0435d18dde053a217f046d38327dff66656d542",
+      "qc_sha256": "296dfdcde4f9dfc740248c11e0435d18dde053a217f046d38327dff66656d542",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/ising.py",
+      "bg_sha256": "a012085a221ad2f72e7c709e76193f7518c63569a3b747dc3c8ae95c0140224c",
+      "qc_sha256": "a012085a221ad2f72e7c709e76193f7518c63569a3b747dc3c8ae95c0140224c",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/local_medium_oct02/collect.py",
+      "bg_sha256": "ba5ca7a1596e628c94813b210f000279c2269b8e9b7de40a87dcead5b2fcb93b",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/2D/local_medium_oct02/run_remaining.py",
+      "bg_sha256": "10816fbec9877688ec39169cef3e0e4647d0302dfb9ed818dabbf01c226bc303",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/README.md",
+      "bg_sha256": "995488b79cbfe86bde58b7a04654db3ff24c76afade5622c8114494270684f49",
+      "qc_sha256": "995488b79cbfe86bde58b7a04654db3ff24c76afade5622c8114494270684f49",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/__init__.py",
+      "bg_sha256": "93f5929ffc2d15920047432167ffa73da851583417d6fed778c08de2973fc4a9",
+      "qc_sha256": "93f5929ffc2d15920047432167ffa73da851583417d6fed778c08de2973fc4a9",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/accuracy_replay.py",
+      "bg_sha256": "29eaa53ab79c03d6d91807f58b5bef1ffd473495435f1f4a6953a7157159ff9b",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/bose_hubbard_1d.py",
+      "bg_sha256": "b8491b3061195c57f38014fb9fa11e937ec60364b57011dd78e5c0582fe3e8c3",
+      "qc_sha256": "b8491b3061195c57f38014fb9fa11e937ec60364b57011dd78e5c0582fe3e8c3",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/bose_hubbard_2d.py",
+      "bg_sha256": "5a128a5c852a884b6a2bd5379ec7d16727feec1d06b665e1ab35711aa55c8643",
+      "qc_sha256": "5a128a5c852a884b6a2bd5379ec7d16727feec1d06b665e1ab35711aa55c8643",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/cbe_als_trim.py",
+      "bg_sha256": "14e21671abe0c41d6d468d8b68a4d8106543452571c872ac0552e3162b36f472",
+      "qc_sha256": "14e21671abe0c41d6d468d8b68a4d8106543452571c872ac0552e3162b36f472",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/cbe_convergence.py",
+      "bg_sha256": "d77c89e64722307892054ecc1e53aacc9545112229f838090749bee1c9be8f31",
+      "qc_sha256": "d77c89e64722307892054ecc1e53aacc9545112229f838090749bee1c9be8f31",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/cbe_energy_trim.py",
+      "bg_sha256": "501160a0c94d44ab7c793c986327123f4370732d5bed3fcc912a7d714534b478",
+      "qc_sha256": "501160a0c94d44ab7c793c986327123f4370732d5bed3fcc912a7d714534b478",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/cbe_harder_cases.py",
+      "bg_sha256": "5a88bb757b5f8459951eb62d99a400801cbd95716d4840fa2e3af0c84d2fc876",
+      "qc_sha256": "5a88bb757b5f8459951eb62d99a400801cbd95716d4840fa2e3af0c84d2fc876",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/cbe_scaling.py",
+      "bg_sha256": "654a5c2f22c8e424e88593f5c0a5d569ab4b896fde97c3c3ccb249bd3df937ea",
+      "qc_sha256": "654a5c2f22c8e424e88593f5c0a5d569ab4b896fde97c3c3ccb249bd3df937ea",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/cbe_update_scaling.py",
+      "bg_sha256": "6638304f991dc1fb10b88687a5f4737d30770608a3c15a748249ab5224bd4a8d",
+      "qc_sha256": "6638304f991dc1fb10b88687a5f4737d30770608a3c15a748249ab5224bd4a8d",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/compression_accuracy.py",
+      "bg_sha256": "cafbc4eb39d4212d7f99eaa550c20055df1b46d8bf9ca199280ba01f96667ef7",
+      "qc_sha256": "cafbc4eb39d4212d7f99eaa550c20055df1b46d8bf9ca199280ba01f96667ef7",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/condensed_cli.py",
+      "bg_sha256": "5e5fe27be41a90896ffc353e93b66299e0064bd75e576824ef69a0eac431b6cb",
+      "qc_sha256": "5e5fe27be41a90896ffc353e93b66299e0064bd75e576824ef69a0eac431b6cb",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/condensed_models.py",
+      "bg_sha256": "d3ffd5762c5ebd71bd4cb9f6b2dddc785dedcc59410ed7d7499efd58c9ac93d8",
+      "qc_sha256": "d3ffd5762c5ebd71bd4cb9f6b2dddc785dedcc59410ed7d7499efd58c9ac93d8",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/condensed_runner.py",
+      "bg_sha256": "1871a9eb8836b6c51c828513d63b842118b356f20fe072df35d9c7774129403d",
+      "qc_sha256": "1871a9eb8836b6c51c828513d63b842118b356f20fe072df35d9c7774129403d",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/fermi_hubbard_1d.py",
+      "bg_sha256": "479e2f95213efd0030a785e98206305d755ec3af55564effb2ec69bcd2fbe094",
+      "qc_sha256": "479e2f95213efd0030a785e98206305d755ec3af55564effb2ec69bcd2fbe094",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/fermi_hubbard_2d.py",
+      "bg_sha256": "d954cf7a43632e4c38c409e0e1c21564e387bd4d6f21e5350b63d667fed6e675",
+      "qc_sha256": "d954cf7a43632e4c38c409e0e1c21564e387bd4d6f21e5350b63d667fed6e675",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/frontier_gauge.py",
+      "bg_sha256": "5fc8e74d78bc622328b8d07a98b4c5fc2ac1ed44b616651af18d765138e796d2",
+      "qc_sha256": "5fc8e74d78bc622328b8d07a98b4c5fc2ac1ed44b616651af18d765138e796d2",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/grassmann_compression.py",
+      "bg_sha256": "9ef850a483083cca0b70b18af31f0b50c360be561b96b705f7819b057c17aaf1",
+      "qc_sha256": "9ef850a483083cca0b70b18af31f0b50c360be561b96b705f7819b057c17aaf1",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/heisenberg_1d.py",
+      "bg_sha256": "8803257134d5299257e66674f7a9465789ca880ee50540f9c24d82fec87d7250",
+      "qc_sha256": "8803257134d5299257e66674f7a9465789ca880ee50540f9c24d82fec87d7250",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/heisenberg_2d.py",
+      "bg_sha256": "1c4e78f3eea2d7026258806e59c71f201c07c3d27939c24b55a694f4b35492eb",
+      "qc_sha256": "1c4e78f3eea2d7026258806e59c71f201c07c3d27939c24b55a694f4b35492eb",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/hubbard_holstein_1d.py",
+      "bg_sha256": "10ce1376094089d6b1d2a1694f3c3b862137e862e76af6771e0e06a74e77b0fd",
+      "qc_sha256": "10ce1376094089d6b1d2a1694f3c3b862137e862e76af6771e0e06a74e77b0fd",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/ising_1d.py",
+      "bg_sha256": "7e833d3abca943d85b0cc67dbe741aeead9dce6d3af0b97da5664fb353971cc6",
+      "qc_sha256": "7e833d3abca943d85b0cc67dbe741aeead9dce6d3af0b97da5664fb353971cc6",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/ising_2d.py",
+      "bg_sha256": "124477604471f1419822c6b8780a79f63b6342fba57942fcaa7bafb9727d50c0",
+      "qc_sha256": "124477604471f1419822c6b8780a79f63b6342fba57942fcaa7bafb9727d50c0",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/metric_compression_solvers.py",
+      "bg_sha256": "4a6b5fe60cf07eeef64d9c378610c6475ca6e407266a8c88aaa379626e7402f4",
+      "qc_sha256": "4a6b5fe60cf07eeef64d9c378610c6475ca6e407266a8c88aaa379626e7402f4",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/nn_chain_1d.py",
+      "bg_sha256": "24f099c0623d5258fb3415af38a3115b232809d38f841bc9bebf83b1bcc9eac3",
+      "qc_sha256": "24f099c0623d5258fb3415af38a3115b232809d38f841bc9bebf83b1bcc9eac3",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/nn_chain_cases.py",
+      "bg_sha256": "81a699f7b139f3b5b570aceeab19e4698877c9b36281f14a067e2b01353d1935",
+      "qc_sha256": "81a699f7b139f3b5b570aceeab19e4698877c9b36281f14a067e2b01353d1935",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/nn_chain_models.py",
+      "bg_sha256": "38bb1e20d11d75d5ae78f9fd61f5aa4bd969e8c95bf173bd9885592a9aa45514",
+      "qc_sha256": "38bb1e20d11d75d5ae78f9fd61f5aa4bd969e8c95bf173bd9885592a9aa45514",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/open_boundary_hubbard.py",
+      "bg_sha256": "2f73c4e85ebb88a6125f2e6f58660e2c747acdd595bab9d3edbae57fd84aaaaf",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/open_boundary_support.py",
+      "bg_sha256": "131bd2269565795b15d32b6e2e95a7432f3e828a7151918e7685e9787b2ec656",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/periodic_bose_validation.py",
+      "bg_sha256": "c5c477d31581952d15e5cd5b4a80de5cd9cc1c16df5b3f85df39be30994df72d",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/periodic_hubbard.py",
+      "bg_sha256": "afac0388880c8daea689d51bb1ef666b14db4714c20d188ac726d100f2273879",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/periodic_hubbard_validation.py",
+      "bg_sha256": "8f100ddc871cc6bb8800b1f59a18a0d7e0892e7a37aba0b1802f611022c25cd1",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/qchem_active_space.py",
+      "qc_sha256": "e1631b948668e88289fcaa48eb83c0ac24bf99d4f5ef58547aedefb4df86a6ea",
+      "integration": "qc"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/qchem_ground_state.py",
+      "qc_sha256": "41be0fd7017b0f57aa5de2fb81d7f7d9ce223e2d3312c775d34691099ffb87da",
+      "integration": "qc"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/run_compression_suite.py",
+      "bg_sha256": "be10177276b9419139a5fdaf2e35961c7f961021bd6b3401eccedb25ac228c1b",
+      "qc_sha256": "be10177276b9419139a5fdaf2e35961c7f961021bd6b3401eccedb25ac228c1b",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/run_condensed_suite.py",
+      "bg_sha256": "1bca1f74dbab1b2f5b437a4db8cfb006083f64f942896dcba0b58da215f1744d",
+      "qc_sha256": "1bca1f74dbab1b2f5b437a4db8cfb006083f64f942896dcba0b58da215f1744d",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/run_gauge_convergence.py",
+      "bg_sha256": "4094b9acd57b0db569d22f8a60d205402fd88279a4e6a253d35650770b1b087f",
+      "qc_sha256": "4094b9acd57b0db569d22f8a60d205402fd88279a4e6a253d35650770b1b087f",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/run_periodic_bose_hubbard.sh",
+      "bg_sha256": "273c9efebf23ea30980e498700f789ae3b7f1e2c977b0320c19b4486f9c90dab",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/run_periodic_hubbard.sh",
+      "bg_sha256": "a72c0b6bffd21e9b68d3ae09ef607e36639fd285042225ff320ccbf2cd97744c",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/summarize_compression.py",
+      "bg_sha256": "685832f0c1f2a80e36bad6bc02581cd67826f49c96beb3ca9b60da1b536de620",
+      "qc_sha256": "685832f0c1f2a80e36bad6bc02581cd67826f49c96beb3ca9b60da1b536de620",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/benchmarks/transfer_compression.py",
+      "bg_sha256": "5c12fb26aabcbea5a97f4f616a170ec7b5bc830d2d5895ef2529c9afe07592fc",
+      "qc_sha256": "5c12fb26aabcbea5a97f4f616a170ec7b5bc830d2d5895ef2529c9afe07592fc",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/canonical.py",
+      "bg_sha256": "693b6c1f2e2d400dd34c9dfbf14b514549b1d10293f321ee3790c2c2d6b076e9",
+      "qc_sha256": "693b6c1f2e2d400dd34c9dfbf14b514549b1d10293f321ee3790c2c2d6b076e9",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/cbe.py",
+      "bg_sha256": "08b2f4c0915cde58d6cb82fad2d7a092ecfe07797926698d52b17b8084768ced",
+      "qc_sha256": "6e5a80e5d3f2ff88cf6d12c9779271171ab8a0e97012850f7cf60a41bd122328",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/cbe_coupled.py",
+      "bg_sha256": "23b626c5acc822a2dbaccc221639bb27e9214936706c5529d5f5e19889f64dfc",
+      "qc_sha256": "2e564f1ace2071b2c489a0bc0a0c62986e4e189e64547e6c3b91876451872d93",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/cbe_general.py",
+      "bg_sha256": "ba47a32f839e3240d83bd8bd3101ecbe07bf619f5c2c06bee94e06f6a455ed62",
+      "qc_sha256": "53bf28f13b3e9e07386c023eae83b99b0183b5973e56ac4d7576066fcd93a24d",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/contraction_paths.py",
+      "bg_sha256": "46cce1d648d405ff86130bb7d09ec08883be27d659664d49042736411161455e",
+      "qc_sha256": "46cce1d648d405ff86130bb7d09ec08883be27d659664d49042736411161455e",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/contractions.py",
+      "bg_sha256": "fcae29637283d9acd2a551861816e5614245d48c6ac67946b5da67f6ae4b154f",
+      "qc_sha256": "13172845d98a25db4f59f2feb9a0e95589fc65fc0879519604ba640bed4cb327",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/gauge.py",
+      "bg_sha256": "78a750a92efda9a2305c4439126084dff95287ff6fa43b019a68d20f6ed969ca",
+      "qc_sha256": "3888c77620096bfb58543438384caf72b2f2c042ab5bd9ae6b504103acd229a3",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/letta_cbe_physical_index_cases.toc",
+      "bg_sha256": "69e1692f7e02f684f3b5e534f84b5eb793bb7c52628ded7f68673c0e09488a3d",
+      "qc_sha256": "69e1692f7e02f684f3b5e534f84b5eb793bb7c52628ded7f68673c0e09488a3d",
+      "integration": "excluded unrelated example/generated auxiliary; preserved in originals and snapshot"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/numpy_contractions.py",
+      "bg_sha256": "c9c8aecfb567419ff18e3ad6086a09b15afd6e4792dd931e99bf4e4361e9d44e",
+      "qc_sha256": "25b0a19e5307ad81411dff9c5047a5d38257476528850741ff613c6ca2594ee6",
+      "integration": "qc"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/open_boundary.py",
+      "bg_sha256": "7350b6a502a406342585fafc210324fd429c1f899cdb1cf579e52fe6b2ec002d",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/operators.py",
+      "bg_sha256": "4c16d47c22e11ca902ce0b33f92cd43b43c373d88fca1313cfd5fc692fa461ed",
+      "qc_sha256": "4c16d47c22e11ca902ce0b33f92cd43b43c373d88fca1313cfd5fc692fa461ed",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/orbital_ordering.py",
+      "qc_sha256": "85029567d14835babbd67910cc7fde350e70ad55847c26ca2d25751db1fbf6f4",
+      "integration": "qc"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/periodic.py",
+      "bg_sha256": "4923c35ba6b33e619451325b4bf4652c90c1bd077dae89fc04dc07f6c7db962f",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/qchem.py",
+      "qc_sha256": "cd20ccb11f10fe448baea8712d2ece144ba6113f18b67d7be68c8908e01bcad9",
+      "integration": "qc"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/reduced_contraction.py",
+      "bg_sha256": "0781fe5a248ddc115eb172e4f435b47ac5785a1e09485bdaaa49ad4ace7501fa",
+      "qc_sha256": "09df1ce471b437d706462c0bbdcb1686332f79536a347ab939f8dcf795720f30",
+      "integration": "qc"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/reduced_environment.py",
+      "qc_sha256": "004320102cb1de658c48c76a1a57d1bc4fc79a9808b4e4d57ab78ce5b202a92d",
+      "integration": "qc"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/reduced_frontier.py",
+      "bg_sha256": "a7b9a2234234e8b7521f227f99a7adbb0b4e2d5ba83b9ad9bb25a3ba7933570b",
+      "qc_sha256": "a7b9a2234234e8b7521f227f99a7adbb0b4e2d5ba83b9ad9bb25a3ba7933570b",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/reduced_gauge.py",
+      "qc_sha256": "bb689eea76b2f4f6da84b053058aaf2287b296e3ef934ed42da436982053fd4d",
+      "integration": "qc"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/reduced_mpo_compile.py",
+      "qc_sha256": "2de6170e2b1d773931db9f306b99ad962e4c2c5e48013c1593541b2af9f9db1a",
+      "integration": "qc"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/reduced_norm.py",
+      "qc_sha256": "aa3217a868bab8e3615a08507bee9455a4fd5528e9d38d7e7ffbcd94ed79dbe2",
+      "integration": "qc"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/reduced_operators.py",
+      "bg_sha256": "09bd6d078806bccb53ddce8f8433a6b510d89f1166a064fff5267bf90b065776",
+      "qc_sha256": "410acad902842cd61d90ce0daee7fa0b07934fa117ea8ebc055ddeb8809f3126",
+      "integration": "qc"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/reduced_solver.py",
+      "bg_sha256": "43d384d531442205cebcaafd39e75afa7a29264e38df1ebd8e066fb7d4e16589",
+      "qc_sha256": "eed09d8ff64e318cd3b91a014678529e2069945f4bd90e3f691bcbedf33b44b1",
+      "integration": "qc"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/reduced_state.py",
+      "bg_sha256": "b2eb0f7b8bf8983eeaef72b1adea96ad52ad1593badea973ec56d3ab3a3233e1",
+      "qc_sha256": "13b4b38281da344b9b19f7f9990e0c2951bc7e3428cb79ac27397f8f0e33fe1c",
+      "integration": "qc"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/reduced_symmetry.py",
+      "bg_sha256": "a95ddaacfbeaf45f04135a79ccef06411cf6c0869f8d232099cf9d674f05281d",
+      "qc_sha256": "a95ddaacfbeaf45f04135a79ccef06411cf6c0869f8d232099cf9d674f05281d",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/solver.py",
+      "bg_sha256": "303e5abdbadfbf040609b8fcd4e60e6d6b6ec557a791bcfa065dac75e87ffe94",
+      "qc_sha256": "8b62d1e7e3e54c3e1846c4396550e92324d1d36ac8e8c8e2ba7663d414ce73ff",
+      "integration": "three-way"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/state.py",
+      "bg_sha256": "b34eca4b00ae69ee12d326eb03580add8f066bc438cff001e274e910947840a4",
+      "qc_sha256": "b34eca4b00ae69ee12d326eb03580add8f066bc438cff001e274e910947840a4",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/symmetry.py",
+      "bg_sha256": "b4563f168475dce0ac85554a1e6c3e102c0da00a1ea334007616c34e5214556b",
+      "qc_sha256": "b4563f168475dce0ac85554a1e6c3e102c0da00a1ea334007616c34e5214556b",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_one_site_opt/transfer.py",
+      "bg_sha256": "e9ce333e9483dc38c6f052dc5df4aa5e9ae8267777b1b6c1db6f4e94e0c8a541",
+      "qc_sha256": "e9ce333e9483dc38c6f052dc5df4aa5e9ae8267777b1b6c1db6f4e94e0c8a541",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_two_site_opt/COMPRESSION.md",
+      "bg_sha256": "1dc44311f42a3d7a8b046a8546f1e394d5beea5b534acd55ca7c5b60f9cc7a33",
+      "qc_sha256": "1dc44311f42a3d7a8b046a8546f1e394d5beea5b534acd55ca7c5b60f9cc7a33",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_two_site_opt/README.md",
+      "bg_sha256": "79ff6566cc659e4a8c6674fbb990f42d98115bf3fa848a26b746de2a6ed57a0f",
+      "qc_sha256": "79ff6566cc659e4a8c6674fbb990f42d98115bf3fa848a26b746de2a6ed57a0f",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_two_site_opt/__init__.py",
+      "bg_sha256": "a478d06967bf71378b5d6d51f539373eac92ee0cf2858ca12f244d56750a1531",
+      "qc_sha256": "a478d06967bf71378b5d6d51f539373eac92ee0cf2858ca12f244d56750a1531",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_two_site_opt/_letta_for_2d/__init__.py",
+      "bg_sha256": "8e6a696e6559a8bf77e8110bf38050a0677e775b9f5456bf864abfdfe2e70ace",
+      "qc_sha256": "8e6a696e6559a8bf77e8110bf38050a0677e775b9f5456bf864abfdfe2e70ace",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_two_site_opt/_letta_for_3d/__init__.py",
+      "bg_sha256": "85a8253933535c74fea4ae2d7e53a0f76b9f496884535ac882b1a91de734a4e7",
+      "qc_sha256": "85a8253933535c74fea4ae2d7e53a0f76b9f496884535ac882b1a91de734a4e7",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_two_site_opt/benchmarks/__init__.py",
+      "bg_sha256": "d8f33b27fea8c920cf1c7bc6a94583924297bf4c8135010063d2cd079df9e1a4",
+      "qc_sha256": "d8f33b27fea8c920cf1c7bc6a94583924297bf4c8135010063d2cd079df9e1a4",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_two_site_opt/benchmarks/heisenberg_symmetry.py",
+      "bg_sha256": "fa864e24e539315b665709e8a64b6264d887e33ab9187115b0afb45f3aadae77",
+      "qc_sha256": "fa864e24e539315b665709e8a64b6264d887e33ab9187115b0afb45f3aadae77",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_two_site_opt/benchmarks/ising_convergence.py",
+      "bg_sha256": "9900e59d33ce1376fae3bf6d7931ffdd096770604aca60cc4605254f61296846",
+      "qc_sha256": "9900e59d33ce1376fae3bf6d7931ffdd096770604aca60cc4605254f61296846",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_two_site_opt/benchmarks/ising_symmetry.py",
+      "bg_sha256": "0f42c2839cfa15e2d403abf9313aaf2fb2416ed1485ae199bd4923809076d394",
+      "qc_sha256": "0f42c2839cfa15e2d403abf9313aaf2fb2416ed1485ae199bd4923809076d394",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_two_site_opt/benchmarks/nn_energy_refinement.py",
+      "bg_sha256": "996250c3c895d61cf0a85dac622eb5de6ed802c308d15b8c3f7898bc3740c2ae",
+      "qc_sha256": "996250c3c895d61cf0a85dac622eb5de6ed802c308d15b8c3f7898bc3740c2ae",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_two_site_opt/contractions.py",
+      "bg_sha256": "15b368eb2c9e535513cfbabee6aa0b31f4387d17b370cfed76b41e422e7708fb",
+      "qc_sha256": "15b368eb2c9e535513cfbabee6aa0b31f4387d17b370cfed76b41e422e7708fb",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_two_site_opt/energy_refinement.py",
+      "bg_sha256": "4577f5ec53471d1aecb9ed9f56d6ba4a48e9e0c322c15a4b741eb440d52cc923",
+      "qc_sha256": "54ddec207a6ed090ccaaaa8ac94c5d20c71101dd52304d5220d2a3d37bef5e3c",
+      "integration": "bg"
+    },
+    {
+      "path": "pyqed/_letta_two_site_opt/pair.py",
+      "bg_sha256": "78e8bb317c9aff97899382657bedf50007d2dd81c288952ffdb5e4b9fcf69f3a",
+      "qc_sha256": "78e8bb317c9aff97899382657bedf50007d2dd81c288952ffdb5e4b9fcf69f3a",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_two_site_opt/pair_contractions.py",
+      "bg_sha256": "4f6d4e23303e6543b0ea2b53b42df526c9718fa2580f6817895f4ce94449fbd3",
+      "qc_sha256": "4f6d4e23303e6543b0ea2b53b42df526c9718fa2580f6817895f4ce94449fbd3",
+      "integration": "identical"
+    },
+    {
+      "path": "pyqed/_letta_two_site_opt/reduced_solver.py",
+      "bg_sha256": "5485e88b5feb689cf1dce4c2d2649851c80d83eccbf2e0b620b18a2eb9e7f00d",
+      "qc_sha256": "492ce6022be462a2a65a17292c9735ab253d7c71bafdb8edaef77014428dc93e",
+      "integration": "qc"
+    },
+    {
+      "path": "pyqed/_letta_two_site_opt/solver.py",
+      "bg_sha256": "f612c8183ab2918dd5075d19d3a5404de4cc77053eeb4dcfe371bd01c5e4443d",
+      "qc_sha256": "c6a8654c5aad41756c03307f7449bcdc7a73203d4470cb0a617bf2eb9b8d811e",
+      "integration": "three-way"
+    },
+    {
+      "path": "pyqed/_letta_two_site_opt/truncation.py",
+      "bg_sha256": "6b8061f17e4fdca43219e286ffed698e6f2a688468d98de602bdf5769669352f",
+      "qc_sha256": "ce9f57bbd5a36259292648cf0c5637d8aee830aa6877911129bda0faa6c98c6d",
+      "integration": "bg"
+    },
+    {
+      "path": "tests/data/feco5_cas8_nn_roundoff.npz",
+      "qc_sha256": "e075e819d8ceb8d57d08f37ddc0c46db284caaf10927fcebe3e127deeb284576",
+      "integration": "qc"
+    },
+    {
+      "path": "tests/test_letta_2d_comparison.py",
+      "bg_sha256": "1e02995959c65068c97c87b99501fa83199fa4415013c350eb30ca93a7bf9678",
+      "qc_sha256": "1e02995959c65068c97c87b99501fa83199fa4415013c350eb30ca93a7bf9678",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_accuracy_convergence.py",
+      "bg_sha256": "0229170b306dedd922047a6a56c6014af180dc822edb8db150f571225007a839",
+      "integration": "bg"
+    },
+    {
+      "path": "tests/test_letta_benchmark_reconstruction.py",
+      "qc_sha256": "05b260ed1883fbda141dc79e9b1d09cb211914925fb1befda2aae35b6646c837",
+      "integration": "qc"
+    },
+    {
+      "path": "tests/test_letta_canonical_reuse.py",
+      "bg_sha256": "2a3df9f9f36c2dc1cbe621c5b54cc4acb53646fc754d8468f6965ba8352cf59b",
+      "qc_sha256": "2a3df9f9f36c2dc1cbe621c5b54cc4acb53646fc754d8468f6965ba8352cf59b",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_cbe.py",
+      "bg_sha256": "95501b40ea015159c8c4d5ab5378ba7a6aa596dd58785f27fdcee606266a2540",
+      "qc_sha256": "95501b40ea015159c8c4d5ab5378ba7a6aa596dd58785f27fdcee606266a2540",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_cbe_acceptance.py",
+      "bg_sha256": "7a64f913c8c4d66522cf410fd3d805fc595884e0ae8c2415fec1b74bd89f8bcb",
+      "qc_sha256": "7a64f913c8c4d66522cf410fd3d805fc595884e0ae8c2415fec1b74bd89f8bcb",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_cbe_als_initialization.py",
+      "bg_sha256": "aec6c8d3f1d9c4766a149d0cd1eff55f3582524f8c7cbd0c892440db23c0ac65",
+      "qc_sha256": "aec6c8d3f1d9c4766a149d0cd1eff55f3582524f8c7cbd0c892440db23c0ac65",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_cbe_conditional_trim.py",
+      "bg_sha256": "2a8d43f73d9e6dfbe2d7d038d28ceb4bb0652051f1daf487c06863e72e2810f3",
+      "qc_sha256": "8cfaa2b65287dc08a3dbc745b415300031b952dbb9dc2d273bfaa7d507e7ef02",
+      "integration": "bg"
+    },
+    {
+      "path": "tests/test_letta_cbe_coupled.py",
+      "bg_sha256": "df2af4d53a95bdf0f36da0c5db7f6dc7980e949f3a480b58008e4339fa99a985",
+      "qc_sha256": "99bf46ac6f4b7d3689432b1f97dddff90fb783d0bf5351f0d5c55628024efd12",
+      "integration": "bg"
+    },
+    {
+      "path": "tests/test_letta_cbe_energy_trim.py",
+      "bg_sha256": "4b27987cf2f55b2c2d6478e9b2a243de6486f5bbcff11f835eec9f5a9e398bd8",
+      "qc_sha256": "4b27987cf2f55b2c2d6478e9b2a243de6486f5bbcff11f835eec9f5a9e398bd8",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_cbe_general.py",
+      "bg_sha256": "3eae435fafb488126fb5dcca4b67ebf5b9be612ad4a1ca2f253735382cce2e7b",
+      "qc_sha256": "60ba20d6b92409e97b345bdc5ce2ce03c0eef85cddd155976caab682f606073e",
+      "integration": "bg"
+    },
+    {
+      "path": "tests/test_letta_cbe_recovery.py",
+      "bg_sha256": "dc94f99c316e522acb475a6aedef4c1fa7789fb9f09493eaf844257bc2a1cd09",
+      "integration": "bg"
+    },
+    {
+      "path": "tests/test_letta_cbe_refinement.py",
+      "bg_sha256": "89c6fa17c2f751f59c60e26098ba0a814445a2ac38ff6d4012c86314e4068849",
+      "qc_sha256": "77fb4b354fd4b54f0b21d71ea2b6967b3663e78b100a8a4e3e1badd41b016c97",
+      "integration": "bg"
+    },
+    {
+      "path": "tests/test_letta_cbe_scaling.py",
+      "bg_sha256": "8ebeea91699b2eaac0de2dd2c1d93e513360a7d1f4702c340d7c4dbdc7ecf4c1",
+      "qc_sha256": "8ebeea91699b2eaac0de2dd2c1d93e513360a7d1f4702c340d7c4dbdc7ecf4c1",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_cbe_update_scaling.py",
+      "bg_sha256": "a79a63f52883ffbdd773923677ee8380dfde0fc9d181a75a75aeed95c6c127bc",
+      "qc_sha256": "a79a63f52883ffbdd773923677ee8380dfde0fc9d181a75a75aeed95c6c127bc",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_cluster_compression_launch.py",
+      "bg_sha256": "0f56d7dfaeb9dcef67f014d3ae4aa40d51652fab3624a5bd9b5cfff253923c54",
+      "qc_sha256": "0f56d7dfaeb9dcef67f014d3ae4aa40d51652fab3624a5bd9b5cfff253923c54",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_cluster_launch.py",
+      "bg_sha256": "d9e027095080b52ebdf5547623e2e375dc7ba4a77f54ede975065fa3ed0466a3",
+      "qc_sha256": "d9e027095080b52ebdf5547623e2e375dc7ba4a77f54ede975065fa3ed0466a3",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_cluster_rectangles.py",
+      "bg_sha256": "3c408e262ae190fc8822f11ba5be48ce160e40f9a76094e2c817c3cb9753fb8a",
+      "integration": "bg"
+    },
+    {
+      "path": "tests/test_letta_compression_reference_solvers.py",
+      "bg_sha256": "0fd04e0b7862936343b88b9d399e91c0bdccd053d52069156f464cbc60b94dad",
+      "qc_sha256": "0fd04e0b7862936343b88b9d399e91c0bdccd053d52069156f464cbc60b94dad",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_compression_solvers.py",
+      "bg_sha256": "e5ebd68fdeebd9e0a17e1463a732f099fa3adae1a9cc8e29be75216e419a0f2f",
+      "qc_sha256": "e5ebd68fdeebd9e0a17e1463a732f099fa3adae1a9cc8e29be75216e419a0f2f",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_condensed_benchmarks.py",
+      "bg_sha256": "b2aead7e546cb0f3a1547abb05e28145c860df1db6ccc076880315f4aa3122f9",
+      "qc_sha256": "b2aead7e546cb0f3a1547abb05e28145c860df1db6ccc076880315f4aa3122f9",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_condensed_click_run.py",
+      "bg_sha256": "6eb57ae5708c8c07a533388fce15916a3fab9b24373473b9c817b0eff873ef48",
+      "qc_sha256": "6eb57ae5708c8c07a533388fce15916a3fab9b24373473b9c817b0eff873ef48",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_condensed_models.py",
+      "bg_sha256": "4eb6e656b0b440cdfcd1a3535df7bdb5716c4a97d8e5d0b13e8f48e134a3985a",
+      "qc_sha256": "4eb6e656b0b440cdfcd1a3535df7bdb5716c4a97d8e5d0b13e8f48e134a3985a",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_contraction_paths.py",
+      "bg_sha256": "f65b1490be1866b72dbfb728bd4be06beafe417646519078ec9347b72870a2d5",
+      "qc_sha256": "f65b1490be1866b72dbfb728bd4be06beafe417646519078ec9347b72870a2d5",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_coupled_refinement.py",
+      "bg_sha256": "2681b6d6a7f7401e1ba97994626321cfefa657bdc4d46f18204e7d915364a351",
+      "qc_sha256": "b6cea5810ffeb0c879abfb4bdfff9155adf1f53cb5f0dcd4fd3cd92dd67cbdc7",
+      "integration": "bg"
+    },
+    {
+      "path": "tests/test_letta_environment_reuse.py",
+      "bg_sha256": "7b627271a3858ab1a054c9c405b97e060a2ee4abede6f8a88b521de4f1de43a5",
+      "qc_sha256": "7b627271a3858ab1a054c9c405b97e060a2ee4abede6f8a88b521de4f1de43a5",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_for_2d.py",
+      "bg_sha256": "bc720f0d82983161fbf189b43e30b305f985435bcff436b3b373396e75e69e8a",
+      "qc_sha256": "bc720f0d82983161fbf189b43e30b305f985435bcff436b3b373396e75e69e8a",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_for_2d_vu.py",
+      "bg_sha256": "74129e57321197f87a86e258701bd392a10dbf032e4316f35433767e724efbbb",
+      "qc_sha256": "74129e57321197f87a86e258701bd392a10dbf032e4316f35433767e724efbbb",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_for_2d_vu_example.py",
+      "bg_sha256": "0ff9b311309faaea2a79443a13cddf455ea5408a536e9a544d085e6eb003e8cd",
+      "qc_sha256": "0ff9b311309faaea2a79443a13cddf455ea5408a536e9a544d085e6eb003e8cd",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_for_2d_vu_plane.py",
+      "bg_sha256": "5f3f50bfe2d02b0f38aadf64afae3fcb8f201b3d7d0a356e8fd049c639349381",
+      "qc_sha256": "5f3f50bfe2d02b0f38aadf64afae3fcb8f201b3d7d0a356e8fd049c639349381",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_for_3d.py",
+      "bg_sha256": "dbbb8c873de017e5f0374c5a711426284fb2e16782828cdfeb716e4fa73f0a05",
+      "qc_sha256": "dbbb8c873de017e5f0374c5a711426284fb2e16782828cdfeb716e4fa73f0a05",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_frontier_gauge.py",
+      "bg_sha256": "c571a0a4f9eb90369f874780564ded979128149eb394eb2e7c860503a365ff85",
+      "qc_sha256": "aa15ee0bdba87f0c7ef83f1c74762f6c00fe41e633c4db7017ea173d1b15e393",
+      "integration": "bg"
+    },
+    {
+      "path": "tests/test_letta_gauge_accuracy.py",
+      "bg_sha256": "5e7c49f9dcf05a9950074b4f0338520eb8277bff81064a62c79f17306d5e9d10",
+      "integration": "bg"
+    },
+    {
+      "path": "tests/test_letta_gauge_convergence_benchmark.py",
+      "bg_sha256": "2a973286a7c99359ffa7bea82bf1d1150d009281b69eee5f443c0e29ebf6e744",
+      "qc_sha256": "2a973286a7c99359ffa7bea82bf1d1150d009281b69eee5f443c0e29ebf6e744",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_general_ties.py",
+      "bg_sha256": "ad6fa6ea684f961166f61ed55013679b09bae7af56646ffda8f44a5bf291a8df",
+      "qc_sha256": "ad6fa6ea684f961166f61ed55013679b09bae7af56646ffda8f44a5bf291a8df",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_harder_benchmarks.py",
+      "bg_sha256": "423d24c5356ce27294e8601e446a29b87c6396a25b1176142e266251c6bb0f93",
+      "qc_sha256": "423d24c5356ce27294e8601e446a29b87c6396a25b1176142e266251c6bb0f93",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_harder_plots.py",
+      "bg_sha256": "aa63847f22c7b0f4949ee48da5ae5282db246830a06894aad246aa0643ad19a3",
+      "qc_sha256": "aa63847f22c7b0f4949ee48da5ae5282db246830a06894aad246aa0643ad19a3",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_hubbard_holstein.py",
+      "bg_sha256": "ada96751063d6531a77ce74a78fc1d693d5dcf576e2f53fd4501ca0a3f321553",
+      "qc_sha256": "ada96751063d6531a77ce74a78fc1d693d5dcf576e2f53fd4501ca0a3f321553",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_local_eigensolver.py",
+      "bg_sha256": "065835adf4507a6ea50de6f7aa533b8a572214f39d892e752d81e9abdc41350a",
+      "qc_sha256": "b4978614ac0c3df3a12c3c96d6eb6b18a95e8d3be1623b2bfa087fabd42d1560",
+      "integration": "bg"
+    },
+    {
+      "path": "tests/test_letta_metric_scale_accuracy.py",
+      "bg_sha256": "3e8a1f5c1489efa832f3f5c5c070662ad86f275e8d976279ea41ca62f4862f7b",
+      "integration": "bg"
+    },
+    {
+      "path": "tests/test_letta_metric_square_root.py",
+      "bg_sha256": "3f1f5b190ecebb2bac5fc4244bf13b4f9979882abdcf8f9cd281d0280fa09dbb",
+      "qc_sha256": "6a7311f28b4be958773b1145b6f46dc6a129a00ead44101b989ab3886b9c0ae6",
+      "integration": "bg"
+    },
+    {
+      "path": "tests/test_letta_metric_whitening.py",
+      "bg_sha256": "fce14c9dd599a16472faa095df37a313d57165727cbb5ee0c2da064522f9634b",
+      "qc_sha256": "d9b50f2f79c4be43821257d69cbe21133b9ff0e2fa5e6e69ac84fcdb39596d58",
+      "integration": "bg"
+    },
+    {
+      "path": "tests/test_letta_native_su2.py",
+      "qc_sha256": "db8ea58686a713c8df853da9303f43b64d9480c6a8c35a806df875951e450798",
+      "integration": "qc"
+    },
+    {
+      "path": "tests/test_letta_nn_chain_models.py",
+      "bg_sha256": "5d8d331c3ee21a673b63c555a69481de718ae77e1c4df2303c4a8d04d5fde9bb",
+      "qc_sha256": "5d8d331c3ee21a673b63c555a69481de718ae77e1c4df2303c4a8d04d5fde9bb",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_one_site_opt_structure.py",
+      "bg_sha256": "c5f4e75b33ec4ebea0e28a61802cf88a8570ed27d1ddeebbefb77cf78f316a4d",
+      "qc_sha256": "c5f4e75b33ec4ebea0e28a61802cf88a8570ed27d1ddeebbefb77cf78f316a4d",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_open_boundary.py",
+      "bg_sha256": "207fcf96c6a500687a393c3a6991dcea1643e6c6ad8a8b286eb19f064a4d2172",
+      "integration": "bg"
+    },
+    {
+      "path": "tests/test_letta_pair_equations.py",
+      "bg_sha256": "a5d7372c21e79c6cb0ba774daac274bcb44fd75ac3ab5a469b27167d16f241ef",
+      "qc_sha256": "a5d7372c21e79c6cb0ba774daac274bcb44fd75ac3ab5a469b27167d16f241ef",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_pair_execution.py",
+      "bg_sha256": "6b57ad4a608a0901ee17f8e73195180af1ab1e1982cc973ee32f50308f5a63a9",
+      "qc_sha256": "6b57ad4a608a0901ee17f8e73195180af1ab1e1982cc973ee32f50308f5a63a9",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_pair_factor_frame.py",
+      "bg_sha256": "7fddd4064fc8bc8daaa8214408684e8c0fe51e23e961eaa5077fb43b12cb7988",
+      "qc_sha256": "7fddd4064fc8bc8daaa8214408684e8c0fe51e23e961eaa5077fb43b12cb7988",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_periodic.py",
+      "bg_sha256": "f6f81ffaf02abc7894ae3ff47fc6d26c318a7a9f4937981359cdcb6e32c1a486",
+      "integration": "bg"
+    },
+    {
+      "path": "tests/test_letta_prepared_plans.py",
+      "bg_sha256": "0828cf8d10f665684fae96f8581efa12636740e8826fad1fbea92d4ef524d8a7",
+      "qc_sha256": "0828cf8d10f665684fae96f8581efa12636740e8826fad1fbea92d4ef524d8a7",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_qchem.py",
+      "qc_sha256": "f5780712c3283aef874d3106adb5d70fa66356621464f0d26a635dbbd13310e8",
+      "integration": "qc"
+    },
+    {
+      "path": "tests/test_letta_qchem_active_space.py",
+      "qc_sha256": "067a7f6ff021de2f54e56de95c0be661d0062c68c7e680e3cbe151959e667c60",
+      "integration": "qc"
+    },
+    {
+      "path": "tests/test_letta_qchem_symmetry.py",
+      "qc_sha256": "542172a35815792f61afbd0147eff71f73ebc18e4b7e2d3c192468619ce6ad1f",
+      "integration": "qc"
+    },
+    {
+      "path": "tests/test_letta_reduced_acceptance.py",
+      "qc_sha256": "7fe973f577f1f489e4b50710892431c9f7d72ed3451fe73ac8b5f15aaeb887bc",
+      "integration": "qc"
+    },
+    {
+      "path": "tests/test_letta_reduced_frontier.py",
+      "bg_sha256": "0413f509348798d0de0d8b80f9a5f1433d3cdbb5647ad21a628d210a510ec621",
+      "qc_sha256": "0413f509348798d0de0d8b80f9a5f1433d3cdbb5647ad21a628d210a510ec621",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_reduced_gauge.py",
+      "qc_sha256": "434f9ca02d7a4f03d529cef9bd1174e1ffecbe483b40ff75cad8614a4969abae",
+      "integration": "qc"
+    },
+    {
+      "path": "tests/test_letta_reduced_mpo.py",
+      "bg_sha256": "4081bb619967fb5dcc67da5269a2b38190e0dbd7e530543842569dde9a316d55",
+      "qc_sha256": "4081bb619967fb5dcc67da5269a2b38190e0dbd7e530543842569dde9a316d55",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_reduced_norm.py",
+      "qc_sha256": "69b26a240774aa742436f08f3f43f0bd3dc9ca8b9834a44feb2343feef22c7de",
+      "integration": "qc"
+    },
+    {
+      "path": "tests/test_letta_reduced_one_site.py",
+      "bg_sha256": "4c4442e071d37f247a94907f962165587281c954fc88561807651bcad02f178c",
+      "qc_sha256": "4c4442e071d37f247a94907f962165587281c954fc88561807651bcad02f178c",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_reduced_state.py",
+      "bg_sha256": "a49d98d71c6f9dff593db26b10a7c61fa57083cb700d6347c484defa247542a7",
+      "qc_sha256": "a49d98d71c6f9dff593db26b10a7c61fa57083cb700d6347c484defa247542a7",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_reduced_symmetry.py",
+      "bg_sha256": "f758edb045c8068ecd0aae1e29b33f4d76f75ab8b68817a99c3f07bb683c0194",
+      "qc_sha256": "f758edb045c8068ecd0aae1e29b33f4d76f75ab8b68817a99c3f07bb683c0194",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_reduced_two_site.py",
+      "bg_sha256": "77cb337429a4fea41011309853ce6938cad6dc7d226872f59dad8fa6726886f5",
+      "qc_sha256": "77cb337429a4fea41011309853ce6938cad6dc7d226872f59dad8fa6726886f5",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_su2_benchmark.py",
+      "bg_sha256": "7d28b2daa79282bc30d6918bf7808d5d5c973ad30144b37ac6d4104543404899",
+      "qc_sha256": "7d28b2daa79282bc30d6918bf7808d5d5c973ad30144b37ac6d4104543404899",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_su2_schmidt.py",
+      "qc_sha256": "69f0c9cfa37ecd4a08c455d60161407bdb01389bda6f49d530d15a71ceae40cd",
+      "integration": "qc"
+    },
+    {
+      "path": "tests/test_letta_symmetry.py",
+      "bg_sha256": "1218882424d9d8cc7d36b39f53ef90ce63a57c50050e4298e1bf0520f02c5b82",
+      "qc_sha256": "1218882424d9d8cc7d36b39f53ef90ce63a57c50050e4298e1bf0520f02c5b82",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_symmetry_benchmark.py",
+      "bg_sha256": "8c1e118703a112e12c8ae3db7b75eb2108bdbc71aa1514952fad044e1367aa30",
+      "qc_sha256": "8c1e118703a112e12c8ae3db7b75eb2108bdbc71aa1514952fad044e1367aa30",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_tensordot_execution.py",
+      "bg_sha256": "827df82700f2156b2537dbc24c57fc57923ea168fd0bc965608b3b1ef2e414fc",
+      "qc_sha256": "827df82700f2156b2537dbc24c57fc57923ea168fd0bc965608b3b1ef2e414fc",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_transfer.py",
+      "bg_sha256": "bb761711b0e00638b8bb6a3e68e85d5c2273119b83a0cf7d3e908d7e5fa89afb",
+      "qc_sha256": "bb761711b0e00638b8bb6a3e68e85d5c2273119b83a0cf7d3e908d7e5fa89afb",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_two_site_benchmark.py",
+      "bg_sha256": "ae600c8e2a54c8905485dd636363c5a2b95eb44f965b84f7226803f0ac929962",
+      "qc_sha256": "ae600c8e2a54c8905485dd636363c5a2b95eb44f965b84f7226803f0ac929962",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_two_site_conditioning.py",
+      "bg_sha256": "2a8d486294d2f32b6408647325364114b56183c716415baa4d07bed678cf9c16",
+      "qc_sha256": "2a8d486294d2f32b6408647325364114b56183c716415baa4d07bed678cf9c16",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_two_site_energy_convergence.py",
+      "bg_sha256": "f84527a55a7e62f6bf7f77db9cb06fb2a79e86532a591000add385b5afff0b34",
+      "qc_sha256": "f84527a55a7e62f6bf7f77db9cb06fb2a79e86532a591000add385b5afff0b34",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_two_site_frontier.py",
+      "bg_sha256": "2353bc0af12cedf33b45c9d59d615ab2b6bcc031daf72d9417e2825e000c8c6d",
+      "qc_sha256": "2353bc0af12cedf33b45c9d59d615ab2b6bcc031daf72d9417e2825e000c8c6d",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_two_site_incumbent_refinement.py",
+      "bg_sha256": "1a8c87e7aa424a0298fd893fa13f9bbed05e0f4c786ad3cf91a0b199ea268955",
+      "qc_sha256": "1a8c87e7aa424a0298fd893fa13f9bbed05e0f4c786ad3cf91a0b199ea268955",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_letta_two_site_opt.py",
+      "bg_sha256": "e75dfd3a488c3d8b853a7615e4e583025ffded0f4701382e20542316b6b4e209",
+      "qc_sha256": "e75dfd3a488c3d8b853a7615e4e583025ffded0f4701382e20542316b6b4e209",
+      "integration": "identical"
+    },
+    {
+      "path": "tests/test_narg_qchem_letta.py",
+      "bg_sha256": "6b225da07c11a9c37633ef97d65cdf5ac3113867987965a4f794bda6a2563123",
+      "qc_sha256": "6b225da07c11a9c37633ef97d65cdf5ac3113867987965a4f794bda6a2563123",
+      "integration": "identical"
+    }
+  ],
+  "resolutions": {
+    "pyqed/_letta_one_site_opt/benchmarks/2D/cluster_sept27/run_compression.py": "Retain bg energy-refinement budget validation and serialized-start normalization protection; retain independent QC changes."
+  }
+}

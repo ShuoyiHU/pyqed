@@ -3,14 +3,18 @@
 The exact pair-space selector is retained as a correctness oracle.  The
 strict shrewd path uses weighted half-environment preselection, a streamed
 metric-projected physical residual, an expanded one-site solve, and
-one-site-metric trimming.  It never constructs a merged pair tensor, pair
-action, or pair metric.
+one-site-metric trimming, and fixed-rank alternating energy relaxation.
+It never constructs a merged pair tensor, pair action, or pair metric.
 """
 
 from __future__ import annotations
 
+from .._letta_compression import MetricCompressionOptions, compress_factors
+
+
 from dataclasses import dataclass
 from functools import wraps
+import time
 
 import numpy as np
 from scipy.sparse.linalg import LinearOperator, lsmr
@@ -23,6 +27,7 @@ from .._letta_two_site_opt.pair import (
 from .._letta_two_site_opt.truncation import (
     _MetricSquareRoot,
     metric_als_refine,
+    metric_refine,
 )
 
 
@@ -87,6 +92,13 @@ class CBESelection:
     merged_pair_count: int = 1
     preselection_output_size: int | None = None
     final_output_size: int | None = None
+    metric_kinds: tuple[str, ...] = ()
+    tangent_iterations: int = 0
+    tangent_relative_residual: float = 0.0
+    overlap_applications: int = 0
+    connector_dimension: int = 0
+    tangent_block_shapes: tuple[tuple[int, int], ...] = ()
+    selection_timings: dict[str, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +110,8 @@ class CBETrim:
     loss: float
     iterations: int
     norm: float
+    metric_kinds: tuple[str, ...] = ()
+    diagnostics: tuple[dict, ...] = ()
 
 
 def _complete_contraction(operands, labels, output, output_shape):
@@ -118,389 +132,6 @@ def _complete_contraction(operands, labels, output, output_shape):
     return result
 
 
-def _project_out_columns(candidate, kept, tolerance):
-    candidate = np.asarray(candidate)
-    kept = np.asarray(kept)
-    if candidate.ndim != 2 or kept.ndim != 2:
-        raise ValueError("column projection expects matrices.")
-    if candidate.shape[0] != kept.shape[0]:
-        raise ValueError("column spaces have incompatible parent dimensions.")
-    coefficients = np.linalg.pinv(kept, rcond=float(tolerance)) @ candidate
-    return candidate - kept @ coefficients
-
-
-def _project_out_rows(candidate, kept, tolerance):
-    candidate = np.asarray(candidate)
-    kept = np.asarray(kept)
-    if candidate.ndim != 2 or kept.ndim != 2:
-        raise ValueError("row projection expects matrices.")
-    if candidate.shape[1] != kept.shape[1]:
-        raise ValueError("row spaces have incompatible parent dimensions.")
-    coefficients = candidate @ np.linalg.pinv(kept, rcond=float(tolerance))
-    return candidate - coefficients @ kept
-
-
-def _retained_svd_rank(singular_values, maximum, tolerance):
-    singular_values = np.asarray(singular_values)
-    if singular_values.size == 0:
-        return 0
-    cutoff = float(tolerance) * float(singular_values[0])
-    return min(int(maximum), int(np.count_nonzero(singular_values > cutoff)))
-
-
-def _pad_left_direction(direction, shape, width):
-    result = np.zeros(shape[:-1] + (width,), dtype=direction.dtype)
-    result[..., : direction.shape[-1]] = direction
-    return result
-
-
-def _pad_right_direction(direction, shape, width):
-    result = np.zeros((width,) + shape[1:], dtype=direction.dtype)
-    result[: direction.shape[0]] = direction
-    return result
-
-
-def _zero_streamed_selection(
-    left_tensor,
-    right_tensor,
-    expansion_dimension,
-    preselection_output_size,
-):
-    dtype = np.result_type(left_tensor, right_tensor)
-    return CBESelection(
-        left_direction=np.zeros(
-            left_tensor.shape[:-1] + (expansion_dimension,), dtype=dtype
-        ),
-        right_direction=np.zeros(
-            (expansion_dimension,) + right_tensor.shape[1:], dtype=dtype
-        ),
-        loss=0.0,
-        captured_weight=0.0,
-        sector_ranks=(0,),
-        refinement_iterations=0,
-        selector="shrewd",
-        preselection_dimension=0,
-        preselection_loss=0.0,
-        missing_norm=0.0,
-        pair_action_count=0,
-        pair_metric_count=0,
-        merged_pair_count=0,
-        preselection_output_size=int(preselection_output_size),
-        final_output_size=0,
-    )
-
-
-def _streamed_shrewd_preselection_tensor(
-    hamiltonian_cache,
-    hamiltonian_left,
-    hamiltonian_right,
-    layout,
-    left_tensor,
-    right_tensor,
-    direction,
-):
-    left_site = layout.left_site
-    right_site = left_site + 1
-    left_bra, left_ket, left_operator = (
-        hamiltonian_cache._group_labels(left_site)
-    )
-    right_bra, right_ket, right_operator = (
-        hamiltonian_cache._group_labels(right_site)
-    )
-    if direction == "rl":
-        output = left_bra[:-1] + (left_ket[-1], left_operator[1])
-        output_shape = left_tensor.shape[:-1] + (
-            left_tensor.shape[-1],
-            hamiltonian_cache.mpo.factors[left_site].shape[1],
-        )
-        if not hamiltonian_cache.use_sparse_mpo:
-            return _complete_contraction(
-                [
-                    hamiltonian_left,
-                    hamiltonian_cache.mpo.factors[left_site],
-                    left_tensor,
-                ],
-                [
-                    hamiltonian_cache.frontiers[left_site],
-                    left_operator,
-                    left_ket,
-                ],
-                output,
-                output_shape,
-            )
-        result = np.zeros(
-            output_shape,
-            dtype=np.result_type(
-                hamiltonian_left,
-                left_tensor,
-                hamiltonian_cache.mpo.factors[left_site],
-            ),
-        )
-        channel_label = left_operator[1]
-        reduced_output = tuple(
-            label for label in output if label != channel_label
-        )
-        reduced_shape = tuple(
-            dimension
-            for label, dimension in zip(output, output_shape)
-            if label != channel_label
-        )
-        bra_physical, ket_physical = left_operator[2:]
-        for left_channel, right_channel, local_operator in (
-            hamiltonian_cache.mpo.transitions[left_site]
-        ):
-            selected_left, selected_labels = (
-                hamiltonian_cache._select_channel(
-                    hamiltonian_left,
-                    hamiltonian_cache.frontiers[left_site],
-                    left_operator[0],
-                    left_channel,
-                )
-            )
-            if selected_left is None:
-                continue
-            value = _complete_contraction(
-                [selected_left, local_operator, left_tensor],
-                [
-                    tuple(selected_labels),
-                    (bra_physical, ket_physical),
-                    left_ket,
-                ],
-                reduced_output,
-                reduced_shape,
-            )
-            hamiltonian_cache._add_channel(
-                result,
-                output,
-                channel_label,
-                right_channel,
-                value,
-            )
-        return result
-
-    output = (right_ket[0], right_operator[0]) + right_bra[1:]
-    output_shape = (
-        right_tensor.shape[0],
-        hamiltonian_cache.mpo.factors[right_site].shape[0],
-    ) + right_tensor.shape[1:]
-    if not hamiltonian_cache.use_sparse_mpo:
-        return _complete_contraction(
-            [
-                right_tensor,
-                hamiltonian_cache.mpo.factors[right_site],
-                hamiltonian_right,
-            ],
-            [
-                right_ket,
-                right_operator,
-                hamiltonian_cache.frontiers[right_site + 1],
-            ],
-            output,
-            output_shape,
-        )
-    result = np.zeros(
-        output_shape,
-        dtype=np.result_type(
-            hamiltonian_right,
-            right_tensor,
-            hamiltonian_cache.mpo.factors[right_site],
-        ),
-    )
-    channel_label = right_operator[0]
-    reduced_output = tuple(label for label in output if label != channel_label)
-    reduced_shape = tuple(
-        dimension
-        for label, dimension in zip(output, output_shape)
-        if label != channel_label
-    )
-    bra_physical, ket_physical = right_operator[2:]
-    for left_channel, right_channel, local_operator in (
-        hamiltonian_cache.mpo.transitions[right_site]
-    ):
-        selected_right, selected_labels = hamiltonian_cache._select_channel(
-            hamiltonian_right,
-            hamiltonian_cache.frontiers[right_site + 1],
-            right_operator[1],
-            right_channel,
-        )
-        if selected_right is None:
-            continue
-        value = _complete_contraction(
-            [right_tensor, local_operator, selected_right],
-            [
-                right_ket,
-                (bra_physical, ket_physical),
-                tuple(selected_labels),
-            ],
-            reduced_output,
-            reduced_shape,
-        )
-        hamiltonian_cache._add_channel(
-            result,
-            output,
-            channel_label,
-            left_channel,
-            value,
-        )
-    return result
-
-
-def _streamed_shrewd_weighted_preselection_tensor(
-    hamiltonian_cache,
-    hamiltonian_left,
-    hamiltonian_right,
-    layout,
-    left_tensor,
-    right_tensor,
-    weighted_half,
-    direction,
-):
-    """Close the candidate half against a weighted opposite half."""
-
-    left_site = layout.left_site
-    right_site = left_site + 1
-    left_bra, left_ket, left_operator = (
-        hamiltonian_cache._group_labels(left_site)
-    )
-    right_bra, right_ket, right_operator = (
-        hamiltonian_cache._group_labels(right_site)
-    )
-    auxiliary_label = -10_000_002
-    weighted_half = np.asarray(weighted_half)
-    if direction == "rl":
-        expected = (
-            left_tensor.shape[-1],
-            hamiltonian_cache.mpo.factors[left_site].shape[1],
-        )
-        if weighted_half.shape[:2] != expected:
-            raise ValueError("the weighted right half has incompatible axes.")
-        output = left_bra[:-1] + (auxiliary_label,)
-        output_shape = left_tensor.shape[:-1] + (weighted_half.shape[-1],)
-        weighted_labels = (
-            left_ket[-1],
-            left_operator[1],
-            auxiliary_label,
-        )
-        if not hamiltonian_cache.use_sparse_mpo:
-            return _complete_contraction(
-                [
-                    hamiltonian_left,
-                    hamiltonian_cache.mpo.factors[left_site],
-                    left_tensor,
-                    weighted_half,
-                ],
-                [
-                    hamiltonian_cache.frontiers[left_site],
-                    left_operator,
-                    left_ket,
-                    weighted_labels,
-                ],
-                output,
-                output_shape,
-            )
-        result = np.zeros(
-            output_shape,
-            dtype=np.result_type(
-                hamiltonian_left, left_tensor, weighted_half
-            ),
-        )
-        bra_physical, ket_physical = left_operator[2:]
-        for left_channel, right_channel, local_operator in (
-            hamiltonian_cache.mpo.transitions[left_site]
-        ):
-            selected_left, selected_labels = (
-                hamiltonian_cache._select_channel(
-                    hamiltonian_left,
-                    hamiltonian_cache.frontiers[left_site],
-                    left_operator[0],
-                    left_channel,
-                )
-            )
-            if selected_left is None:
-                continue
-            result += _complete_contraction(
-                [
-                    selected_left,
-                    local_operator,
-                    left_tensor,
-                    weighted_half[:, right_channel, :],
-                ],
-                [
-                    tuple(selected_labels),
-                    (bra_physical, ket_physical),
-                    left_ket,
-                    (left_ket[-1], auxiliary_label),
-                ],
-                output,
-                output_shape,
-            )
-        return result
-
-    expected = (
-        right_tensor.shape[0],
-        hamiltonian_cache.mpo.factors[right_site].shape[0],
-    )
-    if weighted_half.shape[1:] != expected:
-        raise ValueError("the weighted left half has incompatible axes.")
-    output = (auxiliary_label,) + right_bra[1:]
-    output_shape = (weighted_half.shape[0],) + right_tensor.shape[1:]
-    weighted_labels = (
-        auxiliary_label,
-        right_ket[0],
-        right_operator[0],
-    )
-    if not hamiltonian_cache.use_sparse_mpo:
-        return _complete_contraction(
-            [
-                weighted_half,
-                right_tensor,
-                hamiltonian_cache.mpo.factors[right_site],
-                hamiltonian_right,
-            ],
-            [
-                weighted_labels,
-                right_ket,
-                right_operator,
-                hamiltonian_cache.frontiers[right_site + 1],
-            ],
-            output,
-            output_shape,
-        )
-    result = np.zeros(
-        output_shape,
-        dtype=np.result_type(
-            hamiltonian_right, right_tensor, weighted_half
-        ),
-    )
-    bra_physical, ket_physical = right_operator[2:]
-    for left_channel, right_channel, local_operator in (
-        hamiltonian_cache.mpo.transitions[right_site]
-    ):
-        selected_right, selected_labels = hamiltonian_cache._select_channel(
-            hamiltonian_right,
-            hamiltonian_cache.frontiers[right_site + 1],
-            right_operator[1],
-            right_channel,
-        )
-        if selected_right is None:
-            continue
-        result += _complete_contraction(
-            [
-                weighted_half[:, :, left_channel],
-                right_tensor,
-                local_operator,
-                selected_right,
-            ],
-            [
-                (auxiliary_label, right_ket[0]),
-                right_ket,
-                (bra_physical, ket_physical),
-                tuple(selected_labels),
-            ],
-            output,
-            output_shape,
-        )
-    return result
 
 
 def _streamed_shrewd_final_tensor(
@@ -669,341 +300,22 @@ def _streamed_identity_final_tensor(
 
 @_stable_floating_point
 def streamed_shrewd_cbe_selection(
-    hamiltonian_cache,
-    hamiltonian_left,
-    hamiltonian_right,
-    layout,
-    left_tensor,
-    right_tensor,
-    *,
-    expansion_dimension,
-    preselection_dimension,
-    direction,
-    tolerance=1.0e-12,
-    metric_cache=None,
-    metric_left=None,
-    metric_right=None,
-    energy=None,
-    metric_tolerance=1.0e-12,
+    hamiltonian_cache, hamiltonian_left, hamiltonian_right, layout,
+    left_tensor, right_tensor, *, expansion_dimension, preselection_dimension,
+    direction, tolerance=1e-12, metric_cache=None, metric_left=None,
+    metric_right=None, energy=None, metric_tolerance=1e-12,
 ):
-    """Select CBE factors through one-site-sized streamed contractions.
-
-    Supplying the metric environments changes the restricted final stage from
-    the legacy Hamiltonian covector to the raised physical residual
-    ``N^+ (H - E N) psi`` with its current one-site tangent removed in ``N``.
-    """
-
-    if not isinstance(layout, LETTAPairLayout):
-        raise TypeError("layout must be a LETTAPairLayout.")
-    expansion_dimension = int(expansion_dimension)
-    preselection_dimension = int(preselection_dimension)
-    tolerance = float(tolerance)
-    metric_tolerance = float(metric_tolerance)
-    if expansion_dimension <= 0 or preselection_dimension <= 0:
-        raise ValueError("selection dimensions must be positive.")
-    if preselection_dimension < expansion_dimension:
-        raise ValueError(
-            "preselection_dimension must be at least expansion_dimension."
-        )
-    if tolerance <= 0.0 or metric_tolerance <= 0.0:
-        raise ValueError("selection and metric tolerances must be positive.")
-    residual_inputs = (metric_cache, metric_left, metric_right, energy)
-    if any(value is not None for value in residual_inputs) and not all(
-        value is not None for value in residual_inputs
-    ):
-        raise ValueError(
-            "metric_cache, metric_left, metric_right, and energy must be "
-            "provided together."
-        )
-    direction = str(direction).lower()
-    if direction not in {"lr", "rl"}:
-        raise ValueError("direction must be 'lr' or 'rl'.")
-
-    left_tensor = np.asarray(left_tensor)
-    right_tensor = np.asarray(right_tensor)
-
-    if direction == "rl":
-        opposite_half = _streamed_shrewd_preselection_tensor(
-            hamiltonian_cache,
-            hamiltonian_left,
-            hamiltonian_right,
-            layout,
-            left_tensor,
-            right_tensor,
-            "lr",
-        )
-        right_parent = int(np.prod(right_tensor.shape[1:]))
-        opposite_matrix = _project_out_rows(
-            opposite_half.reshape(-1, right_parent),
-            right_tensor.reshape(right_tensor.shape[0], right_parent),
-            tolerance,
-        )
-        opposite_left, opposite_values, _opposite_right = np.linalg.svd(
-            opposite_matrix, full_matrices=False
-        )
-        opposite_rank = _retained_svd_rank(
-            opposite_values, opposite_values.size, tolerance
-        )
-        if opposite_rank == 0:
-            return _zero_streamed_selection(
-                left_tensor,
-                right_tensor,
-                expansion_dimension,
-                opposite_half.size,
-            )
-        weighted_half = (
-            opposite_left[:, :opposite_rank]
-            * opposite_values[:opposite_rank]
-        ).reshape(
-            left_tensor.shape[-1],
-            opposite_half.shape[1],
-            opposite_rank,
-        )
-        preselection_tensor = (
-            _streamed_shrewd_weighted_preselection_tensor(
-                hamiltonian_cache,
-                hamiltonian_left,
-                hamiltonian_right,
-                layout,
-                left_tensor,
-                right_tensor,
-                weighted_half,
-                direction,
-            )
-        )
-        left_parent = int(np.prod(left_tensor.shape[:-1]))
-        preselection_matrix = _project_out_columns(
-            preselection_tensor.reshape(left_parent, -1),
-            left_tensor.reshape(left_parent, left_tensor.shape[-1]),
-            tolerance,
-        )
-        pre_left, pre_values, _pre_right = np.linalg.svd(
-            preselection_matrix, full_matrices=False
-        )
-        pre_rank = _retained_svd_rank(
-            pre_values, preselection_dimension, tolerance
-        )
-        if pre_rank == 0:
-            return _zero_streamed_selection(
-                left_tensor,
-                right_tensor,
-                expansion_dimension,
-                max(opposite_half.size, preselection_tensor.size),
-            )
-        preselected = pre_left[:, :pre_rank].reshape(
-            left_tensor.shape[:-1] + (pre_rank,)
-        )
-        if metric_cache is not None:
-            final_matrix, metric_missing_norm, restricted_output_size = (
-                _metric_projected_streamed_final(
-                    hamiltonian_cache,
-                    hamiltonian_left,
-                    hamiltonian_right,
-                    metric_cache,
-                    metric_left,
-                    metric_right,
-                    layout,
-                    left_tensor,
-                    right_tensor,
-                    preselected,
-                    direction,
-                    energy=energy,
-                    metric_tolerance=metric_tolerance,
-                )
-            )
-            final_output_size = restricted_output_size
-        else:
-            final_tensor = _streamed_shrewd_final_tensor(
-                hamiltonian_cache,
-                hamiltonian_left,
-                hamiltonian_right,
-                layout,
-                left_tensor,
-                right_tensor,
-                preselected,
-                direction,
-            )
-            final_matrix = _project_out_rows(
-                final_tensor.reshape(pre_rank, -1),
-                right_tensor.reshape(right_tensor.shape[0], -1),
-                tolerance,
-            )
-            metric_missing_norm = None
-            final_output_size = final_tensor.size
-        final_left, final_values, final_right = np.linalg.svd(
-            final_matrix, full_matrices=False
-        )
-        selected_rank = _retained_svd_rank(
-            final_values, expansion_dimension, tolerance
-        )
-        selected_left = (
-            preselected.reshape(left_parent, pre_rank)
-            @ final_left[:, :selected_rank]
-        ).reshape(left_tensor.shape[:-1] + (selected_rank,))
-        selected_right = (
-            final_values[:selected_rank, None]
-            * final_right[:selected_rank]
-        ).reshape((selected_rank,) + right_tensor.shape[1:])
-    else:
-        opposite_half = _streamed_shrewd_preselection_tensor(
-            hamiltonian_cache,
-            hamiltonian_left,
-            hamiltonian_right,
-            layout,
-            left_tensor,
-            right_tensor,
-            "rl",
-        )
-        left_parent = int(np.prod(left_tensor.shape[:-1]))
-        opposite_matrix = _project_out_columns(
-            opposite_half.reshape(left_parent, -1),
-            left_tensor.reshape(left_parent, left_tensor.shape[-1]),
-            tolerance,
-        )
-        _opposite_left, opposite_values, opposite_right = np.linalg.svd(
-            opposite_matrix, full_matrices=False
-        )
-        opposite_rank = _retained_svd_rank(
-            opposite_values, opposite_values.size, tolerance
-        )
-        if opposite_rank == 0:
-            return _zero_streamed_selection(
-                left_tensor,
-                right_tensor,
-                expansion_dimension,
-                opposite_half.size,
-            )
-        weighted_half = (
-            opposite_values[:opposite_rank, None]
-            * opposite_right[:opposite_rank]
-        ).reshape(
-            opposite_rank,
-            right_tensor.shape[0],
-            opposite_half.shape[-1],
-        )
-        preselection_tensor = (
-            _streamed_shrewd_weighted_preselection_tensor(
-                hamiltonian_cache,
-                hamiltonian_left,
-                hamiltonian_right,
-                layout,
-                left_tensor,
-                right_tensor,
-                weighted_half,
-                direction,
-            )
-        )
-        right_parent = int(np.prod(right_tensor.shape[1:]))
-        preselection_matrix = _project_out_rows(
-            preselection_tensor.reshape(-1, right_parent),
-            right_tensor.reshape(right_tensor.shape[0], right_parent),
-            tolerance,
-        )
-        _pre_left, pre_values, pre_right = np.linalg.svd(
-            preselection_matrix, full_matrices=False
-        )
-        pre_rank = _retained_svd_rank(
-            pre_values, preselection_dimension, tolerance
-        )
-        if pre_rank == 0:
-            return _zero_streamed_selection(
-                left_tensor,
-                right_tensor,
-                expansion_dimension,
-                max(opposite_half.size, preselection_tensor.size),
-            )
-        preselected = pre_right[:pre_rank].reshape(
-            (pre_rank,) + right_tensor.shape[1:]
-        )
-        if metric_cache is not None:
-            final_matrix, metric_missing_norm, restricted_output_size = (
-                _metric_projected_streamed_final(
-                    hamiltonian_cache,
-                    hamiltonian_left,
-                    hamiltonian_right,
-                    metric_cache,
-                    metric_left,
-                    metric_right,
-                    layout,
-                    left_tensor,
-                    right_tensor,
-                    preselected,
-                    direction,
-                    energy=energy,
-                    metric_tolerance=metric_tolerance,
-                )
-            )
-            final_output_size = restricted_output_size
-        else:
-            final_tensor = _streamed_shrewd_final_tensor(
-                hamiltonian_cache,
-                hamiltonian_left,
-                hamiltonian_right,
-                layout,
-                left_tensor,
-                right_tensor,
-                preselected,
-                direction,
-            )
-            final_matrix = _project_out_columns(
-                final_tensor.reshape(-1, pre_rank),
-                left_tensor.reshape(-1, left_tensor.shape[-1]),
-                tolerance,
-            )
-            metric_missing_norm = None
-            final_output_size = final_tensor.size
-        final_left, final_values, final_right = np.linalg.svd(
-            final_matrix, full_matrices=False
-        )
-        selected_rank = _retained_svd_rank(
-            final_values, expansion_dimension, tolerance
-        )
-        selected_left = (
-            final_left[:, :selected_rank]
-            * final_values[:selected_rank]
-        ).reshape(left_tensor.shape[:-1] + (selected_rank,))
-        selected_right = (
-            final_right[:selected_rank]
-            @ preselected.reshape(pre_rank, right_parent)
-        ).reshape((selected_rank,) + right_tensor.shape[1:])
-
-    left_direction = _pad_left_direction(
-        selected_left, left_tensor.shape, expansion_dimension
+    """Dependency-aware conditional CBE with a restricted physical fit."""
+    from .cbe_general import general_cbe_selection
+    return general_cbe_selection(
+        hamiltonian_cache, hamiltonian_left, hamiltonian_right, layout,
+        left_tensor, right_tensor, expansion_dimension=expansion_dimension,
+        preselection_dimension=preselection_dimension, direction=direction,
+        tolerance=tolerance, metric_cache=metric_cache, metric_left=metric_left,
+        metric_right=metric_right, energy=energy, metric_tolerance=metric_tolerance,
     )
-    right_direction = _pad_right_direction(
-        selected_right, right_tensor.shape, expansion_dimension
-    )
-    total_weight = float(np.sum(final_values**2))
-    selected_weight = float(np.sum(final_values[:selected_rank] ** 2))
-    captured_weight = (
-        selected_weight / total_weight
-        if total_weight > np.finfo(float).tiny
-        else 0.0
-    )
-    preselection_loss = float(np.sum(pre_values[pre_rank:] ** 2))
-    return CBESelection(
-        left_direction=left_direction,
-        right_direction=right_direction,
-        loss=float(np.sum(final_values[selected_rank:] ** 2)),
-        captured_weight=float(np.clip(captured_weight, 0.0, 1.0)),
-        sector_ranks=(selected_rank,),
-        refinement_iterations=0,
-        selector="shrewd",
-        preselection_dimension=pre_rank,
-        preselection_loss=preselection_loss,
-        missing_norm=(
-            float(np.sqrt(total_weight))
-            if metric_missing_norm is None
-            else metric_missing_norm
-        ),
-        pair_action_count=0,
-        pair_metric_count=0,
-        merged_pair_count=0,
-        preselection_output_size=max(
-            opposite_half.size, preselection_tensor.size
-        ),
-        final_output_size=final_output_size,
-    )
+
+
 
 
 def _dense_metric(metric):
@@ -1836,6 +1148,7 @@ def metric_trim_pair(
     tolerance=1.0e-10,
     max_iterations=4,
     metric_tolerance=1.0e-12,
+    compression=None,
 ):
     """Trim an expanded pair in the full LETTA norm metric."""
 
@@ -1846,11 +1159,12 @@ def metric_trim_pair(
         max_bond_dim=int(bond_dimension),
         direction=direction,
     )
-    refinement = metric_als_refine(
+    refinement = metric_refine(
         target,
         layout,
         split,
         pair_metric,
+        compression=compression,
         tolerance=tolerance,
         max_iterations=int(max_iterations),
         metric_tolerance=metric_tolerance,
@@ -1875,6 +1189,7 @@ def metric_trim_pair(
         loss=loss,
         iterations=refinement.iterations,
         norm=norm,
+        diagnostics=(refinement.diagnostics,),
     )
 
 
@@ -1955,6 +1270,27 @@ def _cbe_baseline_allowance(old_energy, baseline_energy, options):
     return options.cbe_baseline_guard_fraction * baseline_gain
 
 
+
+def _cbe_candidate_is_preferred(candidate_energy, old_energy, baseline_energy, options):
+    """Choose the acceptance reference explicitly; ties use the baseline.
+
+    Zero allowance requires strictly more descent than the ordinary update.
+    Full allowance requires descent from the pre-update state. Intermediate
+    fractions retain the exploratory allowance for controlled comparisons.
+    """
+    if not np.isfinite(candidate_energy):
+        return False
+    fraction = options.cbe_baseline_guard_fraction
+    if fraction == 0.0:
+        return candidate_energy < min(old_energy, baseline_energy)
+    if fraction == 1.0:
+        return candidate_energy < old_energy
+    return candidate_energy <= (
+        baseline_energy + _cbe_baseline_allowance(old_energy, baseline_energy, options)
+        + options.energy_increase_tolerance
+    )
+
+
 def _ordinary_bond_fallback(
     state,
     layout,
@@ -1966,17 +1302,20 @@ def _ordinary_bond_fallback(
     metric_right,
     direction,
     options,
+    *,
+    local_environments=None,
 ):
     from .solver import _update_from_cached_environments
 
     if direction == "lr":
         active_site = layout.left_site
-        local_hamiltonian_right = hamiltonian_cache.extend_right(
-            hamiltonian_right, layout.left_site + 1
-        )
-        local_metric_right = metric_cache.extend_right(
-            metric_right, layout.left_site + 1
-        )
+        if local_environments is None:
+            local_environments = (
+                hamiltonian_cache.extend_right(hamiltonian_right, layout.left_site + 1),
+                metric_cache.extend_right(metric_right, layout.left_site + 1))
+        local_hamiltonian_right, local_metric_right = local_environments
+        if local_metric_right is None:
+            local_metric_right = metric_cache.extend_right(metric_right, layout.left_site + 1)
         return _update_from_cached_environments(
             state,
             active_site,
@@ -1989,12 +1328,13 @@ def _ordinary_bond_fallback(
             options,
         )
     active_site = layout.left_site + 1
-    local_hamiltonian_left = hamiltonian_cache.extend_left(
-        hamiltonian_left, layout.left_site
-    )
-    local_metric_left = metric_cache.extend_left(
-        metric_left, layout.left_site
-    )
+    if local_environments is None:
+        local_environments = (
+            hamiltonian_cache.extend_left(hamiltonian_left, layout.left_site),
+            metric_cache.extend_left(metric_left, layout.left_site))
+    local_hamiltonian_left, local_metric_left = local_environments
+    if local_metric_left is None:
+        local_metric_left = metric_cache.extend_left(metric_left, layout.left_site)
     return _update_from_cached_environments(
         state,
         active_site,
@@ -2026,7 +1366,7 @@ def _streamed_bond_energy(
     hamiltonian_right,
     metric_left,
     metric_right,
-    layout,
+    layout, *, reject_invalid=False,
 ):
     numerator = _close_streamed_bond_environment(
         hamiltonian_cache,
@@ -2041,12 +1381,168 @@ def _streamed_bond_energy(
         layout,
     )
     denominator = float(np.real(denominator))
-    if denominator <= np.finfo(float).tiny:
+    if not np.isfinite(denominator) or denominator <= np.finfo(float).tiny:
+        if reject_invalid:
+            return float("inf"), 0.0
         raise ValueError("the streamed LETTA bond has zero metric norm.")
     energy = float(np.real(numerator / denominator))
     if not np.isfinite(energy):
         raise FloatingPointError("the streamed LETTA bond energy is nonfinite.")
     return energy, float(np.sqrt(denominator))
+
+
+@dataclass(frozen=True)
+class CBEEnergyRefinement:
+    left_tensor: np.ndarray
+    right_tensor: np.ndarray
+    initial_energy: float
+    energy: float
+    norm: float
+    iterations: int
+    accepted_substeps: int
+    hamiltonian_applications: int
+    coupled_iterations: int = 0
+    coupled_accepted_steps: int = 0
+    coupled_hamiltonian_applications: int = 0
+
+
+def _refine_cbe_pair_energy(
+    state, layout, hamiltonian_cache, metric_cache,
+    hamiltonian_left, hamiltonian_right, metric_left, metric_right,
+    direction, options, left_tensor, right_tensor, *, norm_limit=None,
+):
+    """Relax fixed-rank factors using fresh one-site environments only.
+
+    The outer environments remain fixed. Restore the live pair even if a
+    local solve fails, so competing initializations see identical surroundings.
+    """
+    from .solver import _update_from_cached_environments
+
+    i, j = layout.left_site, layout.left_site + 1
+    saved = state.tensors[i], state.tensors[j]
+    state.tensors[i], state.tensors[j] = left_tensor.copy(), right_tensor.copy()
+
+    def energy(*, reject_invalid=False):
+        return _streamed_bond_energy(
+            hamiltonian_cache, metric_cache, hamiltonian_left, hamiltonian_right,
+            metric_left, metric_right, layout, reject_invalid=reject_invalid,
+        )
+
+    try:
+        initial_energy, norm = energy()
+        current_energy = initial_energy
+        # The budget belongs to this start, before any relaxation changes its gauge.
+        start_limit = 100.0 * np.sqrt(
+            np.linalg.norm(left_tensor) * np.linalg.norm(right_tensor) / norm
+        )
+        norm_limit = start_limit if norm_limit is None else min(norm_limit, start_limit)
+        accepted_substeps = applications = iterations = 0
+        order = (i, j) if direction == "lr" else (j, i)
+        for iteration in range(options.cbe_energy_refinement_max_iterations):
+            previous = current_energy
+            for site in order:
+                old_tensor = state.tensors[site].copy()
+                if site == i:
+                    local = (
+                        hamiltonian_left, hamiltonian_cache.extend_right(hamiltonian_right, j),
+                        metric_left, metric_cache.extend_right(metric_right, j),
+                    )
+                else:
+                    local = (
+                        hamiltonian_cache.extend_left(hamiltonian_left, i), hamiltonian_right,
+                        metric_cache.extend_left(metric_left, i), metric_right,
+                    )
+                update = _update_from_cached_environments(
+                    state, site, hamiltonian_cache, metric_cache, *local, options,
+                )
+                applications += update.hamiltonian_applications
+                proposed, proposed_norm = energy(reject_invalid=True)
+                # Apply the per-start conditioning budget to alternating
+                # updates too, not only to the later coupled correction.
+                # Measure after scalar balancing so harmless A/B rescaling
+                # does not change the decision.
+                balanced_norm = np.sqrt(
+                    np.linalg.norm(state.tensors[i])
+                    * np.linalg.norm(state.tensors[j]) / proposed_norm
+                ) if proposed_norm > np.finfo(float).tiny else float("inf")
+                if (update.accepted and proposed <= current_energy
+                        and np.isfinite(balanced_norm) and balanced_norm <= norm_limit):
+                    current_energy, norm = proposed, proposed_norm
+                    accepted_substeps += 1
+                else:
+                    state.tensors[site] = old_tensor
+            iterations = iteration + 1
+            if previous - current_energy <= options.cbe_energy_refinement_tolerance:
+                break
+        checks = coupled_steps = coupled_applications = 0
+        if (options.cbe_energy_refinement_max_iterations
+                and options.cbe_coupled_max_iterations
+                and state.tensors[i].size + state.tensors[j].size
+                    <= options.cbe_coupled_max_parameters
+                and initial_energy - current_energy
+                    <= options.cbe_coupled_energy_threshold * max(1.0, abs(current_energy))):
+            from .cbe_coupled import refine_coupled_factors
+            coupled = refine_coupled_factors(
+                state, layout, hamiltonian_cache, metric_cache,
+                hamiltonian_left, hamiltonian_right, metric_left, metric_right,
+                options=options, norm_limit=norm_limit,
+            )
+            checks, coupled_steps = coupled.iterations, coupled.accepted_steps
+            coupled_applications = coupled.hamiltonian_applications
+            if coupled_steps and coupled.energy <= current_energy:
+                state.tensors[i], state.tensors[j] = coupled.left, coupled.right
+                current_energy, norm = coupled.energy, coupled.norm
+        return CBEEnergyRefinement(
+            state.tensors[i].copy(), state.tensors[j].copy(), initial_energy,
+            current_energy, norm, iterations, accepted_substeps,
+            applications + coupled_applications, checks, coupled_steps,
+            coupled_applications,
+        )
+    finally:
+        state.tensors[i], state.tensors[j] = saved
+
+
+def _refine_cbe_candidates(
+    state, layout, hamiltonian_cache, metric_cache,
+    hamiltonian_left, hamiltonian_right, metric_left, metric_right,
+    direction, options, trim, original_left, original_right, diagnostics,
+    *, trim_is_valid=True, norm_limit=None,
+):
+    """Compare the trim and incumbent *after* independent energy relaxation."""
+    started = time.perf_counter()
+    arguments = (
+        state, layout, hamiltonian_cache, metric_cache,
+        hamiltonian_left, hamiltonian_right, metric_left, metric_right,
+        direction, options,
+    )
+    refined = (_refine_cbe_pair_energy(*arguments, trim.left_tensor, trim.right_tensor,
+                                     norm_limit=norm_limit) if trim_is_valid else None)
+    incumbent = _refine_cbe_pair_energy(*arguments, original_left, original_right,
+                                       norm_limit=norm_limit)
+    if refined is None or incumbent.energy < refined.energy:
+        selected, start = incumbent, "incumbent"
+    else:
+        selected, start = refined, "trim"
+    diagnostics.update(
+        cbe_refined_energy=refined.energy if refined is not None else None,
+        cbe_incumbent_refined_energy=incumbent.energy,
+        cbe_energy_refinement_start=start,
+        cbe_energy_refinement_iterations=sum(r.iterations for r in (refined, incumbent) if r is not None),
+        cbe_energy_refinement_substeps=sum(r.accepted_substeps for r in (refined, incumbent) if r is not None),
+        cbe_coupled_iterations=sum(r.coupled_iterations for r in (refined, incumbent) if r is not None),
+        cbe_coupled_accepted_steps=sum(r.coupled_accepted_steps for r in (refined, incumbent) if r is not None),
+        cbe_coupled_hamiltonian_applications=sum(r.coupled_hamiltonian_applications
+                                                for r in (refined, incumbent) if r is not None),
+    )
+    diagnostics["cbe_timings"]["energy_refinement"] = time.perf_counter() - started
+    return selected, sum(r.hamiltonian_applications for r in (refined, incumbent) if r is not None)
+
+
+def _within_factor_budget(left, right, norm, limit):
+    if not np.isfinite(norm) or norm <= np.finfo(float).tiny:
+        return False
+    balanced = np.sqrt(np.linalg.norm(left) * np.linalg.norm(right) / norm)
+    return bool(np.isfinite(balanced) and balanced <= limit)
 
 
 def _directional_one_site_trim(
@@ -2130,15 +1626,23 @@ def _metric_low_rank_factorization(
     tolerance,
     max_iterations,
     metric_tolerance,
+    initial_factors=None,
+    lsmr_max_iterations=40,
 ):
-    target = np.asarray(target)
+    target = np.asarray(target, dtype=np.result_type(target, metric.dtype))
     rows, columns = target.shape
-    vectors, values, adjoint = np.linalg.svd(target, full_matrices=False)
-    keep = min(int(rank), values.size)
-    left = np.zeros((rows, rank), dtype=target.dtype)
-    right = np.zeros((rank, columns), dtype=target.dtype)
-    left[:, :keep] = vectors[:, :keep]
-    right[:keep] = values[:keep, None] * adjoint[:keep]
+    if initial_factors is None:
+        vectors, values, adjoint = np.linalg.svd(target, full_matrices=False)
+        keep = min(int(rank), values.size)
+        left = np.zeros((rows, rank), dtype=target.dtype)
+        right = np.zeros((rank, columns), dtype=target.dtype)
+        left[:, :keep] = vectors[:, :keep]
+        right[:keep] = values[:keep, None] * adjoint[:keep]
+    else:
+        left, right = (np.array(factor, dtype=target.dtype, copy=True)
+                       for factor in initial_factors)
+        if left.shape != (rows, rank) or right.shape != (rank, columns):
+            raise ValueError("initial factors must have shapes (rows, rank) and (rank, columns).")
     square_root = _MetricSquareRoot(metric, metric_tolerance)
     if square_root.size != target.size:
         raise ValueError("one-site metric and trim target dimensions differ.")
@@ -2150,7 +1654,7 @@ def _metric_low_rank_factorization(
             return square_root.apply(candidate.reshape(-1))
 
         def adjoint_action(vector):
-            weighted = square_root.apply(vector).reshape(rows, columns)
+            weighted = square_root.adjoint(vector).reshape(rows, columns)
             return (weighted @ current_right.conj().T).reshape(-1)
 
         operator = LinearOperator(
@@ -2164,7 +1668,7 @@ def _metric_low_rank_factorization(
             weighted_target,
             atol=tolerance,
             btol=tolerance,
-            maxiter=40,
+            maxiter=lsmr_max_iterations,
             x0=current_left.reshape(-1),
         )[0]
         return solution.reshape(rows, rank)
@@ -2175,7 +1679,7 @@ def _metric_low_rank_factorization(
             return square_root.apply(candidate.reshape(-1))
 
         def adjoint_action(vector):
-            weighted = square_root.apply(vector).reshape(rows, columns)
+            weighted = square_root.adjoint(vector).reshape(rows, columns)
             return (current_left.conj().T @ weighted).reshape(-1)
 
         operator = LinearOperator(
@@ -2189,7 +1693,7 @@ def _metric_low_rank_factorization(
             weighted_target,
             atol=tolerance,
             btol=tolerance,
-            maxiter=40,
+            maxiter=lsmr_max_iterations,
             x0=current_right.reshape(-1),
         )[0]
         return solution.reshape(rank, columns)
@@ -2227,6 +1731,111 @@ def _metric_low_rank_factorization(
     return left, right, loss, iterations
 
 
+def _metric_trim_factorization(target, metric, rank, *, tolerance, max_iterations,
+                               metric_tolerance, compression=None, diagnostics=None):
+    """Use the physical metric's exact separable fit, or general-metric ALS."""
+    from .cbe_general import _separable_factors, fit_low_rank_quadratic
+
+    target = np.asarray(target)
+    if _separable_factors(metric, target.shape, metric_tolerance * 10) is None:
+        # Here the target tensor is already known. Do not replace it by
+        # N+ N target: that removes null-space entries which can provide a
+        # useful low-rank completion, changing the local ALS initialization.
+        config = compression or MetricCompressionOptions()
+        u, values, vh = np.linalg.svd(target, full_matrices=False)
+        keep = min(rank, len(values))
+        left = np.zeros((target.shape[0], rank), dtype=target.dtype)
+        right = np.zeros((rank, target.shape[1]), dtype=target.dtype)
+        left[:, :keep], right[:keep] = u[:, :keep], values[:keep, None]*vh[:keep]
+        def fallback():
+            return _metric_low_rank_factorization(
+                target, metric, rank, tolerance=tolerance,
+                max_iterations=config.als_max_iterations or max_iterations,
+                metric_tolerance=metric_tolerance,
+                lsmr_max_iterations=config.lsmr_max_iterations or 40)
+        fit = compress_factors(target, metric, left, right, options=config,
+                               fallback=fallback, metric_tolerance=metric_tolerance)
+        if diagnostics is not None:
+            diagnostics.append(fit.diagnostics)
+        return fit.left, fit.right, fit.loss, fit.iterations, "general"
+    fit = fit_low_rank_quadratic(
+        metric @ target.reshape(-1), metric, target.shape, rank=rank,
+        tolerance=metric_tolerance, max_iterations=max_iterations)
+    # Recompute against the original target, avoiding cancellation of nearly
+    # equal captured/available weights when the compression loss is tiny.
+    loss = _one_site_factorization_loss(target, fit.left, fit.right, metric)
+    if diagnostics is not None:
+        diagnostics.append(dict(requested_solver=(compression or MetricCompressionOptions()).solver,
+                                used_solver="separable-svd", final_loss=loss))
+    return fit.left, fit.right, loss, fit.iterations, fit.metric_kind
+
+
+def _conditional_one_site_metric_trim(
+    left_tensor, right_tensor, metric, layout, *, bond_dimension,
+    direction, tolerance, max_iterations, metric_tolerance, compression=None,
+):
+    """Factor each shared-physical sector without forming a merged pair.
+
+    The transfer may depend on every physical index common to both factors.
+    Identity environments are block diagonal in these indices, so each sector
+    has an independent norm-minimization problem in the active-site metric.
+    """
+    dtype = np.result_type(left_tensor, right_tensor, metric.dtype)
+    active = np.asarray(left_tensor if direction == "lr" else right_tensor, dtype=dtype)
+    approximation = np.zeros_like(active)
+    left = np.zeros(left_tensor.shape[:-1] + (bond_dimension,), dtype=dtype)
+    right = np.zeros((bond_dimension,) + right_tensor.shape[1:], dtype=dtype)
+    coordinates = np.arange(active.size).reshape(active.shape)
+    loss = 0.0
+    iterations = 0
+    metric_kinds = []
+    diagnostics = []
+    for configuration in np.ndindex(*((layout.physical_dim,) * len(layout.shared))):
+        left_section = [slice(None)] * left_tensor.ndim
+        right_section = [slice(None)] * right_tensor.ndim
+        for site, value in zip(layout.shared, configuration):
+            left_section[1 + layout.left_neighborhood.index(site)] = value
+            right_section[1 + layout.right_neighborhood.index(site)] = value
+        left_section, right_section = tuple(left_section), tuple(right_section)
+        section = left_section if direction == "lr" else right_section
+        sector = active[section]
+        target = (sector.reshape(-1, sector.shape[-1]) if direction == "lr"
+                  else sector.reshape(sector.shape[0], -1))
+        sector_metric = metric.restrict(coordinates[section].reshape(-1))
+        # An exact or sufficiently accurate SVD needs no ALS. This also
+        # handles zero-norm sectors without a pseudoinverse.
+        u, s, vh = np.linalg.svd(target, full_matrices=False)
+        keep = min(bond_dimension, s.size)
+        a = np.zeros((target.shape[0], bond_dimension), dtype=target.dtype)
+        b = np.zeros((bond_dimension, target.shape[1]), dtype=target.dtype)
+        a[:, :keep] = u[:, :keep]
+        b[:keep] = s[:keep, None] * vh[:keep]
+        sector_loss = _one_site_factorization_loss(target, a, b, sector_metric)
+        target_norm = float(np.real(np.vdot(target.reshape(-1), sector_metric @ target.reshape(-1))))
+        count = 0
+        kind = "negligible"
+        if sector_loss > tolerance * max(target_norm, np.finfo(float).tiny):
+            a, b, sector_loss, count, kind = _metric_trim_factorization(
+                target, sector_metric, bond_dimension,
+                tolerance=tolerance, max_iterations=max_iterations,
+                metric_tolerance=metric_tolerance,
+                compression=compression, diagnostics=diagnostics,
+            )
+        metric_kinds.append(kind)
+        if direction == "lr":
+            left[left_section] = a.reshape(left[left_section].shape)
+            right[right_section] = np.tensordot(b, right_tensor[right_section], axes=([1], [0]))
+        else:
+            left[left_section] = np.tensordot(left_tensor[left_section], a, axes=([-1], [0]))
+            right[right_section] = b.reshape(right[right_section].shape)
+        approximation[section] = (a @ b).reshape(sector.shape)
+        loss += sector_loss
+        iterations = max(iterations, count)
+    vector = approximation.reshape(-1)
+    norm = float(np.sqrt(max(0.0, np.real(np.vdot(vector, metric @ vector)))))
+    return CBETrim(left, right, loss, iterations, norm, tuple(metric_kinds), tuple(diagnostics))
+
+
 def _directional_one_site_metric_trim(
     left_tensor,
     right_tensor,
@@ -2237,22 +1846,35 @@ def _directional_one_site_metric_trim(
     tolerance,
     max_iterations,
     metric_tolerance,
+    layout=None,
+    compression=None,
 ):
     """Trim an expanded bond in the active one-site LETTA norm."""
 
+    diagnostics = []
     left_tensor = np.asarray(left_tensor)
     right_tensor = np.asarray(right_tensor)
     bond_dimension = int(bond_dimension)
     direction = str(direction).lower()
+    if direction not in {"lr", "rl"}:
+        raise ValueError("direction must be 'lr' or 'rl'.")
+    if layout is not None and layout.shared:
+        return _conditional_one_site_metric_trim(
+            left_tensor, right_tensor, effective_metric, layout,
+            bond_dimension=bond_dimension, direction=direction,
+            tolerance=tolerance, max_iterations=max_iterations,
+            metric_tolerance=metric_tolerance, compression=compression,
+        )
     if direction == "lr":
         target = left_tensor.reshape(-1, left_tensor.shape[-1])
-        active, transfer, loss, iterations = _metric_low_rank_factorization(
+        active, transfer, loss, iterations, kind = _metric_trim_factorization(
             target,
             effective_metric,
             bond_dimension,
             tolerance=tolerance,
             max_iterations=max_iterations,
             metric_tolerance=metric_tolerance,
+            compression=compression, diagnostics=diagnostics,
         )
         trimmed_left = active.reshape(
             left_tensor.shape[:-1] + (bond_dimension,)
@@ -2263,13 +1885,14 @@ def _directional_one_site_metric_trim(
         approximation = active @ transfer
     elif direction == "rl":
         target = right_tensor.reshape(right_tensor.shape[0], -1)
-        transfer, active, loss, iterations = _metric_low_rank_factorization(
+        transfer, active, loss, iterations, kind = _metric_trim_factorization(
             target,
             effective_metric,
             bond_dimension,
             tolerance=tolerance,
             max_iterations=max_iterations,
             metric_tolerance=metric_tolerance,
+            compression=compression, diagnostics=diagnostics,
         )
         trimmed_left = np.tensordot(
             left_tensor, transfer, axes=([-1], [0])
@@ -2298,6 +1921,8 @@ def _directional_one_site_metric_trim(
         loss=loss,
         iterations=iterations,
         norm=float(np.sqrt(norm_squared)),
+        metric_kinds=(kind,),
+        diagnostics=tuple(diagnostics),
     )
 
 
@@ -2312,11 +1937,15 @@ def _strict_shrewd_cbe_bond_update(
     metric_right,
     direction,
     options,
+    *,
+    local_environments=None,
 ):
     from dataclasses import replace
 
     from .solver import _update_from_cached_environments
 
+    started = time.perf_counter()
+    timings = {}
     left_site = layout.left_site
     right_site = left_site + 1
     original_left = state.tensors[left_site].copy()
@@ -2359,15 +1988,27 @@ def _strict_shrewd_cbe_bond_update(
         energy=old_energy,
         metric_tolerance=options.metric_tolerance,
     )
+    timings["selection"] = time.perf_counter() - started
     common_diagnostics = dict(
+        cbe_timings=timings,
+        cbe_selection_diagnostics={
+            "stage_seconds": selection.selection_timings,
+            "metric_kinds": selection.metric_kinds,
+            "tangent_block_shapes": selection.tangent_block_shapes,
+            "tangent_relative_residual": selection.tangent_relative_residual,
+            "overlap_applications": selection.overlap_applications,
+            "connector_dimension": selection.connector_dimension,
+            "fit_iterations": selection.refinement_iterations,
+        },
         cbe_expansion_dimension=options.cbe_expansion_dimension,
         cbe_selector="shrewd",
         cbe_preselection_dimension=selection.preselection_dimension,
         cbe_pair_dimension=int(np.prod(layout.merged_shape)),
         cbe_pair_metric_rank=None,
         cbe_tangent_rank=None,
-        cbe_projection_iterations=0,
-        cbe_projection_converged=True,
+        cbe_projection_iterations=selection.tangent_iterations,
+        cbe_projection_converged=(
+            selection.tangent_relative_residual <= options.cbe_projection_tolerance),
         cbe_selector_pair_action_count=0,
         cbe_selector_pair_metric_count=selection.pair_metric_count,
         cbe_selector_merged_pair_count=selection.merged_pair_count,
@@ -2376,15 +2017,16 @@ def _strict_shrewd_cbe_bond_update(
         cbe_materialized_pair_tensor=False,
         cbe_materialized_pair_metric=False,
         cbe_materialized_tangent_jacobian=False,
-        cbe_trim_method="one-site-metric-als",
+        cbe_trim_method="one-site-metric-svd/als",
         cbe_missing_norm=selection.missing_norm,
         cbe_old_energy=old_energy,
     )
     if (
         selection.missing_norm is None
         or selection.missing_norm <= options.cbe_selection_tolerance
-        or selection.sector_ranks == (0,)
+        or not any(selection.sector_ranks)
     ):
+        started = time.perf_counter()
         fallback = _ordinary_bond_fallback(
             state,
             layout,
@@ -2396,7 +2038,9 @@ def _strict_shrewd_cbe_bond_update(
             metric_right,
             direction,
             options,
+            local_environments=local_environments,
         )
+        timings["baseline"] = time.perf_counter() - started
         return replace(
             fallback,
             **common_diagnostics,
@@ -2406,6 +2050,7 @@ def _strict_shrewd_cbe_bond_update(
             cbe_fallback=True,
         )
 
+    started = time.perf_counter()
     expanded_left, expanded_right = embed_cbe_pair(
         original_left,
         original_right,
@@ -2464,6 +2109,8 @@ def _strict_shrewd_cbe_bond_update(
             effective_metric=effective_trim_metric,
         )
 
+    timings["expanded_solve"] = time.perf_counter() - started
+    started = time.perf_counter()
     trim = _directional_one_site_metric_trim(
         state.tensors[left_site],
         state.tensors[right_site],
@@ -2473,29 +2120,49 @@ def _strict_shrewd_cbe_bond_update(
         tolerance=options.cbe_selection_tolerance,
         max_iterations=options.cbe_refinement_max_iterations,
         metric_tolerance=options.metric_tolerance,
+        layout=layout if options.cbe_conditional_trim else None,
+        compression=options.compression,
     )
     state.tensors[left_site] = trim.left_tensor
     state.tensors[right_site] = trim.right_tensor
-    trimmed_energy, trimmed_norm = _streamed_bond_energy(
-        hamiltonian_cache,
-        metric_cache,
-        hamiltonian_left,
-        hamiltonian_right,
-        metric_left,
-        metric_right,
-        layout,
-    )
-    candidate_is_safe = (
-        site_update.accepted
-        and trimmed_norm > np.finfo(float).tiny
-        and np.isfinite(trimmed_energy)
-        and trimmed_energy
-        <= old_energy + options.energy_increase_tolerance
-    )
+    common_diagnostics["cbe_trim_metric_kinds"] = trim.metric_kinds
+    common_diagnostics["cbe_compression_diagnostics"] = trim.diagnostics
+    # Compression may amplify null components before relaxation starts. Check
+    # both starts against the incumbent's budget before contracting huge factors.
+    norm_limit = 100.0 * np.sqrt(
+        np.linalg.norm(original_left) * np.linalg.norm(original_right) / _old_norm)
+    trim_is_valid = _within_factor_budget(trim.left_tensor, trim.right_tensor, trim.norm, norm_limit)
+    trimmed_energy, trimmed_norm = float("inf"), 0.0
+    if trim_is_valid:
+        trimmed_energy, trimmed_norm = _streamed_bond_energy(
+            hamiltonian_cache, metric_cache, hamiltonian_left, hamiltonian_right,
+            metric_left, metric_right, layout, reject_invalid=True,
+        )
+        trim_is_valid = _within_factor_budget(
+            trim.left_tensor, trim.right_tensor, trimmed_norm, norm_limit)
     candidate_left = trim.left_tensor.copy()
     candidate_right = trim.right_tensor.copy()
+    candidate_energy, candidate_norm = trimmed_energy, trimmed_norm
+    timings["trim"] = time.perf_counter() - started
+    refinement_applications = 0
+    if options.cbe_energy_refinement_max_iterations:
+        refined, refinement_applications = _refine_cbe_candidates(
+            state, layout, hamiltonian_cache, metric_cache,
+            hamiltonian_left, hamiltonian_right, metric_left, metric_right,
+            direction, options, trim, original_left, original_right, common_diagnostics,
+            trim_is_valid=trim_is_valid, norm_limit=norm_limit,
+        )
+        candidate_left, candidate_right = refined.left_tensor, refined.right_tensor
+        candidate_energy, candidate_norm = refined.energy, refined.norm
+    candidate_is_safe = (
+        (site_update.accepted or common_diagnostics.get("cbe_energy_refinement_start") == "incumbent")
+        and _within_factor_budget(candidate_left, candidate_right, candidate_norm, norm_limit)
+        and np.isfinite(candidate_energy)
+        and candidate_energy <= old_energy + options.energy_increase_tolerance
+    )
     state.tensors[left_site] = original_left
     state.tensors[right_site] = original_right
+    started = time.perf_counter()
     baseline = _ordinary_bond_fallback(
         state,
         layout,
@@ -2507,28 +2174,33 @@ def _strict_shrewd_cbe_bond_update(
         metric_right,
         direction,
         options,
+        local_environments=local_environments,
+    )
+    timings["baseline"] = time.perf_counter() - started
+    common_diagnostics["hamiltonian_applications"] = (
+        site_update.hamiltonian_applications + baseline.hamiltonian_applications
+        + refinement_applications
     )
     baseline_allowance = _cbe_baseline_allowance(
         old_energy, baseline.energy, options
     )
     accepted = (
         candidate_is_safe
-        and trimmed_energy
-        <= baseline.energy
-        + baseline_allowance
-        + options.energy_increase_tolerance
+        and _cbe_candidate_is_preferred(
+            candidate_energy, old_energy, baseline.energy, options
+        )
     )
     if accepted:
         state.tensors[left_site] = candidate_left
         state.tensors[right_site] = candidate_right
-        normalization = np.sqrt(trimmed_norm**2)
+        normalization = candidate_norm
         if direction == "lr":
             state.tensors[right_site] /= normalization
         else:
             state.tensors[left_site] /= normalization
         return replace(
             site_update,
-            energy=trimmed_energy,
+            energy=candidate_energy,
             accepted=True,
             **common_diagnostics,
             cbe_captured_weight=selection.captured_weight,
@@ -2567,6 +2239,8 @@ def _cbe_bond_update(
     metric_right,
     direction,
     options,
+    *,
+    local_environments=None,
 ):
     if options.cbe_selector == "shrewd":
         return _strict_shrewd_cbe_bond_update(
@@ -2580,12 +2254,15 @@ def _cbe_bond_update(
             metric_right,
             direction,
             options,
+            local_environments=local_environments,
         )
 
     from dataclasses import replace
 
     from .solver import _update_from_cached_environments
 
+    started = time.perf_counter()
+    timings = {}
     left_site = layout.left_site
     right_site = left_site + 1
     original_left = state.tensors[left_site].copy()
@@ -2594,6 +2271,10 @@ def _cbe_bond_update(
     pair_metric = metric_cache.effective_pair_metric(
         metric_left, metric_right, layout
     )
+    old_pair = layout.merge(original_left, original_right).reshape(-1)
+    old_norm = np.sqrt(float(np.vdot(old_pair, pair_metric @ old_pair).real))
+    norm_limit = 100.0 * np.sqrt(
+        np.linalg.norm(original_left) * np.linalg.norm(original_right) / old_norm)
 
     def pair_action(vector):
         return hamiltonian_cache.effective_pair_action(
@@ -2612,7 +2293,9 @@ def _cbe_bond_update(
         metric_tolerance=options.metric_tolerance,
     )
     pair_dimension = int(np.prod(layout.merged_shape))
+    timings["selection"] = time.perf_counter() - started
     common_diagnostics = dict(
+        cbe_timings=timings,
         cbe_expansion_dimension=options.cbe_expansion_dimension,
         cbe_selector=missing.selector,
         cbe_pair_dimension=pair_dimension,
@@ -2633,6 +2316,7 @@ def _cbe_bond_update(
         cbe_old_energy=missing.energy,
     )
     if missing.missing_norm <= options.cbe_selection_tolerance:
+        started = time.perf_counter()
         fallback = _ordinary_bond_fallback(
             state,
             layout,
@@ -2644,7 +2328,9 @@ def _cbe_bond_update(
             metric_right,
             direction,
             options,
+            local_environments=local_environments,
         )
+        timings["baseline"] = time.perf_counter() - started
         return replace(
             fallback,
             **common_diagnostics,
@@ -2664,6 +2350,8 @@ def _cbe_bond_update(
         max_iterations=options.cbe_refinement_max_iterations,
         metric_tolerance=options.metric_tolerance,
     )
+    timings["selection"] = time.perf_counter() - started
+    started = time.perf_counter()
     expanded_left, expanded_right = embed_cbe_pair(
         original_left,
         original_right,
@@ -2711,6 +2399,8 @@ def _cbe_bond_update(
             options,
         )
 
+    timings["expanded_solve"] = time.perf_counter() - started
+    started = time.perf_counter()
     expanded_pair = layout.merge(
         state.tensors[left_site], state.tensors[right_site]
     )
@@ -2726,20 +2416,42 @@ def _cbe_bond_update(
         tolerance=options.cbe_selection_tolerance,
         max_iterations=options.cbe_refinement_max_iterations,
         metric_tolerance=options.metric_tolerance,
+        compression=options.compression,
     )
+    common_diagnostics["cbe_compression_diagnostics"] = trim.diagnostics
     trimmed_pair = layout.merge(trim.left_tensor, trim.right_tensor).reshape(-1)
-    trimmed_energy = _pair_rayleigh(trimmed_pair, pair_action, pair_metric)
-    candidate_is_safe = (
-        site_update.accepted
-        and trim.norm > np.finfo(float).tiny
-        and np.isfinite(trimmed_energy)
-        and trimmed_energy
-        <= missing.energy + options.energy_increase_tolerance
-    )
+    normalized_trim_norm = 1.0 if trim.norm > np.finfo(float).tiny else 0.0
+    trim_is_valid = _within_factor_budget(
+        trim.left_tensor, trim.right_tensor, normalized_trim_norm, norm_limit)
+    trimmed_energy = (_pair_rayleigh(trimmed_pair, pair_action, pair_metric)
+                      if trim_is_valid else float("inf"))
+    trim_is_valid = trim_is_valid and np.isfinite(trimmed_energy)
     candidate_left = trim.left_tensor.copy()
     candidate_right = trim.right_tensor.copy()
+    # metric_trim_pair already normalizes its returned factors; trim.norm is
+    # the pre-normalization norm of the compression initializer.
+    candidate_energy = trimmed_energy
+    candidate_norm = normalized_trim_norm
+    timings["trim"] = time.perf_counter() - started
+    refinement_applications = 0
+    if options.cbe_energy_refinement_max_iterations:
+        refined, refinement_applications = _refine_cbe_candidates(
+            state, layout, hamiltonian_cache, metric_cache,
+            hamiltonian_left, hamiltonian_right, metric_left, metric_right,
+            direction, options, trim, original_left, original_right, common_diagnostics,
+            trim_is_valid=trim_is_valid, norm_limit=norm_limit,
+        )
+        candidate_left, candidate_right = refined.left_tensor, refined.right_tensor
+        candidate_energy, candidate_norm = refined.energy, refined.norm
+    candidate_is_safe = (
+        (site_update.accepted or common_diagnostics.get("cbe_energy_refinement_start") == "incumbent")
+        and _within_factor_budget(candidate_left, candidate_right, candidate_norm, norm_limit)
+        and np.isfinite(candidate_energy)
+        and candidate_energy <= missing.energy + options.energy_increase_tolerance
+    )
     state.tensors[left_site] = original_left
     state.tensors[right_site] = original_right
+    started = time.perf_counter()
     baseline = _ordinary_bond_fallback(
         state,
         layout,
@@ -2751,23 +2463,32 @@ def _cbe_bond_update(
         metric_right,
         direction,
         options,
+        local_environments=local_environments,
+    )
+    timings["baseline"] = time.perf_counter() - started
+    common_diagnostics["hamiltonian_applications"] = (
+        site_update.hamiltonian_applications + baseline.hamiltonian_applications
+        + refinement_applications
     )
     baseline_allowance = _cbe_baseline_allowance(
         missing.energy, baseline.energy, options
     )
     accepted = (
         candidate_is_safe
-        and trimmed_energy
-        <= baseline.energy
-        + baseline_allowance
-        + options.energy_increase_tolerance
+        and _cbe_candidate_is_preferred(
+            candidate_energy, missing.energy, baseline.energy, options
+        )
     )
     if accepted:
         state.tensors[left_site] = candidate_left
         state.tensors[right_site] = candidate_right
+        if direction == "lr":
+            state.tensors[right_site] /= candidate_norm
+        else:
+            state.tensors[left_site] /= candidate_norm
         return replace(
             site_update,
-            energy=trimmed_energy,
+            energy=candidate_energy,
             accepted=True,
             **common_diagnostics,
             cbe_captured_weight=selection.captured_weight,
@@ -2795,6 +2516,45 @@ def _cbe_bond_update(
     )
 
 
+def _baseline_metric_environment(cache, environment, cut, direction):
+    # A certified diagonal is a rounded representation of the contracted
+    # Gram. Replacing the baseline's raw Gram by it can alter near-null solves.
+    record = cache.saved_canonical(cut, direction)
+    return None if record is not None and environment is record.environment else environment
+
+
+def _is_cbe_numerical_failure(error):
+    """Do not hide invalid options, tensor shapes, or other programming errors."""
+    if isinstance(error, (FloatingPointError, np.linalg.LinAlgError, OverflowError,
+                          ZeroDivisionError)):
+        return True
+    return isinstance(error, ValueError) and str(error) in {
+        "cannot evaluate an operator on a zero LETTA state.",
+        "cannot shift the gauge of a zero LETTA tensor.",
+        "the local LETTA overlap metric has zero rank.",
+        "the two-site LETTA overlap metric has zero rank.",
+        "the optimized local LETTA tensor has zero norm.",
+        "the represented LETTA pair has zero metric norm.",
+        "the streamed LETTA bond has zero metric norm.",
+        "a fixed-rank LETTA pair has zero physical norm.",
+        "the initial fixed-rank LETTA pair has zero norm.",
+        "array must not contain infs or NaNs",
+    }
+
+
+def _checked_cbe_energy(state, mpo, ceiling, tolerance):
+    if any(not np.all(np.isfinite(a)) for a in state.tensors):
+        raise FloatingPointError("nonfinite CBE tensor")
+    value = np.real_if_close(state.expectation(mpo))
+    if np.iscomplexobj(value) or not np.isfinite(value):
+        raise FloatingPointError("nonfinite or complex fresh CBE energy")
+    energy = float(value)
+    if energy > ceiling + tolerance:
+        raise FloatingPointError(
+            f"fresh CBE energy increased: {ceiling:.17g} -> {energy:.17g}")
+    return energy
+
+
 @_stable_floating_point
 def cbe_cached_mpo_sweep(
     state,
@@ -2805,118 +2565,130 @@ def cbe_cached_mpo_sweep(
     direction,
     options,
 ):
-    """Perform one exact-or-strict-shrewd LETTA-CBE sweep."""
+    """Check each complete step; retry failed CBE steps with ordinary one-site.
 
-    from .solver import _shift_virtual_gauge, _update_from_cached_environments
+    A transaction includes the gauge shift, which also changes a neighboring
+    tensor. Recovery rebuilds both environments from the restored tensors.
+    Subsequent bonds continue to use CBE. No dense physical state is formed.
+    """
+    from dataclasses import replace
+    from .solver import LETTASiteUpdate, _shift_gauge_and_extend_metric, _update_from_cached_environments
 
+    hcache, mcache = hamiltonian_cache, metric_cache
+    henv, menv = hamiltonian_environments, metric_environments
+    lr = direction == "lr"
+    sites = range(state.nsites) if lr else range(state.nsites - 1, -1, -1)
+    terminal = state.nsites - 1 if lr else 0
+    boundary_cut = 0 if lr else state.nsites
+    henv[boundary_cut], menv[boundary_cut] = hcache.scalar_boundary(), mcache.scalar_boundary()
+    energy = _checked_cbe_energy(state, hcache.mpo, np.inf, 0.)
+    # A per-step tolerance must not accumulate into a sweep-size energy rise.
+    sweep_start_energy = energy
     updates = []
-    if direction == "lr":
-        hamiltonian_boundary = hamiltonian_cache.scalar_boundary()
-        metric_boundary = metric_cache.scalar_boundary()
-        hamiltonian_environments[0] = hamiltonian_boundary
-        metric_environments[0] = metric_boundary
-        for site in range(state.nsites - 1):
-            layout = LETTAPairLayout.from_state(state, site)
-            updates.append(
-                _cbe_bond_update(
-                    state,
-                    layout,
-                    hamiltonian_cache,
-                    metric_cache,
-                    hamiltonian_boundary,
-                    hamiltonian_environments[site + 2],
-                    metric_boundary,
-                    metric_environments[site + 2],
-                    direction,
-                    options,
-                )
-            )
-            _shift_virtual_gauge(state, site, direction, options.gauge_mode)
-            hamiltonian_boundary = hamiltonian_cache.extend_left(
-                hamiltonian_boundary, site
-            )
-            metric_boundary = metric_cache.extend_left(metric_boundary, site)
-            hamiltonian_environments[site + 1] = hamiltonian_boundary
-            metric_environments[site + 1] = metric_boundary
-        terminal = state.nsites - 1
-        updates.append(
-            _update_from_cached_environments(
-                state,
-                terminal,
-                hamiltonian_cache,
-                metric_cache,
-                hamiltonian_boundary,
-                hamiltonian_environments[state.nsites],
-                metric_boundary,
-                metric_environments[state.nsites],
-                options,
-            )
-        )
-        _shift_virtual_gauge(state, terminal, direction, options.gauge_mode)
-        hamiltonian_boundary = hamiltonian_cache.extend_left(
-            hamiltonian_boundary, terminal
-        )
-        metric_boundary = metric_cache.extend_left(metric_boundary, terminal)
-        hamiltonian_environments[state.nsites] = hamiltonian_boundary
-        metric_environments[state.nsites] = metric_boundary
-    else:
-        hamiltonian_boundary = hamiltonian_cache.scalar_boundary()
-        metric_boundary = metric_cache.scalar_boundary()
-        hamiltonian_environments[state.nsites] = hamiltonian_boundary
-        metric_environments[state.nsites] = metric_boundary
-        for site in range(state.nsites - 2, -1, -1):
-            layout = LETTAPairLayout.from_state(state, site)
-            updates.append(
-                _cbe_bond_update(
-                    state,
-                    layout,
-                    hamiltonian_cache,
-                    metric_cache,
-                    hamiltonian_environments[site],
-                    hamiltonian_boundary,
-                    metric_environments[site],
-                    metric_boundary,
-                    direction,
-                    options,
-                )
-            )
-            active_site = site + 1
-            _shift_virtual_gauge(
-                state, active_site, direction, options.gauge_mode
-            )
-            hamiltonian_boundary = hamiltonian_cache.extend_right(
-                hamiltonian_boundary, active_site
-            )
-            metric_boundary = metric_cache.extend_right(
-                metric_boundary, active_site
-            )
-            hamiltonian_environments[active_site] = hamiltonian_boundary
-            metric_environments[active_site] = metric_boundary
-        updates.append(
-            _update_from_cached_environments(
-                state,
-                0,
-                hamiltonian_cache,
-                metric_cache,
-                hamiltonian_environments[0],
-                hamiltonian_boundary,
-                metric_environments[0],
-                metric_boundary,
-                options,
-            )
-        )
-        _shift_virtual_gauge(state, 0, direction, options.gauge_mode)
-        hamiltonian_boundary = hamiltonian_cache.extend_right(
-            hamiltonian_boundary, 0
-        )
-        metric_boundary = metric_cache.extend_right(metric_boundary, 0)
-        hamiltonian_environments[0] = hamiltonian_boundary
-        metric_environments[0] = metric_boundary
 
-    energy = float(np.real(hamiltonian_boundary / metric_boundary))
-    return (
-        tuple(updates),
-        energy,
-        hamiltonian_environments,
-        metric_environments,
-    )
+    def restore(tensors):
+        state.tensors = [a.copy() for a in tensors]
+        # Discard certificates made by the rejected trial, including entries
+        # that a nested solve may have removed or replaced.
+        state._canonical_norm_environments = {}
+
+    def rebuild(site):
+        hl, hr = hcache.build_left_environments(), hcache.build_right_environments()
+        ml, mr = mcache.build_left_environments(), mcache.build_right_environments()
+        henv[:] = hl[:site + 1] + hr[site + 1:]
+        menv[:] = ml[:site + 1] + mr[site + 1:]
+
+    def ordinary(site):
+        return _update_from_cached_environments(
+            state, site, hcache, mcache, henv[site], henv[site + 1],
+            menv[site], menv[site + 1], options)
+
+    def advance(site, *, gauge=True):
+        incoming = menv[site if lr else site + 1]
+        if gauge:
+            outgoing_metric = _shift_gauge_and_extend_metric(
+                state, site, direction, options, mcache, incoming)
+        else:
+            extend = mcache.extend_left if lr else mcache.extend_right
+            outgoing_metric = extend(incoming, site)
+        extend = hcache.extend_left if lr else hcache.extend_right
+        outgoing_hamiltonian = extend(henv[site if lr else site + 1], site)
+        return outgoing_hamiltonian, outgoing_metric
+
+    for site in sites:
+        before = [a.copy() for a in state.tensors]
+        ceiling = min(energy, sweep_start_energy)
+        try:
+            if site == terminal:
+                update = ordinary(site)
+            else:
+                pair_site = site if lr else site - 1
+                layout = LETTAPairLayout.from_state(state, pair_site)
+                local_cut = pair_site + 1
+                update = _cbe_bond_update(
+                    state, layout, hcache, mcache,
+                    henv[pair_site], henv[pair_site + 2],
+                    menv[pair_site], menv[pair_site + 2], direction, options,
+                    local_environments=(henv[local_cut], _baseline_metric_environment(
+                        mcache, menv[local_cut], local_cut, "rl" if lr else "lr")))
+            outgoing_h, outgoing_m = advance(site)
+            energy = _checked_cbe_energy(state, hcache.mpo, ceiling,
+                                         options.energy_increase_tolerance)
+        except (ValueError, ArithmeticError, np.linalg.LinAlgError) as error:
+            restore(before)
+            if not _is_cbe_numerical_failure(error):
+                raise
+            reason = f"{type(error).__name__}: {error}"
+            try:
+                rebuild(site)
+                update = ordinary(site)
+                ordinary_energy = _checked_cbe_energy(
+                    state, hcache.mpo, ceiling, options.energy_increase_tolerance)
+                # If it is the gauge itself that is unstable, retain the
+                # validated ordinary update and advance without that gauge.
+                ordinary_tensors = [a.copy() for a in state.tensors]
+                try:
+                    outgoing_h, outgoing_m = advance(site)
+                    energy = _checked_cbe_energy(
+                        state, hcache.mpo, min(ceiling, ordinary_energy),
+                        options.energy_increase_tolerance)
+                except (ValueError, ArithmeticError, np.linalg.LinAlgError) as gauge_error:
+                    restore(ordinary_tensors)
+                    if not _is_cbe_numerical_failure(gauge_error):
+                        raise
+                    rebuild(site)
+                    outgoing_h, outgoing_m = advance(site, gauge=False)
+                    energy = _checked_cbe_energy(
+                        state, hcache.mpo, ceiling, options.energy_increase_tolerance)
+                    reason += f"; skipped unstable gauge: {gauge_error}"
+                update = replace(update, energy=energy, cbe_fallback=True,
+                                 cbe_baseline_selected=True, cbe_baseline_energy=energy,
+                                 cbe_recovery_reason=reason)
+            except (ValueError, ArithmeticError, np.linalg.LinAlgError) as fallback_error:
+                restore(before)
+                if not _is_cbe_numerical_failure(fallback_error):
+                    raise
+                # Even the ordinary solve can be ill-conditioned. Keep the
+                # last valid tensors, advance without a gauge, and mark this
+                # step unresolved so it cannot cause false convergence.
+                rebuild(site)
+                outgoing_h, outgoing_m = advance(site, gauge=False)
+                energy = _checked_cbe_energy(state, hcache.mpo, ceiling,
+                                             options.energy_increase_tolerance)
+                reason += f"; one-site also rejected: {fallback_error}"
+                update = LETTASiteUpdate(
+                    site=site, local_energy=energy, energy=energy,
+                    metric_rank=0, local_dimension=state.tensors[site].size,
+                    residual_norm=float('inf'), accepted=False, cbe_fallback=True,
+                    cbe_recovery_reason=reason, cbe_recovery_rejected=True)
+            if options.verbosity:
+                action = "kept previous state" if update.cbe_recovery_rejected else "recovered with one-site"
+                print(f"CBE site {site} ({direction}): {action}; {reason}",
+                      flush=True)
+        cut = site + 1 if lr else site
+        henv[cut], menv[cut] = outgoing_h, outgoing_m
+        updates.append(update)
+
+    # Return the validated energy also to benchmark observers, which run before
+    # the driver's sweep guard. They must never see the rejected trial state.
+    return tuple(updates), energy, henv, menv

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import numpy as np
 
 from .._letta_one_site_opt.contractions import (
@@ -10,6 +12,7 @@ from .._letta_one_site_opt.contractions import (
     LETTAEnvironmentCache,
     _contract_operands,
     _environment_operands,
+    _prepare_contraction,
 )
 from .pair import LETTAPairLayout
 
@@ -30,6 +33,78 @@ def _validate_layout(cache, layout):
 
 class LETTAPairEnvironmentCache(LETTAEnvironmentCache):
     """Hamiltonian environments with an adjacent LETTA pair left active."""
+
+    def prepare_pair_action(self, left, right, layout):
+        """Bind pair environments and compatible MPO channels for one update.
+
+        Scalar and batched factor solves share the channel slices. At most four
+        batch shapes retain compiled local actions, all released after the pair.
+        """
+        _validate_layout(self, layout)
+        site = layout.left_site
+        bra = ((self.bra_virtual[site],)
+               + tuple(self.bra_physical[p] for p in layout.merged_physical_sites)
+               + (self.bra_virtual[site + 2],))
+        ket = ((self.ket_virtual[site],)
+               + tuple(self.ket_physical[p] for p in layout.merged_physical_sites)
+               + (self.ket_virtual[site + 2],))
+        first, second = self._group_labels(site)[2], self._group_labels(site + 1)[2]
+        terms = []
+        if self.use_sparse_mpo:
+            by_middle = {}
+            for middle, channel, operator in self.mpo.transitions[site + 1]:
+                by_middle.setdefault(middle, []).append((channel, operator))
+            for channel, middle, operator in self.mpo.transitions[site]:
+                lhs, ll = self._select_channel(left, self.frontiers[site],
+                                               self.mpo_virtual[site], channel)
+                if lhs is None:
+                    continue
+                for channel, next_operator in by_middle.get(middle, ()):
+                    rhs, rl = self._select_channel(right, self.frontiers[site + 2],
+                                                   self.mpo_virtual[site + 2], channel)
+                    if rhs is not None:
+                        terms.append(([lhs, operator, next_operator, rhs],
+                                      [tuple(ll), first[2:], second[2:], tuple(rl)]))
+        else:
+            lo, ll = _environment_operands(left, self.frontiers[site], 0)
+            ro, rl = _environment_operands(right, self.frontiers[site + 2], 1)
+            terms.append((lo + [self.mpo.factors[site], self.mpo.factors[site + 1]] + ro,
+                          ll + [first, second] + rl))
+        dtype = np.result_type(*self.state.tensors, *self.mpo.factors)
+        size = int(np.prod(layout.merged_shape))
+
+        @lru_cache(maxsize=4)
+        def expressions(batch):
+            shape = layout.merged_shape + (() if batch is None else (batch,))
+            extra = () if batch is None else (-1,)
+            result = []
+            for fixed, labels in terms:
+                operands = fixed + [np.empty(shape, dtype=dtype)]
+                indices = labels + [ket + extra]
+                used = {label for item in indices for label in item}
+                for label, dimension in zip(bra + extra, shape):
+                    if label not in used:
+                        operands.append(np.ones(dimension))
+                        indices.append((label,))
+                result.append(_prepare_contraction(operands, indices, bra + extra, len(fixed)))
+            return result
+
+        def action(vector):
+            vector = np.asarray(vector)
+            if vector.ndim == 1 and vector.size == size:
+                batch = None
+            elif vector.ndim == 2 and vector.shape[0] == size:
+                batch = vector.shape[1]
+            else:
+                raise ValueError("a pair action expects one vector or a column batch.")
+            shape = layout.merged_shape + (() if batch is None else (batch,))
+            value = vector.reshape(shape)
+            result = np.zeros(shape, dtype=np.result_type(dtype, vector))
+            for expression in expressions(batch):
+                result += expression(value)
+            return result.reshape(vector.shape)
+
+        return action
 
     def effective_pair_action(self, left, right, layout, vector):
         _validate_layout(self, layout)

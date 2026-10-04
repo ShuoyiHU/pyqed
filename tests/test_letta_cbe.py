@@ -25,8 +25,6 @@ from pyqed._letta_one_site_opt.cbe import (
     _directional_one_site_metric_trim,
     _directional_one_site_trim,
     _streamed_shrewd_final_tensor,
-    _streamed_shrewd_preselection_tensor,
-    _streamed_shrewd_weighted_preselection_tensor,
     cbe_cached_mpo_sweep,
     embed_cbe_pair,
     exact_missing_pair_direction,
@@ -142,12 +140,13 @@ def test_streamed_shrewd_selection_uses_one_site_parent_spaces(direction):
     assert selection.pair_action_count == 0
     assert selection.pair_metric_count == 0
     assert selection.merged_pair_count == 0
-    assert selection.preselection_output_size <= max(
-        state.tensors[layout.left_site].size
-        * cache.mpo.factors[layout.left_site].shape[1],
-        state.tensors[layout.left_site + 1].size
-        * cache.mpo.factors[layout.left_site + 1].shape[0],
+    shared_size = layout.physical_dim ** len(layout.shared)
+    parent_sizes = (
+        int(np.prod(layout.left_shape[:-1])) // shared_size,
+        int(np.prod(layout.right_shape[1:])) // shared_size,
     )
+    # Exact live physical connectors, not just the D*w MPS connector.
+    assert selection.preselection_output_size == selection.connector_dimension * max(parent_sizes)
 
 
 @pytest.mark.parametrize("direction", ["lr", "rl"])
@@ -187,7 +186,7 @@ def test_streamed_shrewd_selection_returns_zero_for_zero_complement(direction):
         direction=direction,
     )
 
-    assert selection.sector_ranks == (0,)
+    assert selection.sector_ranks == (0,) * (layout.physical_dim ** len(layout.shared))
     assert selection.missing_norm == 0.0
     assert selection.preselection_dimension == 0
     assert not np.any(selection.left_direction)
@@ -196,110 +195,35 @@ def test_streamed_shrewd_selection_returns_zero_for_zero_complement(direction):
 
 @pytest.mark.parametrize("direction", ["lr", "rl"])
 def test_sparse_streamed_selector_contractions_equal_dense(direction):
-    state = LatticeLETTA.random(
-        (2, 3), physical_dim=2, bond_dim=2, seed=504
-    )
-    mpo = transverse_field_ising_mpo(
-        (2, 3), coupling=0.8, field=1.3
-    )
+    from pyqed._letta_one_site_opt.cbe_general import ResponseRouting, conditional_candidates
+    state = LatticeLETTA.random((3, 3), physical_dim=2, bond_dim=2, seed=504)
+    mpo = transverse_field_ising_mpo((3, 3), coupling=0.8, field=1.3)
     layout = LETTAPairLayout.from_state(state, 1)
-    sparse_cache = LETTAPairEnvironmentCache(
-        state, mpo, use_sparse_mpo=True
-    )
-    dense_cache = LETTAPairEnvironmentCache(
-        state, mpo, use_sparse_mpo=False
-    )
-    sparse_left = sparse_cache.build_left_environments()[layout.left_site]
-    sparse_right = sparse_cache.build_right_environments()[
-        layout.left_site + 2
-    ]
-    dense_left = dense_cache.build_left_environments()[layout.left_site]
-    dense_right = dense_cache.build_right_environments()[
-        layout.left_site + 2
-    ]
-    left_tensor = state.tensors[layout.left_site]
-    right_tensor = state.tensors[layout.left_site + 1]
-
-    sparse_preselection = _streamed_shrewd_preselection_tensor(
-        sparse_cache,
-        sparse_left,
-        sparse_right,
-        layout,
-        left_tensor,
-        right_tensor,
-        direction,
-    )
-    dense_preselection = _streamed_shrewd_preselection_tensor(
-        dense_cache,
-        dense_left,
-        dense_right,
-        layout,
-        left_tensor,
-        right_tensor,
-        direction,
-    )
-    np.testing.assert_allclose(
-        sparse_preselection, dense_preselection, atol=1.0e-11
-    )
-
-    rng = np.random.default_rng(505)
-    width = 2
-    middle_width = mpo.factors[layout.left_site].shape[1]
-    if direction == "rl":
-        weighted_half = rng.normal(
-            size=(left_tensor.shape[-1], middle_width, width)
-        )
-    else:
-        weighted_half = rng.normal(
-            size=(width, right_tensor.shape[0], middle_width)
-        )
-    sparse_weighted = _streamed_shrewd_weighted_preselection_tensor(
-        sparse_cache,
-        sparse_left,
-        sparse_right,
-        layout,
-        left_tensor,
-        right_tensor,
-        weighted_half,
-        direction,
-    )
-    dense_weighted = _streamed_shrewd_weighted_preselection_tensor(
-        dense_cache,
-        dense_left,
-        dense_right,
-        layout,
-        left_tensor,
-        right_tensor,
-        weighted_half,
-        direction,
-    )
-    np.testing.assert_allclose(sparse_weighted, dense_weighted, atol=1.0e-11)
-
-    if direction == "rl":
-        preselected = rng.normal(size=left_tensor.shape[:-1] + (width,))
-    else:
-        preselected = rng.normal(size=(width,) + right_tensor.shape[1:])
-    sparse_final = _streamed_shrewd_final_tensor(
-        sparse_cache,
-        sparse_left,
-        sparse_right,
-        layout,
-        left_tensor,
-        right_tensor,
-        preselected,
-        direction,
-    )
-    dense_final = _streamed_shrewd_final_tensor(
-        dense_cache,
-        dense_left,
-        dense_right,
-        layout,
-        left_tensor,
-        right_tensor,
-        preselected,
-        direction,
-    )
-    np.testing.assert_allclose(sparse_final, dense_final, atol=1.0e-11)
+    a, b = state.tensors[1:3]
+    routes, candidates = [], []
+    for sparse in (False, True):
+        cache = LETTAPairEnvironmentCache(state, mpo, use_sparse_mpo=sparse)
+        left = cache.build_left_environments()[1]
+        right = cache.build_right_environments()[3]
+        routes.append(ResponseRouting.from_cache(cache, left, right, layout, a, b))
+        candidates.append(conditional_candidates(
+            cache, left, right, layout, a, b, direction=direction, width=2).tensor)
+    for block in np.ndindex(*((2,) * len(layout.shared))):
+        halves = [route.half_matrices(block) for route in routes]
+        np.testing.assert_allclose(halves[0].left @ halves[0].right,
+                                   halves[1].left @ halves[1].right, atol=1.e-11)
+        section = [slice(None)] * candidates[0].ndim
+        neighborhood = layout.left_neighborhood if direction == "rl" else layout.right_neighborhood
+        for p, value in zip(layout.shared, block):
+            section[1 + neighborhood.index(p)] = value
+        matrices = [candidate[tuple(section)] for candidate in candidates]
+        if direction == "rl":
+            matrices = [matrix.reshape(-1, matrix.shape[-1]) for matrix in matrices]
+            projectors = [matrix @ np.linalg.pinv(matrix) for matrix in matrices]
+        else:
+            matrices = [matrix.reshape(matrix.shape[0], -1) for matrix in matrices]
+            projectors = [np.linalg.pinv(matrix) @ matrix for matrix in matrices]
+        np.testing.assert_allclose(*projectors, atol=1.e-10)
 
 
 @pytest.mark.parametrize("direction", ["lr", "rl"])
@@ -426,7 +350,7 @@ def test_active_shrewd_sweep_never_enters_pair_space(direction, monkeypatch):
     assert all(update.cbe_preselection_output_size > 0 for update in strict_updates)
     assert all(update.cbe_final_output_size >= 0 for update in strict_updates)
     assert all(
-        update.cbe_trim_method == "one-site-metric-als"
+        update.cbe_trim_method == "one-site-metric-svd/als"
         for update in strict_updates
     )
     assert all(
@@ -496,7 +420,7 @@ def test_cbe_options_are_disabled_by_default():
     assert options.cbe_preselection_dimension is None
     assert options.cbe_projection_tolerance > 0.0
     assert options.cbe_projection_max_iterations > 0
-    assert options.cbe_baseline_guard_fraction == pytest.approx(0.2)
+    assert options.cbe_baseline_guard_fraction == pytest.approx(0.0)
 
 
 @pytest.mark.parametrize("selector", ["exact", "shrewd"])
@@ -859,7 +783,8 @@ def test_default_metric_projected_strict_cbe_converges_fermi_reference():
         if update.cbe_preselection_dimension is not None
     ]
     assert attempted
-    assert max(update.cbe_preselection_dimension for update in attempted) == 6
+    # Six is the budget; a conditional block may have fewer supported modes.
+    assert 0 < max(update.cbe_preselection_dimension for update in attempted) <= 6
 
 
 @pytest.mark.parametrize("real", [True, False])

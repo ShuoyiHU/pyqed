@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cached_property
 from operator import index
 
 import numpy as np
 
 from .._letta_one_site_opt.state import LatticeLETTA
+from .pair_contractions import contract_pair
 
 
 @dataclass(frozen=True)
@@ -210,6 +212,21 @@ class LETTAPairLayout:
         )
         return left_labels, right_labels, merged_labels
 
+    @cached_property
+    def _contraction_equations(self):
+        # Geometry is immutable; only equations, never tensor values or bond
+        # dimensions, are cached here. Execution plans use the current shapes.
+        symbols = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        left, right, merged = (
+            "".join(symbols[i] for i in labels)
+            for labels in self._contraction_labels()
+        )
+        return (
+            f"{left},{right}->{merged}",
+            f"{merged},{right}->{left}",
+            f"{left},{merged}->{right}",
+        )
+
     def merge(self, left_tensor, right_tensor):
         """Contract the virtual bond and identify shared physical axes."""
 
@@ -217,14 +234,10 @@ class LETTAPairLayout:
         right_tensor = np.asarray(right_tensor)
         self._validate_tensor_shapes(left_tensor, right_tensor)
 
-        left_labels, right_labels, output_labels = self._contraction_labels()
-        return np.einsum(
+        return contract_pair(
+            self._contraction_equations[0],
             left_tensor,
-            left_labels,
             right_tensor,
-            right_labels,
-            output_labels,
-            optimize=True,
         )
 
     def left_adjoint(self, merged_gradient, right_tensor):
@@ -236,14 +249,10 @@ class LETTAPairLayout:
             raise ValueError("merged gradient shape does not match the pair layout.")
         if tuple(right_tensor.shape[1:]) != self.right_shape[1:]:
             raise ValueError("right tensor shape does not match the pair layout.")
-        left_labels, right_labels, merged_labels = self._contraction_labels()
-        return np.einsum(
+        return contract_pair(
+            self._contraction_equations[1],
             merged_gradient,
-            merged_labels,
             right_tensor.conj(),
-            right_labels,
-            left_labels,
-            optimize=True,
         )
 
     def right_adjoint(self, left_tensor, merged_gradient):
@@ -255,14 +264,10 @@ class LETTAPairLayout:
             raise ValueError("left tensor shape does not match the pair layout.")
         if tuple(merged_gradient.shape) != self.merged_shape:
             raise ValueError("merged gradient shape does not match the pair layout.")
-        left_labels, right_labels, merged_labels = self._contraction_labels()
-        return np.einsum(
+        return contract_pair(
+            self._contraction_equations[2],
             left_tensor.conj(),
-            left_labels,
             merged_gradient,
-            merged_labels,
-            right_labels,
-            optimize=True,
         )
 
 
