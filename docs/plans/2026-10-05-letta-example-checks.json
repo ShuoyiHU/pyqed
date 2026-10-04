@@ -1,0 +1,126 @@
+[
+  {
+    "model": "fermionic Hubbard",
+    "symmetry": "su2",
+    "topology": "open",
+    "periodic_hamiltonian": true,
+    "ties": "nn-periodic",
+    "method": "cbe",
+    "energy": -1.274917217635371,
+    "converged": true,
+    "message": "CONVERGENCE: ENERGY STATIONARY AND FRESH LOCAL RESIDUALS <= TOLERANCE",
+    "sweeps": 2,
+    "sweep_energies": [
+      -1.274917217635371,
+      -1.274917217635371
+    ],
+    "initial_bond_multiplets": [
+      3,
+      4
+    ],
+    "final_bond_multiplets": [
+      3,
+      4
+    ],
+    "final_sectors": [
+      {
+        "SpinChargeSector(charge=0, irrep=SU2Irrep(two_j=0))": 1,
+        "SpinChargeSector(charge=1, irrep=SU2Irrep(two_j=1))": 1,
+        "SpinChargeSector(charge=2, irrep=SU2Irrep(two_j=0))": 1
+      },
+      {
+        "SpinChargeSector(charge=1, irrep=SU2Irrep(two_j=1))": 1,
+        "SpinChargeSector(charge=2, irrep=SU2Irrep(two_j=0))": 1,
+        "SpinChargeSector(charge=2, irrep=SU2Irrep(two_j=2))": 1,
+        "SpinChargeSector(charge=3, irrep=SU2Irrep(two_j=1))": 1
+      }
+    ],
+    "numerical_recoveries": 0,
+    "independent_reference": -1.2749172176353687,
+    "error": -2.220446049250313e-15
+  },
+  {
+    "model": "Bose-Hubbard",
+    "symmetry": "u1",
+    "topology": "open",
+    "periodic_hamiltonian": true,
+    "ties": "nn-periodic",
+    "method": "two-site",
+    "energy": -3.000000000000001,
+    "converged": true,
+    "message": "CONVERGENCE: ENERGY STATIONARY AND FRESH LOCAL RESIDUALS <= TOLERANCE",
+    "sweeps": 2,
+    "sweep_energies": [
+      -3.0,
+      -3.000000000000001
+    ],
+    "initial_bond_multiplets": [
+      3,
+      3
+    ],
+    "final_bond_multiplets": [
+      3,
+      3
+    ],
+    "final_sectors": [
+      {
+        "Sector(('u1_0', 'su2'), (0, SU2Irrep(two_j=0)))": 1,
+        "Sector(('u1_0', 'su2'), (1, SU2Irrep(two_j=0)))": 1,
+        "Sector(('u1_0', 'su2'), (2, SU2Irrep(two_j=0)))": 1
+      },
+      {
+        "Sector(('u1_0', 'su2'), (1, SU2Irrep(two_j=0)))": 1,
+        "Sector(('u1_0', 'su2'), (2, SU2Irrep(two_j=0)))": 1,
+        "Sector(('u1_0', 'su2'), (3, SU2Irrep(two_j=0)))": 1
+      }
+    ],
+    "numerical_recoveries": 0,
+    "independent_reference": -2.9999999999999982,
+    "error": -2.6645352591003757e-15
+  },
+  {
+    "model": "Heisenberg",
+    "symmetry": "su2",
+    "topology": "ring",
+    "periodic_hamiltonian": true,
+    "ties": "nn-periodic",
+    "method": "one-site",
+    "energy": -0.7500000000000004,
+    "converged": true,
+    "message": "CONVERGENCE: ENERGY AND FRESH LOCAL RESIDUALS",
+    "sweeps": 1,
+    "sweep_energies": [
+      -0.7500000000000004
+    ],
+    "initial_bond_multiplets": [
+      1,
+      1,
+      2,
+      1
+    ],
+    "final_bond_multiplets": [
+      1,
+      1,
+      2,
+      1
+    ],
+    "final_sectors": [
+      {
+        "Sector(('charge', 'su2'), (0, SU2Irrep(two_j=0)))": 1
+      },
+      {
+        "Sector(('charge', 'su2'), (0, SU2Irrep(two_j=1)))": 1
+      },
+      {
+        "Sector(('charge', 'su2'), (0, SU2Irrep(two_j=0)))": 1,
+        "Sector(('charge', 'su2'), (0, SU2Irrep(two_j=2)))": 1
+      },
+      {
+        "Sector(('charge', 'su2'), (0, SU2Irrep(two_j=1)))": 1
+      }
+    ],
+    "numerical_recoveries": 0,
+    "independent_reference": -0.75,
+    "error": -4.440892098500626e-16
+  }
+]

@@ -57,3 +57,37 @@ Detailed test commands/results are in 2026-10-05-letta-public-api-tests.txt. The
 ## Eigensolver correction follow-up
 
 The public model/input and real molecular compressor selections have been rerun after the local-metric equilibration correction (bce395a): 42 passed, 37 deselected in 41.07 s, log /private/tmp/letta-public-api-post-equilibration.log. The original full process still runs the older solver. It remains useful earlier-source evidence but does not replace final-source matrix verification. The public API is committed as an implementation checkpoint, not declared fully validated across every combination.
+
+
+## Current-source matrix checkpoint after lowest-root correction
+
+On numerical commit 126bc0b, the public checks completed in separate processes:
+64 model/input/compressor/open/spin-ring tests (52.75 s), six Bose/SU(2)-fermionic
+ring method cases (555.84 s), four Bose/Heisenberg ring seed/copy allocations
+(24.66 s), and one fermionic U(1) one-copy ring allocation (51.54 s). These
+selections are disjoint: 75 of the current 79 public tests passed. Logs are
+/private/tmp/letta-root-exploration-public.log,
+/private/tmp/letta-public-matrix-bose-su2-final.log,
+/private/tmp/letta-public-allocations-bose-spin-final.log and
+/private/tmp/letta-public-allocation-fermion-one-final.log.
+
+The four remaining current-source cases run sequentially in session 67996,
+log /private/tmp/letta-public-remaining-fermion-final.log: three methods for the
+three-site fermionic U(1) ring with backward/wrap ties, and the two-copy fermionic
+ring allocation. Do not launch another copy of these large cases in parallel.
+
+The original process 91584 / session 41861 was intentionally terminated after
+verifying its command, exit 143. Its 15 completed dots remain in
+/private/tmp/letta-public-api.log. It was superseded because it loaded code
+before two reproduced eigensolver corrections and obsolete compressor fixtures;
+its remaining output could not close the current-source validation gate.
+Stopping it before the current-source large ring run avoids competing memory
+use. This is not a numerical failure or a completed test result, and the old
+partial output is not counted in the 75 current passes. The decision was based
+on changed numerical source, not an observation timeout.
+
+A combined implementation suite is also active in session 96127, log
+/private/tmp/letta-combined-final.log, with the complex three-orbital molecular
+backward-tie CBE stress case explicitly deselected. That stress case previously
+passed on an earlier solver and still requires final-source accounting; neither
+an exclusion nor a live process is a completed verification gate.

@@ -410,3 +410,87 @@ A multiplication computes the bounded product, extracts another power of two, an
 This prevents an intermediate overflow or underflow from destroying a representable final environment under large cancelling scalar gauges. It does not make a truly unrepresentable absolute environment representable: that case raises a numerical error for transactional recovery instead of returning NaNs or a false zero. Tensor-transfer construction and all other numerical operations still have ordinary floating-point range limits.
 
 Tests use complex 32- and 64-core rings with nontrivial spin transfer channels and binary core gauges whose product is exactly one. Independent multiplicity transfers verify norms and Hamiltonian expectations. Single-site and pair actions retain their expected absolute scale on internal and closure-adjacent edges. These are numerical-range tests, not evidence that large interacting optimization problems have reached global minima.
+
+## Source organization and verification boundaries
+
+The public layer validates model/state compatibility and translates controls;
+local numerical algorithms remain in shared reduced backends. The following
+map identifies the code responsible for the equations in the mathematical
+companion (paths are relative to the repository root).
+
+| Layer | Source | Responsibility |
+|---|---|---|
+| Public model/state/method API | `pyqed/letta/models.py`, `pyqed/letta/solver.py` | Separate Hamiltonian graph, symmetry target, virtual topology, ties and method; validate inputs and budgets |
+| Physical ownership and irreps | `_letta_one_site_opt/reduced_symmetry.py`, `reduced_state.py` | Charge fusion, complete spin multiplets, multiplicity storage and source tensor layouts |
+| Arbitrary ties | `_letta_one_site_opt/reduced_frontier.py` | Exact sparse copy embedding and its summing adjoint; neutral physical-label memory |
+| Molecular Hamiltonian | `_letta_one_site_opt/qchem.py`, `reduced_operators.py`, `reduced_mpo_compile.py` | Integral/sign/core-energy conventions and checked compilation into irreducible operator tensors |
+| Open environments | `_letta_one_site_opt/reduced_norm.py`, `reduced_environment.py` | Reduced H/N contractions, spin dimension weights and moving-boundary invalidation |
+| Open gauge and local solves | `_letta_one_site_opt/reduced_gauge.py`, `reduced_solver.py` | Legal conditional/marginal gauges, supported generalized roots and fresh physical acceptance |
+| Open CBE and two-site | `_letta_one_site_opt/reduced_cbe.py`, `_letta_two_site_opt/reduced_solver.py` | Residual-selected expanded one-site updates versus pair eigensolves, allocation and baseline guards |
+| Cyclic representation/environment | `_letta_one_site_opt/reduced_ring_target.py`, `reduced_ring_state.py`, `reduced_ring_contraction.py` | Covariant closure, signed charges, every transfer-spin channel and scaled cyclic products |
+| Cyclic pairs and updates | `_letta_two_site_opt/reduced_ring_pair.py`, `reduced_ring_allocation.py`, `reduced_ring_solver.py`; `_letta_one_site_opt/reduced_ring_solver.py`, `reduced_ring_cbe.py` | Full correlated pair metrics, closure-edge updates, exact allocation changes and recovery |
+| Shared factor optimization | `pyqed/_letta_compression.py`; open/cyclic `reduced_compression.py` / `reduced_ring_compression.py` | Four solvers, legal factor gauges, physical metric roots, independent iteration limits and status |
+| Shared energy refinement | `_letta_one_site_opt/reduced_updates.py` | Alternating fixed-allocation energy minimization and fresh final stationarity checks |
+| Existing Abelian states | `_letta_one_site_opt/abelian_backend.py` | Lossless U(1)-product conversion, original physical ordering and coefficient ownership |
+
+All `_letta_*` directories in this table are under `pyqed/`. Existing native
+DMRG representation utilities are reused, but the active symmetry solvers do
+not invoke a global determinant projection to repair reduced contractions.
+Independent dense/component reconstruction belongs to validation helpers.
+
+The numerical tests distinguish the following claims:
+
+| Claim | Independent evidence encoded in tests |
+|---|---|
+| Correct molecular and condensed Hamiltonian | Explicit fermionic action, Kronecker spin/boson operators, core-energy and orbital-order checks |
+| Correct reduced spin algebra | Complex singlet/doublet/triplet H/N actions compared with magnetic-component references; no-expansion production tests |
+| Exact tying and legal gauge | Independent amplitudes before/after gauges; copy-map adjoints; correlated metrics retained after marginal conditioning |
+| Physical compression objective | Root/adjoint identities, direct norm-error comparisons, weighted-SVD references and finite-difference Jacobian/Hessian checks |
+| Real CBE expansion | Initially missing sectors, exact state-preserving padding, improvement over the same-start one-site baseline and forbidden pair diagonalization |
+| Closed virtual ring | Nonunit closure bonds, auxiliary target components, direct ring amplitudes, both closure-edge pair actions and all-spin-channel transfer traces |
+| Honest convergence/recovery | Deliberately exhausted inner budgets, rejected local updates, partial tensor/cache mutations and allocation failures |
+| Local numerical stability | Independent rescaled generalized spectra, stationary excited starts, norm nullspaces, molecular roundoff replay and cancelling binary ring gauges |
+
+A passing energy-bound/expectation test does not prove that a capped sweep has
+reached the global variational optimum. Tests for actual sector discovery and
+same-start energy gain are separate from API dispatch tests that permit reported
+numerical recovery. Likewise, a correct finite Bose occupation cutoff is not
+convergence with respect to that physical cutoff. Molecular tests concern the
+supplied active-space Hamiltonian, not complete-basis or orbital-optimization
+accuracy.
+
+To reproduce the small mathematical and implementation checks, activate an
+environment with the repository's test dependencies and run from the root:
+
+```bash
+export PYTHONPATH=.
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+export VECLIB_MAXIMUM_THREADS=1 NUMEXPR_NUM_THREADS=1
+python -m pytest -q tests/test_letta_reduced_compression.py tests/test_letta_compression_solvers.py
+python -m pytest -q tests/test_letta_reduced_eigen_scaling.py tests/test_letta_reduced_updates.py
+python -m pytest -v --durations=20 tests/test_letta_public_api.py
+```
+
+The last command includes the full public model/method/topology matrix and can
+be much more expensive than the first two commands, especially for fermionic
+rings with wide physical-label frontiers. Current run results, excluded stress
+cases, exact code versions and incomplete gates are tracked in the implementation
+plan; historical passing tests are not silently counted as verification of a
+later numerical implementation.
+
+
+The CLI was also checked on three physical sites with a periodic Hamiltonian,
+periodic NN ties, seed 71, two maximum sweeps, eight ALS rounds, 64 inner LSMR
+iterations and four A/B energy rounds, using numerical commit `126bc0b`:
+
+| Model and target | Virtual topology / method | Final energy | Independent reference |
+|---|---|---:|---|
+| Fermionic Hubbard, t=1, U=4, N=3, S=1/2 | Open / CBE | -1.274917217635371 | PySCF fixed-electron-sector FCI |
+| Bose-Hubbard, t=1, U=4, N=3, maximum occupation 2 | Open / two-site | -3.000000000000001 | Explicit number-basis Hamiltonian |
+| Heisenberg, J=1, S=1/2 | Ring / one-site | -0.7500000000000004 | Three-spin total-spin identity |
+
+All three reported convergence with zero numerical recoveries. Their absolute
+reference discrepancies were below 3e-15 in this run. These are small-system
+correctness checks, not evidence of comparable convergence on every allocation
+or a performance comparison. Exact result records, sector counts and sweep
+histories are saved in `plans/2026-10-05-letta-example-checks.json`.
