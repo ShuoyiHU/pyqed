@@ -57,7 +57,7 @@ For open virtual boundaries, the reduced metric square root factors boundary mul
 
 QC supports U(1) number, U(1) number × U(1) spin projection, and U(1) number × SU(2). SU(2) physical dependencies use invariant irrep/multiplicity labels. Spatial orbitals have empty, single and double labels; magnetic components are structural Clebsch–Gordan coordinates. D in the reduced solver counts complete multiplets, not magnetic states or total stored parameters.
 
-The native reduced backend supports open virtual boundaries for one-site, CBE and two-site updates. Native closed-ring one-site updates now use `ReducedRingLETTA`, an explicit covariant target closure and the full cyclic metric. Ring CBE/two-site compression and the unified model/topology API remain unfinished. The inherited periodic benchmark backend is separate and does not establish support for these unfinished native adapters.
+The native reduced backend supports open virtual boundaries for one-site, CBE and two-site updates. Native closed-ring one-site, residual-CBE and two-site updates use `ReducedRingLETTA`, an explicit covariant target closure and the full cyclic metric. The unified model/topology API and broader feature-matrix verification remain unfinished. The inherited periodic benchmark backend is separate and does not establish support for these unfinished native adapters.
 
 ## Reduced energy updates and recovery
 
@@ -149,7 +149,7 @@ Only the supported marginal becomes identity. Correlations between different fro
 
 `reduced_gauge_variables(state, cut)` reports the actual conditioning labels. `reduced_frontier_grams` reports the corresponding marginals. The gauge functions accept `strict=True` to require a complete shared frontier and reject before changing tensors. Individual shifts and whole canonicalization passes retain independent tensor snapshots and restore them if an operation raises; the error is propagated after restoration rather than hidden.
 
-This behavior is available to native SU(2) and the shared U(1) backend for ordinary one-site, CBE and two-site updates. Validation covers cyclic physical dependencies on an **open virtual chain**; this is separate from closed-ring virtual contraction, which remains pending.
+This behavior is available to native SU(2) and the shared U(1) backend for ordinary one-site, CBE and two-site updates. Validation covers cyclic physical dependencies on an **open virtual chain**; this is separate from the closed-ring cyclic contraction described below.
 
 
 ## Native closed-ring one-site calculation
@@ -194,16 +194,16 @@ The norm convention is the invariant physical-plus-target scalar norm. Each raw 
 
 Accepted local updates pass a fresh physical energy check after normalization. A failed solve restores its incumbent. A failed gauge restores the state after the accepted local update and continues with subsequent cores. Recovery is recorded and prevents that sweep from being called converged. Energy plateaus require a fresh all-core local-residual audit; they are not guarantees of a global minimum.
 
-The ring state now supports public one-site and two-site paths. Asking the one-site path for CBE still raises an explicit error: the residual-based ring CBE selector and update integration remain required work. The existing open-chain boundary-Gram compression root cannot be used for a general cyclic metric.
+The ring state supports public one-site, residual-CBE and two-site paths. Enable ring CBE through `LETTADMROptions(cbe_enabled=True)` with the exact selector. The existing open-chain boundary-Gram compression root cannot be used for a general cyclic metric.
 
 
 ## Cyclic pair compression: internal adapter
 
-The native ring pair and compression adapters are independently verified and connected to public ring two-site sweeps. The supplied-target adapter is ready for integration with a genuine expanded-one-site CBE update; CBE itself remains unavailable for rings. `CyclicPairProblem` forms the full correlated H/N pair response on a physical/physical or closure-adjacent graph edge. Its fusion layout includes missing middle irreps, independent of the incumbent allocation.
+The native ring pair and compression adapters are independently verified and connected to public ring two-site sweeps. The supplied-target adapter also compresses the result of the genuine expanded-one-site ring CBE update. `CyclicPairProblem` forms the full correlated H/N pair response on a physical/physical or closure-adjacent graph edge. Its fusion layout includes missing middle irreps, independent of the incumbent allocation.
 
 `compress_ring_pair` accepts the same `MetricCompressionOptions` and explicit ALS/LSMR budgets as the open reduced backend. All four solvers operate on the same cyclic physical-norm loss. The caller remains responsible for changing sector allocations, choosing starting factors, alternating energy minimization, comparing against an ordinary one-site baseline, and committing or restoring a candidate. Calling the adapter alone does not guarantee an energy improvement.
 
-The current cyclic metric root uses dense LOCAL pair matrices with a workspace guard. This is distinct from a forbidden global determinant projection, but can still be expensive for large pair spaces. Long-ring scalability and ring CBE integration remain unfinished.
+The current cyclic metric root uses dense LOCAL pair matrices with a workspace guard. This is distinct from a forbidden global determinant projection, but can still be expensive for large pair spaces. Long-ring numerical scaling and the full model/topology verification matrix remain unfinished.
 
 
 ## Two-site optimization on the covariant ring
@@ -259,3 +259,83 @@ missing spin-sector growth, both closure edges, matrix-free pair actions,
 state-preserving growth/shrinkage, same-start recovery and failed partial gauge
 writes. Larger systems and the complete topology/model/method matrix remain
 separate validation gates.
+
+
+## Residual CBE on the covariant ring
+
+`letta_dmrg(..., state=ring_state, options=LETTADMROptions(cbe_enabled=True))`
+uses the exact residual selector with the same shared compression controls as
+open reduced CBE. The fixed total multiplet cap is the largest bond allocation
+in the supplied state at the start of the sweep run. Sector allocation may
+change while that cap is respected. A separate bond schedule is not supported.
+Every physical core and the target closure participate; reverse sweeps select
+the preceding graph edge modulo L+1, so neither closure edge is skipped.
+
+The ordinary one-site baseline is computed first. Selection is performed on a
+copy of that baseline. Locally reachable sectors provide a temporary source
+layout, preserving the baseline's coefficients by exact zero padding. Let x
+be its merged pair coefficients, and let H and N be the full cyclic pair
+Hamiltonian and overlap. The physical Rayleigh quotient and coefficient
+residual are
+
+$$
+E=\frac{x^\dagger Hx}{x^\dagger Nx},\qquad r=Hx-E Nx.
+$$
+
+Let S and W be the supported metric root and whitening maps described above,
+with S†S=N and SW=I on retained support. The residual in orthonormal physical
+coordinates is
+
+$$
+g=W^\dagger r.
+$$
+
+For the actual conditional source factors a,b, denote their exact bilinear
+merge by M(a,b). Restrict variations to the incumbent bond allocation. The
+weighted tangent map is
+
+$$
+J(\delta a,\delta b)=S\bigl[M(\delta a,b)+M(a,\delta b)\bigr].
+$$
+
+Its adjoint includes the sparse tie-copy adjoints; copying physical labels is
+not assumed to be isometric. LSMR solves the least-squares tangent projection,
+without materializing J. The missing residual and its coefficient target are
+
+$$
+z_* = \arg\min_z\|Jz-g\|_2^2,\qquad
+ g_\perp=g-Jz_*,\qquad t=Wg_\perp.
+$$
+
+The selector reports both the projection stopping status and the remaining
+tangent overlap. Failure to converge triggers ordinary-step recovery. A greedy
+allocation fits t with complete multiplets, testing each available sector and
+two deterministic source-factor starts using the selected common compressor.
+The selection budget counts new complete multiplets. It does not count magnetic
+components, and the greedy nonconvex fit is not claimed to be globally optimal.
+
+On a forward update, selected right-factor rows are appended and the matching
+left columns are zero. A reverse update appends selected left columns and zero
+right rows. In both cases the starting physical wavefunction is unchanged.
+Only the active **one-site** Hamiltonian is then diagonalized. Its resulting
+pair vector is passed to `fit_ring_pair_target`, which never calls the pair
+eigensolver, for full-metric compression and optional A/B energy alternation.
+The trial is committed only when its freshly contracted energy is strictly
+lower than the ordinary baseline and its bond allocation meets the fixed cap.
+Otherwise the ordinary baseline is retained.
+
+Failures in selection, expansion, the expanded solve or trimming discard the
+trial and preserve the independently computed baseline. Failure of the baseline
+itself preserves the incumbent and reports a rejected recovery. Gauge recovery
+continues to restore the post-update state. Errors and incomplete compression
+prevent a sweep from being declared converged; an energy plateau still requires
+fresh all-core local stationarity checks. These checks are not global optimality
+certificates.
+
+Unlike the current OBC selector, this initial cyclic accuracy backend does
+materialize the **local reduced pair Gram** for its correlated root. Diagnostics
+set `cbe_materialized_pair_metric=True`; neither a global physical-state frame
+nor a determinant Hamiltonian is built in production. The workspace limit can
+trigger ordinary-step fallback. Streamed/shrewd selection, separate preselection
+controls and relaxed baseline allowances are explicitly rejected. The dense
+cyclic root is not a claim of scalable large-ring CBE.

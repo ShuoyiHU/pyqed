@@ -226,8 +226,11 @@ def test_random_ring_nontrivial_spin_anchor_and_unreachable_target():
         ReducedRingLETTA.random(2, basis, SpinChargeSector(5, SU2Irrep(1)))
 
 
-def test_ring_cbe_is_not_silently_replaced_by_one_site():
+@pytest.mark.parametrize('extra', [dict(cbe_selector='shrewd'),
+    dict(cbe_baseline_guard_fraction=.1), dict(cbe_preselection_dimension=2),
+    dict(cbe_conditional_trim=False)])
+def test_ring_cbe_rejects_unsupported_selector_controls(extra):
     state = molecular_state()
-    with pytest.raises(NotImplementedError, match='ring CBE'):
+    with pytest.raises(ValueError, match='ring'):
         letta_dmrg(ElectronicProblem(*integrals(2), (1, 1)).su2_mpo(),
-                   state=state, options=LETTADMROptions(cbe_enabled=True))
+                   state=state, options=LETTADMROptions(cbe_enabled=True, **extra))

@@ -24,15 +24,15 @@
 | Requirement | Evidence required | Status |
 |---|---|---|
 | Preserve source work and requested branch | Source hashes unchanged; integration commit with manifest | Source hashes verified; integration checkpoint tested |
-| Shared ALS/inner least-squares limits | Limits reach each backend, diagnostics distinguish cap from convergence | Pending |
-| ALS, variable projection, joint LS, Grassmann Newton | Same physical-metric objective, derivative and fit tests, both CBE/two-site | Reduced two-site and SU(2) CBE integrated; remaining backend adapters pending |
+| Shared ALS/inner least-squares limits | Limits reach each backend, diagnostics distinguish cap from convergence | Shared controls implemented and tested in open and cyclic reduced adapters; unified API still pending |
+| ALS, variable projection, joint LS, Grassmann Newton | Same physical-metric objective, derivative and fit tests, both CBE/two-site | Open reduced and cyclic two-site/CBE adapters implemented; broader combination verification pending |
 | U(1) OBC one-site/CBE/two-site | Symmetry leakage zero, adaptive allocation, exact small-reference comparisons | Shared adapter implemented; independent small-model and conversion tests pass; broader API/topology gates remain |
 | SU(2) OBC one-site/CBE/two-site | Native reduced actions, complete multiplets, numerical-reference gates | Implemented, small references pass; broad model/tie/API validation remains |
-| U(1) closed-ring all three methods | Cyclic contractions and wrap bond, nonidentity metric, independent references | Native one-site with arbitrary ties/closure verified; ring CBE/two-site pending |
-| SU(2) closed-ring all three methods | Reduced cyclic recoupling, explicit target representation, no magnetic/determinant solver fallback | Native one-site with arbitrary ties and covariant targets verified; ring CBE/two-site pending |
-| Arbitrary tying | Forward/backward/nonadjacent/cross-cut/wrap dependencies, exact embedding and metric tests | Native open-chain and ring one-site arbitrary ties verified; ring CBE/two-site extension pending |
+| U(1) closed-ring all three methods | Cyclic contractions and wrap bond, nonidentity metric, independent references | All three ring methods implemented; independent Bose/fermionic small references pass; broader matrix pending |
+| SU(2) closed-ring all three methods | Reduced cyclic recoupling, explicit target representation, no magnetic/determinant solver fallback | All three ring methods implemented; reduced cyclic reference tests pass; molecular backward-tie stress test running |
+| Arbitrary tying | Forward/backward/nonadjacent/cross-cut/wrap dependencies, exact embedding and metric tests | Open/ring embeddings and all three methods implemented; complex molecular ring CBE validation running |
 | QC and condensed models | Molecular integrals and Hubbard/Bose/Heisenberg examples with allowed symmetries | Pending integrated validation |
-| Recovery and variational acceptance | Restored state/sectors/caches, same-start one-site baseline, strict fresh energy check | Reduced one-/two-site/CBE transactions and strict baseline implemented; ring integration pending |
+| Recovery and variational acceptance | Restored state/sectors/caches, same-start one-site baseline, strict fresh energy check | Open/ring update transactions and strict baselines implemented; OBC sweep-level gauge recovery pending |
 | Accuracy diagnostics | Inner residuals/status, truncation stationarity, rejected-update handling; plateau != global minimum | Pending |
 | Public API/documentation | Clear boundary/model distinction, D multiplets vs magnetic dimension, runnable examples | Pending |
 | Full implementation note | Complete code-grounded description, especially symmetry representations, contractions, gauges, expansion, compression, recovery and limitations | Required after implementation; pending |
@@ -164,3 +164,7 @@ The requested scope remains all original model/symmetry/topology/method combinat
 - 2026-10-05 ring two-site checkpoint: exact whole-sector allocation growth/shrinkage on every cyclic graph edge, multistart supplied-target fitting with all four compressors, optional A/B full-metric energy alternation, same-start ordinary one-site baseline, transactional numerical/resource recovery, and public two-site dispatch for `ReducedRingLETTA`. The target closure is explicitly included in the update schedule.
 - Validation: **126 passed in 183.93 s**, plus **1 optional-polish check passed in 2.58 s** after that test was added. Exact commands/output are in `2026-10-05-letta-ring-two-site-tests.txt`. Independent checks include exact Hubbard dimer energy for all compressors, a periodic Hubbard doublet without magnetic expansion, and three-site periodic Bose-Hubbard with arbitrary ties.
 - Ring CBE remains unimplemented; its next step is residual projection with the full cyclic root, whole-sector direction selection and exact expanded-one-site insertion, then the supplied-target fitter verified here. Larger cyclic scaling, public model/topology API, complete feature-matrix validation, OBC sweep gauge recovery and the final implementation note remain outstanding. Goal stays active; performance/usage gate has not been reached.
+
+
+- 2026-10-05 ring CBE checkpoint: shared residual/tangent selector, native full-cyclic metric, whole-sector directional insertion, expanded one-site solve, all four physical-metric compressors, strict same-start baseline and transactional recovery including closure-adjacent updates. No pair eigensolve or global/magnetic state expansion enters CBE.
+- Validation: 116 passed, 1 deselected in 96.88 s; the original separate ring run completed with 44 passed in 1181.73 s, including the complex three-orbital molecular backward-tie case. Counts overlap; commands/output in 2026-10-05-letta-ring-cbe-tests.txt. OBC sweep recovery, broader API/feature matrix, cyclic scaling and final implementation note remain outstanding.

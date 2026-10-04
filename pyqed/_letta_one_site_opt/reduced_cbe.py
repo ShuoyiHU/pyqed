@@ -3,7 +3,9 @@
 The selector removes the incumbent one-site tangent space in the physical norm.
 A greedy metric fit allocates complete multiplets to the remaining residual.
 Only an expanded *one-site* Hamiltonian is diagonalized. Pair actions and pair
-coefficient vectors are materialized, but not a dense pair metric or Jacobian.
+coefficient vectors are materialized. The OBC adapter avoids a dense pair
+metric; the shared selector accepts other topology-specific metric roots.
+No tangent Jacobian is materialized.
 """
 from collections import Counter
 from dataclasses import dataclass, replace
@@ -40,7 +42,7 @@ def select_reduced_cbe(state, hamiltonian, left_site, options):
     solver, residual and iteration status are returned explicitly.
     """
     from .._letta_two_site_opt.reduced_solver import (
-        reduced_pair_problem, _expand_reduced_pair_space, _active_source_indices,
+        reduced_pair_problem, _expand_reduced_pair_space,
         _pair_vector_from_sources, _left_source_adjoint, _right_source_adjoint,
         _expanded_source_blocks)
     budget = index(options.cbe_expansion_dimension)
@@ -51,6 +53,34 @@ def select_reduced_cbe(state, hamiltonian, left_site, options):
     problem = reduced_pair_problem(scaffold, hamiltonian, left_site,
                                    matrix_free=True, dense_solver_threshold=0)
     root = ReducedPairMetricRoot(problem, scaffold, options.metric_tolerance)
+    le, re = (problem.frontier.site_embedding(scaffold, k) for k in (left_site, left_site+1))
+    a, b = le.pack_source(scaffold.tensors[left_site]), re.pack_source(scaffold.tensors[left_site+1])
+    ablocks, bblocks = _expanded_source_blocks(le, a), _expanded_source_blocks(re, b)
+    def adjoint(side, vector):
+        return (_left_source_adjoint(problem.layout, vector, bblocks, le) if side == 0 else
+                _right_source_adjoint(problem.layout, ablocks, vector, re))
+    def compress(target, u, v, allocation):
+        return compress_reduced_pair(target, problem, scaffold, u, v, allocation,
+            options=options.compression, metric_tolerance=options.metric_tolerance,
+            als_max_iterations=options.cbe_refinement_max_iterations)
+    return select_metric_cbe(scaffold, problem, root, old, Counter(scaffold.bond_sectors[left_site]),
+        (le, re), (a, b), options=options,
+        merge=lambda u, v: _pair_vector_from_sources(problem.layout, le, re, u, v),
+        factor_adjoint=adjoint, compress=compress, seed=2817+left_site,
+        complex_data=any(np.iscomplexobj(v) for tensor in state.tensors for v in tensor.values()))
+
+
+def select_metric_cbe(scaffold, problem, root, old, capacities, embeddings, factors, *,
+                      merge, factor_adjoint, compress, options, seed, complex_data):
+    """Common physical-metric residual projection and whole-sector selection.
+
+    Topology-specific adapters supply the true overlap root and source maps.
+    The pair eigensolver is deliberately absent from this interface.
+    """
+    from .._letta_two_site_opt.reduced_solver import _active_source_indices
+    budget = index(options.cbe_expansion_dimension)
+    if budget < 1 or options.cbe_selector != 'exact':
+        raise ValueError('reduced CBE requires exact selector and a positive expansion budget')
     x = problem.old_vector
     hx, nx = problem.apply_hamiltonian(x), problem.apply_metric(x)
     norm = np.vdot(x, nx).real
@@ -58,12 +88,10 @@ def select_reduced_cbe(state, hamiltonian, left_site, options):
         raise FloatingPointError('invalid reduced CBE norm')
     energy = np.vdot(x, hx).real/norm
     weighted_gradient = root.unwhiten_adjoint(hx-energy*nx)
-    le, re = (problem.frontier.site_embedding(scaffold, k) for k in (left_site, left_site+1))
-    a, b = le.pack_source(scaffold.tensors[left_site]), re.pack_source(scaffold.tensors[left_site+1])
+    le, re = embeddings
+    a, b = factors
     li, ri = _active_source_indices(le, old, 'left'), _active_source_indices(re, old, 'right')
     dtype = np.result_type(a, b, weighted_gradient, complex)
-    merge = lambda u, v: _pair_vector_from_sources(problem.layout, le, re, u, v)
-    ablocks, bblocks = _expanded_source_blocks(le, a), _expanded_source_blocks(re, b)
 
     def tangent(v):
         da, db = np.zeros(a.size, dtype=dtype), np.zeros(b.size, dtype=dtype)
@@ -72,8 +100,8 @@ def select_reduced_cbe(state, hamiltonian, left_site, options):
 
     def adjoint(w):
         v = root.adjoint(w)
-        return np.concatenate((_left_source_adjoint(problem.layout, v, bblocks, le)[li],
-                               _right_source_adjoint(problem.layout, ablocks, v, re)[ri]))
+        return np.concatenate((factor_adjoint(0, v)[li],
+                               factor_adjoint(1, v)[ri]))
 
     jacobian = LinearOperator((root.size, len(li)+len(ri)), matvec=tangent,
                              rmatvec=adjoint, dtype=dtype)
@@ -92,16 +120,15 @@ def select_reduced_cbe(state, hamiltonian, left_site, options):
         return ReducedCBESelection(**empty, multiplicities={}, left={}, right={},
                                    captured_weight=0., loss=missing_norm**2, diagnostics=())
     target = root.unwhiten(missing)
-    capacities = Counter(scaffold.bond_sectors[left_site])
     available = {q: capacities[q]-old[q] for q in capacities if capacities[q] > old[q]}
     retained, best, reports = {}, None, []
     best_loss = missing_norm**2
-    rng = np.random.default_rng(2817+left_site)
+    rng = np.random.default_rng(seed)
     # Legal source-coordinate starts include every tie label. Projecting a
     # frontier SVD alone can erase those labels and trap ALS at zero factors.
     seeds = [(rng.normal(size=a.size).astype(dtype), rng.normal(size=b.size).astype(dtype))
              for _ in range(2)]
-    if any(np.iscomplexobj(v) for tensor in state.tensors for v in tensor.values()):
+    if complex_data:
         seeds = [(u+1j*rng.normal(size=u.size), v+1j*rng.normal(size=v.size)) for u, v in seeds]
     for _ in range(budget):
         trials = []
@@ -110,9 +137,7 @@ def select_reduced_cbe(state, hamiltonian, left_site, options):
                 continue
             allocation = {**retained, q: retained.get(q, 0)+1}
             for u, v in seeds:
-                fit = compress_reduced_pair(target, problem, scaffold, u, v, allocation,
-                    options=options.compression, metric_tolerance=options.metric_tolerance,
-                    als_max_iterations=options.cbe_refinement_max_iterations)
+                fit = compress(target, u, v, allocation)
                 if np.isfinite(fit.loss):
                     trials.append((fit.loss, allocation, fit))
         if not trials:

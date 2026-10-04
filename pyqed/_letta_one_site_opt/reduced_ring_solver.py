@@ -167,12 +167,18 @@ def ring_dmrg(hamiltonian, *, state, options):
     """Sweep physical cores and the target closure with exact cyclic metrics."""
     if not isinstance(state, ReducedRingLETTA):
         raise TypeError('expected ReducedRingLETTA')
-    if options.cbe_enabled:
-        raise NotImplementedError('ring CBE adapter is not implemented yet')
+    if options.cbe_enabled and options.cbe_selector != 'exact':
+        raise ValueError('ring CBE currently requires the exact residual selector')
+    if options.cbe_enabled and options.cbe_baseline_guard_fraction != 0:
+        raise ValueError('ring CBE uses a strict ordinary one-site energy baseline')
+    if options.cbe_enabled and options.cbe_preselection_dimension is not None:
+        raise ValueError('ring exact CBE does not use a preselection dimension')
+    if options.cbe_enabled and not options.cbe_conditional_trim:
+        raise ValueError('ring CBE requires physical-metric pair trimming')
     if options.environment_granularity != 'site':
         raise ValueError('ring sweeps require site-granularity environments')
     if options.bond_dimension_schedule is not None or options.boundary_bond_dim is not None:
-        raise ValueError('ring sweeps currently require fixed allocation and exact environments')
+        raise ValueError('ring sweeps require a fixed bond budget and exact environments')
     if options.gauge_mode not in {'frontier', 'scalar', 'none'}:
         raise ValueError('ring gauge mode must be frontier, scalar, or none')
     if options.start_direction not in {'lr', 'rl'} or options.max_sweeps < 1:
@@ -180,13 +186,18 @@ def ring_dmrg(hamiltonian, *, state, options):
     state = state.copy()
     state.normalize()
     direction = options.start_direction
+    bond_budget = max(state.bond_dimensions)
     previous = ring_energy(state, hamiltonian)
     history, converged = [], False
     for sweep in range(1, options.max_sweeps+1):
         sites = range(state.nsites+1) if direction == 'lr' else range(state.nsites, -1, -1)
         updates = []
         for site in sites:
-            update = optimize_ring_site(state, hamiltonian, site, options)
+            if options.cbe_enabled:
+                from .reduced_ring_cbe import ring_cbe_site
+                update = ring_cbe_site(state, hamiltonian, site, direction, bond_budget, options)
+            else:
+                update = optimize_ring_site(state, hamiltonian, site, options)
             if options.gauge_mode != 'none':
                 snapshot = state.copy()
                 try:
@@ -205,7 +216,8 @@ def ring_dmrg(hamiltonian, *, state, options):
                                  max(state.bond_dimensions), tuple(updates)))
         if options.verbosity:
             print(f'reduced ring sweep {sweep}: energy={energy:.14f}, dE/site={change/state.nsites:.3e}')
-        if change/state.nsites <= options.tolerance and all(u.accepted and u.local_converged and not u.recovery_reason for u in updates):
+        if change/state.nsites <= options.tolerance and all(u.accepted and u.local_converged and not u.recovery_reason and
+                not u.cbe_recovery_reason for u in updates):
             residuals = []
             for site in range(state.nsites+1):
                 p = ring_local_problem(state, hamiltonian, site, matrix_free=options.matrix_free,
