@@ -1,5 +1,63 @@
 # LETTA symmetry integration
 
+[Mathematical derivations and symmetry conventions](letta_symmetry_derivations.md) explain the source coordinates, physical metric, spin weights, all four compressors and covariant cyclic closure step by step. The broader validation matrix remains pending.
+
+## Public model and optimization interface
+
+The `pyqed.letta` entry point keeps the Hamiltonian, target symmetry, virtual topology, physical ties and optimization method separate:
+
+```python
+from pyqed.letta import (
+    hubbard, random_state, solve, OptimizationOptions, MetricCompressionOptions,
+)
+
+model = hubbard(4, nelec=(2, 2), t=1., U=4., mu=0.,
+                periodic=True, symmetry="su2")
+state = random_state(model, topology="open", ties="nn",
+                     multiplets_per_sector=1, seed=71)
+options = OptimizationOptions(
+    max_sweeps=100,
+    compression=MetricCompressionOptions(
+        solver="als", als_max_iterations=64, lsmr_max_iterations=512),
+    energy_refinement_rounds=32,
+)
+result = solve(model, state=state, method="cbe", options=options)
+print(result.energy, result.converged, result.message)
+```
+
+Here the Hamiltonian is periodic while the virtual chain and physical NN ties are open. `topology="ring"` selects an explicit virtual cycle and target closure. `ties="nn-periodic"` independently adds the last-first physical tie; `ties="none"` gives an untied MPS. Explicit neighborhoods, such as `((0, 2), (1,), (2, 0))` for three sites, preserve arbitrary backward/wrap dependencies. Input states are copied before optimization.
+
+`multiplets_per_sector` controls copies of **each reachable sector**. It is not the total bond dimension. Inspect `state.bond_dimensions` or the individual `state.bond_sectors`. For SU(2), one retained multiplet contains all its magnetic components. With `method="two-site"`, `bond_dim` is the retained total multiplet cap and sector growth is enabled. One-site keeps its allocation; CBE uses the maximum initial allocation as its cap. A conflicting `bond_dim` for either method is rejected rather than ignored.
+
+Both CBE and two-site accept `als`, `variable-projection`, `joint-ls` and `grassmann-newton` through the same compression object. An ALS round updates both factors. Each LSMR solve has its own iteration cap. `max_iterations` limits nonlinear residual evaluations for the least-squares methods and trust-region iterations for Grassmann Newton. `energy_refinement_rounds` separately limits alternating A/B energy minimization. The public interface fills unspecified ALS/LSMR budgets with 32/512; all budgets are limits, not convergence guarantees.
+
+`bose_hubbard(..., particles=..., max_occupancy=...)` uses U(1) particle number. `heisenberg(..., symmetry="su2", two_s=...)` fixes total spin, while `symmetry="u1", two_sz=...` fixes spin projection. Both spin arguments are doubled integers. SU(2) spin-half invariant-label ties have dimension one and do not supply additional pure-spin variational freedom.
+
+For molecular integrals:
+
+```python
+from pyqed.letta import ElectronicProblem, molecular
+
+# h1 and eri are real orthonormal-orbital chemists' integrals; ecore is included once.
+model = molecular(ElectronicProblem(h1, eri, (nalpha, nbeta), ecore),
+                  symmetry="su2", two_s=abs(nalpha-nbeta))
+```
+
+Molecular symmetry modes are `n`, `n_sz`, `nalpha_nbeta`, and `su2`; `u1` selects `n_sz`. The existing chemistry adapter supports real integrals; tensors and native custom Hermitian MPOs may be complex. An existing reduced MPS/LETTA state can be passed to `solve`, provided its physical basis, site count and target match the model. Its site/orbital ordering must match the supplied integrals. `AbelianReducedMap` remains available for lossless conversion of existing Abelian states.
+
+Hubbard, Bose-Hubbard and Heisenberg constructors also accept explicit undirected `bonds=[(i,j), ...]` for general graphs. Do not combine this with `periodic=True`; include every desired boundary edge explicitly. Duplicate and self edges are rejected. Custom `LETTAProblem` models accept `ReducedMPOHamiltonian` and `ReducedSymmetry`. Compilation checks conservation, and a local-QR MPO check verifies Hermiticity without constructing a many-body operator matrix.
+
+The runnable `examples/letta_symmetry.py` exposes these choices and prints energies, actual sector allocations and recovery counts. For example:
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 NUMEXPR_NUM_THREADS=1 \
+PYTHONPATH=. python examples/letta_symmetry.py --model hubbard --sites 4 \
+  --periodic-hamiltonian --topology open --method cbe --als-rounds 64 --lsmr-iterations 512
+```
+
+Large tie frontiers can make exact cyclic environments expensive in both memory and time, even for a small physical system. The compression workspace limit applies to compression workspaces; it is not a global process-memory limit. No environment truncation is silently introduced to fit that limit.
+
+
 Development branch: `letta_oct_4_sym`. The complete required support matrix and current unfinished work are in [the implementation plan](plans/2026-10-04-letta-symmetry.md).
 
 ## Shared metric compression
@@ -57,7 +115,7 @@ For open virtual boundaries, the reduced metric square root factors boundary mul
 
 QC supports U(1) number, U(1) number × U(1) spin projection, and U(1) number × SU(2). SU(2) physical dependencies use invariant irrep/multiplicity labels. Spatial orbitals have empty, single and double labels; magnetic components are structural Clebsch–Gordan coordinates. D in the reduced solver counts complete multiplets, not magnetic states or total stored parameters.
 
-The native reduced backend supports open virtual boundaries for one-site, CBE and two-site updates. Native closed-ring one-site, residual-CBE and two-site updates use `ReducedRingLETTA`, an explicit covariant target closure and the full cyclic metric. The unified model/topology API and broader feature-matrix verification remain unfinished. The inherited periodic benchmark backend is separate and does not establish support for these unfinished native adapters.
+The native reduced backend supports open virtual boundaries for one-site, CBE and two-site updates. Native closed-ring one-site, residual-CBE and two-site updates use `ReducedRingLETTA`, an explicit covariant target closure and the full cyclic metric. The unified model/topology API is implemented and undergoing the broader feature-matrix verification. The inherited periodic benchmark backend is separate and does not establish support for these unfinished native adapters.
 
 ## Reduced energy updates and recovery
 
@@ -87,7 +145,7 @@ options = LETTADMROptions(
 # result = letta_dmrg(hamiltonian, state=reduced_state, options=options)
 ```
 
-This implementation evaluates the native reduced pair residual, removes variations already accessible to the original two one-site parameter spaces in the physical metric, and fits the remaining residual with legal symmetry-preserving factor blocks. It greedily allocates whole multiplets by the achieved physical-metric fitting loss. Two deterministic starts include every legal tie label. `exact` refers to the pair actions; it does not certify a globally optimal nonconvex direction fit. Pair coefficient arrays are stored, but a dense pair metric and dense tangent Jacobian are not.
+This implementation evaluates the native reduced pair residual, removes variations already accessible to the original two one-site parameter spaces in the physical metric, and fits the remaining residual with legal symmetry-preserving factor blocks. It greedily allocates whole multiplets by the achieved physical-metric fitting loss. Two deterministic starts include every legal tie label. `exact` refers to the pair actions; it does not certify a globally optimal nonconvex direction fit. In the open-chain adapter, pair coefficient arrays are stored, but a dense pair metric and dense tangent Jacobian are not. The cyclic adapter uses a full local pair Gram, as described below.
 
 For a left-to-right step the selected right-factor rows are appended with zero left-factor columns; right-to-left reverses this. Padding exactly preserves the wavefunction. The energy eigensolve updates only the expanded single core. The supplied resulting pair vector is then compressed, optionally energy-refined, and compared to an ordinary one-site update from the same incumbent. The nominal cap is the largest initial bond allocation in complete multiplets and remains fixed across gauge rank reductions and later sweeps. A candidate is kept only if it strictly beats that baseline at the cap.
 
@@ -203,7 +261,7 @@ The native ring pair and compression adapters are independently verified and con
 
 `compress_ring_pair` accepts the same `MetricCompressionOptions` and explicit ALS/LSMR budgets as the open reduced backend. All four solvers operate on the same cyclic physical-norm loss. The caller remains responsible for changing sector allocations, choosing starting factors, alternating energy minimization, comparing against an ordinary one-site baseline, and committing or restoring a candidate. Calling the adapter alone does not guarantee an energy improvement.
 
-The current cyclic metric root uses dense LOCAL pair matrices with a workspace guard. This is distinct from a forbidden global determinant projection, but can still be expensive for large pair spaces. Long-ring numerical scaling and the full model/topology verification matrix remain unfinished.
+The current cyclic metric root uses dense LOCAL pair matrices with a workspace guard. This is distinct from a forbidden global determinant projection, but can still be expensive for large pair spaces. Long-ring numerical scaling has independent 32-/64-core reference checks, described below. The full model/topology verification matrix remains unfinished.
 
 
 ## Two-site optimization on the covariant ring
