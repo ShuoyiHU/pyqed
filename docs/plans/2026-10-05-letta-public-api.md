@@ -131,3 +131,32 @@ resource evidence, not a completed test or a Python-level bottleneck profile.
 The guide now records the exact test configuration and limits of this
 observation. No numerical source changed, no process was restarted, and the
 four-case correctness gate and subsequent usage/performance gate remain open.
+
+
+## Interrupted handle and observed replacement run
+
+The app lost exec cell 731 and process session 67996. Direct OS inspection then
+confirmed that PID 61659 was absent and that no other copy of the pytest command
+survived. The original log ends at the first selected case without a traceback
+or pytest summary. Its cause of termination is unknown, and it supplies neither
+a passing result nor a demonstrated numerical failure. This restart was based
+on a missing OS process, not an elapsed observation window.
+
+The exact same four selected tests and numerical commit 126bc0b are now running
+under PID 93298, started in an independent process session. Diagnostic runner:
+/private/tmp/letta_ring_validation_observed.py. Durable artifacts share prefix
+/private/tmp/letta-public-ring-observed: .log (pytest), .status.json (PID and
+terminal exit code when available), .progress.jsonl (function entry/return),
+and .stacks.log (periodic Python stacks). The status file alone is not a
+liveness signal; verify the OS process before interpreting unfinished status.
+Function wrappers record timings and delegate unchanged arguments and results.
+No solver budget, tolerance, state, Hamiltonian or production code changed.
+
+The first two-minute stack identifies _transfer_product at
+reduced_ring_contraction.py:111, called by CyclicReducedOperator.overlap from
+the initial ring_energy in ring_dmrg. Progress records entered ring_energy at
+7.66 seconds and had not returned by that sample. This is a measured initial
+energy contraction bottleneck, not evidence of failed eigensolver convergence.
+The stack log's 'Timeout' text is faulthandler's recurring dump timer; it does
+not terminate the test or impose a solver time limit. All four accuracy gates
+remain open; no completion or performance-phase claim follows from this sample.
