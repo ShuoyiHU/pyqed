@@ -509,3 +509,21 @@ reference discrepancies were below 3e-15 in this run. These are small-system
 correctness checks, not evidence of comparable convergence on every allocation
 or a performance comparison. Exact result records, sector counts and sweep
 histories are saved in `plans/2026-10-05-letta-example-checks.json`.
+
+
+## Routine versus stress validation
+
+The current public suite has passing evidence for all 79 routine cases: 75
+unchanged cases from the recorded split runs and four simplified fermionic
+U(1) ring cases completed in 54.37 seconds. The three-site one-site/CBE/two-site
+cases retain a last-to-first physical tie and the periodic Hubbard Hamiltonian.
+A separate untied ring checks multiplicity two at the closing bond; the existing
+multiplicity-one case checks bidirectional physical ties. Energy tolerances,
+independent physical reference checks and solver budgets are unchanged.
+
+The original simultaneous full-sector/bidirectional-tie configurations are
+available with `LETTA_FULL_RING_STRESS=1`. They remain unverified: the replacement
+observed run was cancelled at the user's request after nearly seven hours
+without a completed case. These costly combined configurations are optional
+stress coverage, not a required routine gate. This fixture change does not
+accelerate the solver or establish large-ring scalability.

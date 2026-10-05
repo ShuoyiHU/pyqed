@@ -160,3 +160,39 @@ energy contraction bottleneck, not evidence of failed eigensolver convergence.
 The stack log's 'Timeout' text is faulthandler's recurring dump timer; it does
 not terminate the test or impose a solver time limit. All four accuracy gates
 remain open; no completion or performance-phase claim follows from this sample.
+
+
+## Smaller routine fermionic-ring fixtures (2026-10-05)
+
+At the user's request, PID 93298 was terminated with SIGTERM after nearly seven
+hours; subsequent OS inspection confirmed it was absent. No case had completed.
+Its status is recorded as cancelled, not passed or numerically failed.
+
+The three fermionic U(1) ring method tests now use the same three-site periodic
+Hubbard Hamiltonian, complex initial states and full reachable charge sectors,
+but one last-to-first tie instead of two simultaneous opposite wrap ties.
+The doubled-multiplicity allocation test uses an untied virtual ring, retaining
+both closure dimensions equal to two. The copies=1 allocation test still checks
+both physical-index dependencies. Independent forward/backward/wrap embedding
+and molecular ring CBE tests remain unchanged. This separates coverage rather
+than claiming the full combinations were verified. No production code, solver
+budget, or numerical assertion tolerance changed.
+
+Set LETTA_FULL_RING_STRESS=1 to reproduce the original four configurations:
+
+```bash
+LETTA_FULL_RING_STRESS=1 PYTHONPATH=. python -m pytest -p no:cacheprovider -v tests/test_letta_public_api.py -k '(method_symmetry_topology_matrix and ring and fermion-u1) or (initial_allocations and 19-2-fermion-u1)'
+```
+
+The four revised routine cases **passed in 54.37 s**:
+- one-site: 8.41 s
+- CBE: 11.49 s
+- two-site: 31.78 s
+- doubled-multiplicity closure: 0.08 s
+
+Log: /private/tmp/letta-public-ring-smaller.log. Together with the disjoint
+75 previously passed, unchanged cases, this supplies passing evidence for all
+79 current routine public cases. It is not a pass of the original four stress
+configurations, nor a ground-state convergence or large-system scaling claim.
+The separate implementation evidence remains 401 tests (400 combined plus the
+independently completed molecular ring CBE stress case).

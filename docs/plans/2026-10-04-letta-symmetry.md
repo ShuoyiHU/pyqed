@@ -34,8 +34,8 @@
 | QC and condensed models | Molecular integrals and Hubbard/Bose/Heisenberg examples with allowed symmetries | Public constructors match independent operators; broad optimizer/topology matrix remains pending |
 | Recovery and variational acceptance | Restored state/sectors/caches, same-start one-site baseline, strict fresh energy check | Open/ring update and gauge recovery implemented; strict baselines, cache rebuilds and injected partial failures tested |
 | Accuracy diagnostics | Inner residuals/status, truncation stationarity, rejected-update handling; plateau != global minimum | Implemented and checked by reduced compression/update/recovery tests; iterative lowest-root limitations documented; broad final matrix remains pending |
-| Public API/documentation | Clear boundary/model distinction, D multiplets vs magnetic dimension, runnable examples | API, guide and CLI examples implemented/audited; 75 of 79 current public tests and three independent CLI reference checks pass; four fermionic U(1) ring cases pending |
-| Full implementation note | Complete code-grounded description, especially symmetry representations, contractions, gauges, expansion, compression, recovery and limitations | Written in docs/letta_symmetry.md and docs/letta_symmetry_derivations.md; source/equation/test-coverage audit complete, final validation accounting awaits four public ring cases |
+| Public API/documentation | Clear boundary/model distinction, D multiplets vs magnetic dimension, runnable examples | API, guide and CLI examples implemented/audited; All 79 current routine public cases and three independent CLI reference checks pass; four original combined stress configurations remain unverified and opt-in |
+| Full implementation note | Complete code-grounded description, especially symmetry representations, contractions, gauges, expansion, compression, recovery and limitations | Written in docs/letta_symmetry.md and docs/letta_symmetry_derivations.md; source/equation/test-coverage audit complete; revised routine fixture results and optional stress limits recorded |
 | Conditional precision-preserving speedups | After correctness and note, query weekly remaining capacity; if >10%, profile and validate each speedup until approximately 5% remains or worthwhile options are exhausted | Not started; correctness gates take priority |
 | Final verification and commit | Focused and combined numerical tests; clean scoped diff and accurate commit description | Pending |
 
@@ -240,3 +240,11 @@ three-site backward/wrap-tied fermionic U(1) ring and the two-copy fermionic rin
 allocation. They remain in the same live session 67996. No new duplicate run or
 numerical source change was made for this audit. Final correctness completion,
 weekly-usage gating and any precision-preserving performance work remain pending.
+
+
+- 2026-10-05: At user request, replaced the four oversized routine fermionic U(1)
+  ring fixtures with separated coverage (one wrap tie for all methods; nonunit
+  closure separately). All four passed in 54.37 s. The original fixtures remain
+  opt-in via LETTA_FULL_RING_STRESS=1 and are not claimed to pass. Numerical code
+  stays at 126bc0b. Current routine evidence: 401 implementation tests plus 79
+  public cases, using the disjoint split logs recorded in the API plan.
