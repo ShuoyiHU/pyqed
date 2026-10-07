@@ -1,77 +1,72 @@
-.. lime documentation master file, created by
-   sphinx-quickstart on Fri May  6 14:23:58 2022.
-   You can adapt this file completely to your liking, but it should at least
-   contain the root `toctree` directive.
+.. meta::
+   :description: Official PyQED documentation for quantum chemistry, nonadiabatic dynamics, open quantum systems, spectroscopy, and tensor-network methods.
 
-Welcome to PyQED's documentation!
-================================
+PyQED documentation
+===================
 
-The goal is to provide a simple-to-use package to study ``how light interacts with matter``.  
+PyQED is open-source research software for light--matter interactions,
+quantum dynamics, spectroscopy, open quantum systems, and electronic-structure
+workflows.  These pages are organized around tasks: install the package, run a
+small calculation, choose a method, inspect its evidence, and reproduce a
+result.
 
-Check docs/manual.pdf for theoretical details.
+.. important::
 
-Main modules
+   PyQED is active research software.  APIs and numerical paths have different
+   maturity levels.  Check :doc:`capabilities` and the limitations on each
+   method page before using a workflow in production research.
 
+Start here
+----------
 
-* Nonlinear molecular spectroscopy 
- 
+* :doc:`installation` -- create an isolated environment and verify it.
+* :doc:`quickstart` -- run a native H2 restricted Hartree--Fock calculation.
+* :doc:`guide/guide` -- choose a scientific task from the complete user guide.
+* :doc:`tutorials` -- follow a task-oriented learning path.
+* :doc:`examples` -- find an executable repository example.
+* :doc:`capabilities` -- understand Beta and Experimental status.
+* :doc:`benchmarks` -- reproduce validation and performance evidence.
+* :doc:`citing` -- cite the exact code and method used.
 
-* Molecular quantum dynamics 
---------------------------
+User guide
+----------
 
-- Adiabatic wavepacket dynamics 
-	* Split-operator method 
-	* Discrete variable representation 
-
-- Nonadiabatic wavepacket dynamics 
-	* Split-operator method - For the exact nonadiabatic dynamics of vibronic models in the diabatic representation. 
-	* RK4 -  For the exact nonadiabatic wavepacket dynamics in the adiabatic representation.
-
-
-# Semiclassical quantum trajectory method 
-
-Quantum chemistry
------------------
-* TDDFT core-level excitation 
-** reduced excitation space
-** restricted energy window with full/reduced excitation space
-
-Open quantum systems 
---------------------
-* Lindblad quantum master equation
-* Redfield theory  
-* second-order time-convolutionless master equation 
-* hierarchical equation of motion 
-
-# Quantum transport 
-- Landauer transport 
-
-Soid state materials 
---------------------
-- Band structure from tight-binding Hamiltonians 
-
-Periodically driven matter
---------------------------
-* Floquet spectrum 
-
+The :doc:`PyQED user guide <guide/guide>` is the main map of the documentation.
+It groups existing material into foundations, electronic structure, quantum
+dynamics, open systems, light--matter models, and tensor networks.  Start with
+:doc:`how PyQED calculations work <guide/core_workflow>` if you are moving
+between method families: it explains the shared model--build--solve--validate
+workflow without making you learn every module first.
 
 .. toctree::
-   :maxdepth: 4
-   :caption: Contents:
-   
-   installation.rst
-   guide/guide.rst
-   pyqed/polariton
-   pyqed/namd
-   developers.rst
-   heom.rst
-   Floquet.rst
-   pyqed.pyqed.signal.rst
-   modules
+   :maxdepth: 2
+   :caption: Getting started
 
+   installation
+   quickstart
+   guide/guide
+   tutorials
+   examples
 
-Indices and tables
-==================
+.. toctree::
+   :maxdepth: 2
+   :caption: Reference and evidence
+
+   api
+   capabilities
+   benchmarks
+   citing
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Develop and get help
+
+   development
+   support
+   developers
+
+Indices
+-------
 
 * :ref:`genindex`
 * :ref:`modindex`
