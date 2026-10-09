@@ -81,3 +81,8 @@ Scan_Results_Nz_32
 # A separately versioned site checkout and local benchmark run output.
 /website/
 /examples/mps/results/*.json
+/_local_tests
+/codex_staging
+/docs
+/.codex_generated
+/output
