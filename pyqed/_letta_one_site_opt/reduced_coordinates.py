@@ -12,7 +12,8 @@ def _canonical_sites(sites,center):
         for key,a in tensor.data.items():
             b=np.einsum('kl,lpr->kpr',left[key[0]],a)
             groups[key[2]].append((key,b))
-        next_left={};data={}
+        # Declared sectors with no incoming path have an exact zero-row factor.
+        next_left={q:np.zeros((0,d)) for q,d in Counter(tensor.qns[2]).items()};data={}
         for qr,entries in groups.items():
             Q,R=np.linalg.qr(np.concatenate([b.reshape(-1,b.shape[2]) for _,b in entries]),mode='reduced')
             next_left[qr]=R;offset=0
@@ -30,7 +31,7 @@ def _canonical_sites(sites,center):
             b=np.einsum('kr,lpr->lpk',right[key[2]],a)
             weight=np.sqrt(_sector_irrep(key[2]).dim/_sector_irrep(key[0]).dim)
             groups[key[0]].append((key,b,weight))
-        next_right={};data={}
+        next_right={q:np.zeros((0,d)) for q,d in Counter(tensor.qns[0]).items()};data={}
         for ql,entries in groups.items():
             Q,R=np.linalg.qr(np.concatenate([weight*b.transpose(2,1,0).reshape(-1,b.shape[0]) for _,b,weight in entries]),mode='reduced')
             next_right[ql]=R;offset=0
@@ -48,6 +49,39 @@ def _canonical_sites(sites,center):
     return tuple(sites),left,right
 
 
+class _OverlapFactor:
+    """Exact scatter/tensor-product overlap map without its dense Jacobian."""
+    def __init__(self, left, right, source, lmap, pmap, rmap, nphysical, size, weight):
+        self.left, self.right = left, right
+        self.source, self.lmap, self.pmap, self.rmap = source, lmap, pmap, rmap
+        self.nphysical, self.size, self.weight = nphysical, size, weight
+
+    def apply(self, vector):
+        local = np.zeros((self.left.shape[1], self.nphysical, self.right.shape[1]),
+                         dtype=np.result_type(vector, self.left, self.right))
+        np.add.at(local, (self.lmap, self.pmap, self.rmap), vector[self.source])
+        return self.weight*np.einsum('al,lpr,br->apb', self.left, local, self.right, optimize=True).ravel()
+
+    def adjoint(self, vector):
+        local = np.asarray(vector).reshape(self.left.shape[0], self.nphysical, self.right.shape[0])
+        pulled = self.weight*np.einsum('al,apb,br->lpr', self.left.conj(), local,
+                                       self.right.conj(), optimize=True)
+        out = np.zeros(self.size, dtype=pulled.dtype)
+        np.add.at(out, self.source, pulled[self.lmap, self.pmap, self.rmap])
+        return out
+
+    def dense(self):
+        out = np.zeros((self.left.shape[0], self.nphysical, self.right.shape[0], self.size),
+                       dtype=np.result_type(self.left, self.right))
+        for col,l,p,r in zip(self.source, self.lmap, self.pmap, self.rmap):
+            out[:,p,:,col] += self.weight*self.left[:,l,None]*self.right[None,:,r]
+        return out.reshape(-1,self.size)
+
+    @property
+    def stored_elements(self):
+        return sum(a.size for a in (self.left,self.right,self.source,self.lmap,self.pmap,self.rmap))
+
+
 class ReducedLocalCoordinates:
     """Orthonormal local coordinates from reduced QR overlap factors.
 
@@ -59,6 +93,13 @@ class ReducedLocalCoordinates:
     This is not a reproduction of a published LETTA optimizer and does not
     guarantee a global variational minimum. Neither a determinant-space frame
     nor a dense many-body Hamiltonian is constructed.
+
+    The overlap map is stored as exact scatter indices and QR factors. Dense
+    factors are materialized one block at a time for the same full SVD and
+    global relative cutoff. Whitening uses the retained SVD factors directly;
+    no extra rank truncation, lower precision, or Gram squaring is introduced.
+    This changes floating-point operation order, so equivalence is numerical,
+    not bitwise. Retained singular-vector storage can still grow rapidly with D.
     """
     def __init__(self,sites,embedding,site):
         self.site=site;self.embedding=embedding
@@ -87,26 +128,26 @@ class ReducedLocalCoordinates:
                 # conditional rows never enter the local norm factor.
                 ql,left=np.linalg.qr(factor.left[key[0]][:,ul],mode='reduced')
                 qr,right=np.linalg.qr(factor.right[key[2]][:,ur],mode='reduced')
-                F=np.zeros((left.shape[0],len(up),right.shape[0],len(indices)),dtype=np.result_type(left,right))
-                weight=np.sqrt(_sector_irrep(key[2]).dim)
-                for col,l,p,r in zip(source,lmap,pmap,rmap):
-                    F[:,p,:,col]+=weight*left[:,l,None]*right[None,:,r]
-                self.blocks.append((indices,F.reshape(-1,len(indices))))
+                factor_map = _OverlapFactor(left,right,source,lmap,pmap,rmap,len(up),len(indices),
+                    np.sqrt(_sector_irrep(key[2]).dim))
+                self.blocks.append((indices,factor_map))
                 self.images.append((key,up,ql,qr,shape[1]))
-        self.stored_elements=sum(F.size for _,F in self.blocks)
+        self.stored_elements=sum(F.stored_elements for _,F in self.blocks)
     def metric(self,v):
         out=np.zeros(self.dimension,dtype=np.result_type(v,complex))
-        for sl,F in self.blocks:out[sl]=F.conj().T@(F@v[sl])
+        for sl,F in self.blocks:out[sl]=F.adjoint(F.apply(v[sl]))
         return out
     def prepare(self,tolerance):
         if getattr(self,'tolerance',None)==tolerance:
             return
         self.tolerance=tolerance
         factors=[];largest=0.
-        for sl,F in self.blocks:
+        for sl,factor_map in self.blocks:
+            F=factor_map.dense()
             roots=np.linalg.norm(F,axis=0)
             inv=np.divide(1.,roots,out=np.zeros_like(roots),where=roots>0.)
             normalized=F*inv[None,:]
+            del F
             if not np.all(np.isfinite(normalized)):
                 raise FloatingPointError('Nonfinite normalized QR norm factor')
             try:
@@ -114,54 +155,57 @@ class ReducedLocalCoordinates:
             except np.linalg.LinAlgError:
                 from scipy.linalg import svd
                 u,s,vh=svd(normalized,full_matrices=False,lapack_driver='gesvd')
+            del normalized
             largest=max(largest,float(s.max(initial=0.)))
             factors.append((sl,roots,inv,s,vh,u))
         cutoff=largest*np.sqrt(max(tolerance,np.finfo(float).eps*self.dimension))
         self.maps=[];self.spectral_images=[];self.support=[];offset=0
-        for sl,roots,inv,s,vh,u in factors:
+        for i in range(len(factors)):
+            sl,roots,inv,s,vh,u=factors[i]
+            factors[i]=None
             keep=s>cutoff;s=s[keep];vh=vh[keep]
-            W=inv[:,None]*vh.conj().T/s[None,:]
-            C=s[:,None]*vh*roots[None,:]
-            self.maps.append((sl,slice(offset,offset+len(s)),W,C));offset+=len(s)
+            self.maps.append((sl,slice(offset,offset+len(s)),inv,s,vh,roots));offset+=len(s)
             self.spectral_images.append(u[:,keep])
             self.support.append((sl,vh))
         self.rank=offset
         # C maps raw parameters to physical norm coordinates. Its adjoint
         # bounds amplification of the transformed residual in raw coordinates.
-        self.residual_amplification=max((float(np.linalg.norm(C)) for _,_,_,C in self.maps),default=1.)
+        self.residual_amplification=max((float(np.sqrt(sum(sj*sj*np.vdot(row*roots,row*roots).real
+            for sj,row in zip(s,vh)))) for _,_,inv,s,vh,roots in self.maps),default=1.)
     def expand(self,z):
         out=np.zeros(self.dimension,dtype=np.result_type(z,complex))
-        for sl,small,W,C in self.maps:out[sl]=W@z[small]
+        for sl,small,inv,s,vh,roots in self.maps:out[sl]=inv*(vh.conj().T@(z[small]/s))
         return out
     def adjoint(self,v):
         out=np.zeros(self.rank,dtype=np.result_type(v,complex))
-        for sl,small,W,C in self.maps:out[small]=W.conj().T@v[sl]
+        for sl,small,inv,s,vh,roots in self.maps:out[small]=(vh@(inv*v[sl]))/s
         return out
     def coordinates(self,v):
         out=np.zeros(self.rank,dtype=np.result_type(v,complex))
-        for sl,small,W,C in self.maps:out[small]=C@v[sl]
+        for sl,small,inv,s,vh,roots in self.maps:out[small]=s*(vh@(roots*v[sl]))
         return out
 
     def orthogonal_expand(self,z):
         out={}
-        for (_,small,_,_),U,(key,up,left,right,np_) in zip(self.maps,self.spectral_images,self.images):
+        for (_,small,_,_,_,_),U,(key,up,left,right,np_) in zip(self.maps,self.spectral_images,self.images):
             if key not in out:out[key]=np.zeros((left.shape[0],np_,right.shape[0]),dtype=complex)
             local=(U@z[small]).reshape(left.shape[1],len(up),right.shape[1])
             for j,p in enumerate(up):out[key][:,p,:]+=left@local[:,j,:]@right.T
         return out
     def orthogonal_adjoint(self,blocks):
         out=np.zeros(self.rank,dtype=complex)
-        for (_,small,_,_),U,(key,up,left,right,np_) in zip(self.maps,self.spectral_images,self.images):
+        for (_,small,_,_,_,_),U,(key,up,left,right,np_) in zip(self.maps,self.spectral_images,self.images):
             local=np.stack([left.conj().T@blocks[key][:,p,:]@right.conj() for p in up],axis=1)
             out[small]=U.conj().T@local.ravel()
         return out
 
     def set_hamiltonian(self,mpo):
         from .reduced_environment import ReducedEnvironmentChain
-        self.hamiltonian=ReducedEnvironmentChain.build(self.sites,mpo)
+        self.hamiltonian=ReducedEnvironmentChain.build(self.sites,mpo,lazy=True)
+        self.hamiltonian_action=self.hamiltonian.prepare_local_action(self.site)
 
     def norm(self,vector):
-        return float(sum(np.linalg.norm(F@vector[sl])**2 for sl,F in self.blocks))
+        return float(sum(np.linalg.norm(F.apply(vector[sl]))**2 for sl,F in self.blocks))
 
     def source_blocks(self,vector):
         blocks=self.embedding.unpack_target(self.embedding.apply(vector))
@@ -169,7 +213,7 @@ class ReducedLocalCoordinates:
 
     def energy(self,vector):
         center=self.source_blocks(vector)
-        acted=self.hamiltonian.local_action(self.site,center)
+        acted=self.hamiltonian_action(center)
         norm=sum(_sector_irrep(k[2]).dim*np.linalg.norm(a)**2 for k,a in center.items())
         if not np.isfinite(norm) or norm<=np.finfo(float).tiny:
             raise FloatingPointError('Null or nonfinite QR local state')
@@ -180,13 +224,13 @@ class ReducedLocalCoordinates:
 
     def source_hamiltonian(self,vector):
         center=self.source_blocks(vector)
-        acted=self.hamiltonian.local_action(self.site,center)
+        acted=self.hamiltonian_action(center)
         pulled={k:np.einsum('al,apb,br->lpr',self.left[k[0]].conj(),a,self.right[k[2]].conj()) for k,a in acted.items()}
         return self.embedding.adjoint(self.embedding.pack_target(pulled))
 
     def orthogonal_hamiltonian(self,blocks):
         unscaled={k:a/np.sqrt(_sector_irrep(k[2]).dim) for k,a in blocks.items()}
-        return {k:a/np.sqrt(_sector_irrep(k[2]).dim) for k,a in self.hamiltonian.local_action(self.site,unscaled).items()}
+        return {k:a/np.sqrt(_sector_irrep(k[2]).dim) for k,a in self.hamiltonian_action(unscaled).items()}
 
     def apply(self,vector):
         return self.orthogonal_adjoint(self.orthogonal_hamiltonian(self.orthogonal_expand(vector)))

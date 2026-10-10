@@ -553,3 +553,42 @@ QR/SVD conditioning (Trefethen and Bau, *Numerical Linear Algebra*, SIAM 1997,
 https://doi.org/10.1137/1.9780898719574), not an exact canonicalization of a
 correlated LETTA metric. The independent physical-energy preservation check
 and transactional recovery remain in force.
+
+
+## Exact runtime reuse in reduced one-site sweeps
+
+Local Hamiltonian environments can be initialized lazily: only the left and
+right boundaries requested by an action are contracted. Stable energy checks
+reuse one expanded, left-canonical reduced state for the Hamiltonian and norm.
+A local eigensolve binds its fixed environment operands once and reuses the
+existing contraction plan, including the original operation order. Such a
+prepared action is scoped to that immutable solve and must be rebuilt after
+any change to its environments or tensors. Frontier embedding indices are
+constructed with batched integer indexing in the same ordering as before.
+
+These changes do not alter the metric cutoff, sector allocation, eigensolver
+settings, floating-point dtype, or energy acceptance checks. They introduce no
+new approximation or replacement numerical algorithm. Tests compare lazy and
+prepared actions exactly with the eager path, including complex inputs and
+boundary invalidation. The runtime benefit depends on the problem and cannot
+be inferred from a profiled local update alone.
+
+
+### Memory-bounded overlap construction
+
+The one-site SU(2) coordinates (also used by CBE) store the exact overlap map
+as scatter indices and left/right QR factors. A dense overlap block is built
+only while computing that block's full SVD. Column equilibration and the global
+relative singular-value cutoff are unchanged. The whitening maps are applied
+through singular vectors, singular values, and column scales, rather than
+retaining two additional dense matrices. This is a storage/data-flow adaptation
+of the QR/SVD formulation documented above, not a new low-rank approximation.
+Arithmetic order changes; energies and residuals must agree to numerical
+precision, rather than bitwise. Singular vectors and one-block SVD workspace
+remain potentially large, so this does not guarantee a fixed total memory cap.
+
+Structural MPO transfer caches retain at most two layouts per site. Evicted
+kernels are rebuilt exactly when needed; live environments retain their own
+references. Unreachable declared sectors have exact zero-row QR factors, so
+CBE's sparse sector changes do not cause missing-factor lookup errors. No
+nonzero state component is removed by this handling.

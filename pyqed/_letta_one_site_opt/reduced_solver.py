@@ -804,7 +804,7 @@ def _mpo_expectation(state, factors, *, stable=False):
         if factors.contraction_backend == 'reduced':
             if stable:
                 sites = left_canonical_reduced_sites(sites)
-            chain = ReducedEnvironmentChain.build(sites, factors.native_mpo(state.physical_basis))
+            chain = ReducedEnvironmentChain.build(sites, factors.native_mpo(state.physical_basis), lazy=True)
             return chain.expectation()
         chain = CanonicalEnvironmentChain.build(
             sites, factors.canonical_factors
@@ -827,6 +827,16 @@ def _mpo_expectation(state, factors, *, stable=False):
 
 
 def _energy(state, hamiltonian, *, stable=False):
+    if (isinstance(hamiltonian, ReducedMPOHamiltonian)
+            and hamiltonian.contraction_backend == 'reduced'):
+        sites = tuple(ReducedFrontier.from_state(state).to_mps(state))
+        if stable:
+            sites = left_canonical_reduced_sites(sites)
+        chain = ReducedEnvironmentChain.build(
+            sites, hamiltonian.native_mpo(state.physical_basis), lazy=True)
+        numerator = chain.expectation()
+        denominator = ReducedNormChain.build(sites).expectation()
+        return _checked_energy(numerator, denominator)
     if _is_reduced_mpo(hamiltonian):
         numerator = _mpo_expectation(state, hamiltonian, stable=stable)
         if isinstance(hamiltonian, ReducedMPOHamiltonian):

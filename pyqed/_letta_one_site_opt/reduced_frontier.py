@@ -196,6 +196,7 @@ class ReducedFrontier:
             d_left = source_shape[0]
             d_phys = source_shape[1]
             d_right = source_shape[-1]
+            left_slots, right_slots = np.indices((d_left, d_right))
             for left_memory, left_values in enumerate(left_assignments):
                 left_map = dict(zip(left_variables, left_values))
                 for physical_copy in range(d_phys):
@@ -218,24 +219,17 @@ class ReducedFrontier:
                         dependencies = tuple(
                             assignment[variable] for variable in neighborhood[1:]
                         )
-                        for left_slot in range(d_left):
-                            for right_slot in range(d_right):
-                                source_local = np.ravel_multi_index(
-                                    (left_slot, physical_copy)
-                                    + dependencies
-                                    + (right_slot,),
-                                    source_shape,
-                                )
-                                target_local = np.ravel_multi_index(
-                                    (
-                                        left_memory * d_left + left_slot,
-                                        physical_copy,
-                                        right_memory * d_right + right_slot,
-                                    ),
-                                    target_shape,
-                                )
-                                source_indices.append(source_offset + source_local)
-                                target_indices.append(target_offset + target_local)
+                        source_local = np.ravel_multi_index(
+                            (left_slots, physical_copy) + dependencies + (right_slots,),
+                            source_shape,
+                        )
+                        target_local = np.ravel_multi_index(
+                            (left_memory*d_left + left_slots, physical_copy,
+                             right_memory*d_right + right_slots),
+                            target_shape,
+                        )
+                        source_indices.extend((source_offset + source_local).ravel().tolist())
+                        target_indices.extend((target_offset + target_local).ravel().tolist())
         target_indices = np.asarray(target_indices, dtype=int)
         if target_indices.size != np.unique(target_indices).size:
             raise RuntimeError("frontier embedding assigned one MPS entry more than once")

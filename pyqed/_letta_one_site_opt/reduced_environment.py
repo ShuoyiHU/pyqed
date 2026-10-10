@@ -82,7 +82,15 @@ def cached_transfers(mpo, i, site):
         object.__setattr__(mpo, '_transfer_cache', cache)
     key = (i, tuple((k, a.shape[1]) for k, a in site.data.items()))
     if key not in cache:
-        cache[key] = compile_transfers(site, mpo.sites[i], mpo.channels)
+        compiled = compile_transfers(site, mpo.sites[i], mpo.channels)
+        # CBE changes layouts. Retain only the current and previous layout per
+        # site; live environment chains own the kernels they still need.
+        prior = [old for old in cache if old[0] == i]
+        for old in prior[:-1]:
+            del cache[old]
+        cache[key] = compiled
+    else:
+        cache[key] = cache.pop(key)
     return cache[key]
 
 
@@ -131,11 +139,19 @@ class ReducedEnvironmentChain(MovingReducedEnvironments):
     right_log_scales: list
 
     @classmethod
-    def build(cls, sites, mpo):
+    def build(cls, sites, mpo, *, lazy=False):
+        """Build boundaries eagerly, or defer them to exact ``ensure`` calls."""
         sites = tuple(sites)
         if len(sites) != len(mpo.sites):
             raise ValueError('one reduced MPO core is required per site')
         transfers = tuple(cached_transfers(mpo, i, a) for i, a in enumerate(sites))
+        if lazy:
+            n = len(sites)
+            left = [_boundary(sites[0], mpo.sites[0], 0)] + [None]*n
+            right = [None]*n + [_boundary(sites[-1], mpo.sites[-1], 2)]
+            chain = cls(sites, mpo, transfers, left, right, [0.]*(n+1), [0.]*(n+1))
+            chain.left_valid, chain.right_valid = 0, n
+            return chain
         left, ll = [_boundary(sites[0], mpo.sites[0], 0)], [0.]
         for a, ts in zip(sites, transfers):
             e, scale = _normalize(advance_left(left[-1], a, ts), ll[-1])
@@ -167,6 +183,37 @@ class ReducedEnvironmentChain(MovingReducedEnvironments):
                 right, blocks[t.ket_key])
         scale = np.exp(self.left_log_scales[site]+self.right_log_scales[site+1])
         return {key: a*scale for key, a in out.items()}
+
+    def prepare_local_action(self, site):
+        """Bind fixed environments for one immutable local eigensolve.
+
+        Reuses the existing NumPy contraction plan and operation order exactly.
+        Rebuild the callable after changing any site, boundary, or MPO tensor.
+        """
+        from opt_einsum import contract_expression
+        from .numpy_contractions import prepare_numpy_contraction
+        self.ensure(site, site+1)
+        actions = []
+        for transfer in self.transfers[site]:
+            left = self.left[site].get(transfer.left_key)
+            right = self.right[site+1].get(transfer.right_key)
+            if left is None or right is None:
+                continue
+            operands = (left, transfer.kernel, right, self.sites[site].data[transfer.ket_key])
+            expression = contract_expression('xal,xyop,ybr,lpr->aob',
+                *(a.shape for a in operands), optimize='greedy')
+            action = prepare_numpy_contraction(expression.contraction_list, operands, 3)
+            actions.append((transfer.bra_key, transfer.ket_key, action))
+        fixed_types = tuple(t.kernel.dtype for t in self.transfers[site]) + tuple(
+            a.dtype for boundary in (self.left[site], self.right[site+1]) for a in boundary.values())
+        scale = np.exp(self.left_log_scales[site]+self.right_log_scales[site+1])
+        def apply(blocks):
+            dtype = np.result_type(*(a.dtype for a in blocks.values()), *fixed_types)
+            out = {key: np.zeros(a.shape, dtype=dtype) for key, a in blocks.items()}
+            for bra, ket, action in actions:
+                out[bra] += action(blocks[ket])
+            return {key: a*scale for key, a in out.items()}
+        return apply
 
     def pair_action(self, site, blocks):
         self.ensure(site, site+2)
