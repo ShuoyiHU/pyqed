@@ -507,3 +507,49 @@ The following remain limits or separate extensions:
 ## H₂O dimension comparison follow-up (2026-10-03)
 
 The follow-up [water comparison](water_su2_comparison_final/REPORT.md) uses charge U(1) and spin SU(2) for four active spaces, multiple multiplet caps, independent CAS-FCI references, and additional block2 controls. The untied native MPS now uses a physical-metric Schmidt split; the general tied factorization remains unchanged. Earlier accuracy comparisons are historical and should not substitute for the stronger controls in this study. Low-D minima can depend on initialization in both native and block2 solvers. The final tables retain the best validated candidate per method and cap, with all source records preserved.
+
+
+## Stable one-site local coordinates
+
+The reduced one-site solver constructs norm factors with sector QR and splits
+those factors into disjoint physical-label blocks. SVD of column-equilibrated
+factors defines orthonormal coordinates. The Hamiltonian acts through a
+mixed-canonical auxiliary reduced MPS in those coordinates. It does not use a
+determinant-space projection or expand magnetic components.
+
+For a local factor $F$, the overlap is $N=F^\dagger F$. The implementation
+factors $F$ directly, avoiding loss of null-space accuracy from diagonalizing
+the explicitly contracted Gram matrix. If $D$ contains column norms and
+$F D^{-1}=U\Sigma V^\dagger$, the retained coordinate map is
+$W=D^{-1}V_r\Sigma_r^{-1}$. The local eigenproblem uses $W^\dagger H W$.
+QR and the block decomposition preserve the state in exact arithmetic; the
+relative `metric_tolerance` cutoff discards small singular directions.
+
+This is an adaptation of standard QR/SVD numerical linear algebra to LETTA's
+reduced multiplicity and physical-label structure, not a reproduction of a
+published LETTA algorithm. Reference: L. N. Trefethen and D. Bau III,
+*Numerical Linear Algebra*, SIAM (1997),
+[DOI: 10.1137/1.9780898719574](https://doi.org/10.1137/1.9780898719574).
+The finite overlap cutoff restricts the tested local subspace; neither local
+eigensolver convergence nor sweep convergence guarantees a global variational
+minimum. The implementation supports the existing open-chain reduced frontier
+representation, not an arbitrary periodic tensor network.
+
+For these QR local problems, `residual_norm` and `relative_residual` measure
+stationarity in retained physical coordinates. `raw_residual_norm` and
+`raw_relative_residual` retain the unprojected tensor-coordinate diagnostics.
+The independent energy acceptance check remains in force. A sweep cap must
+still be distinguished from `converged=True`.
+
+
+The legal frontier gauge also uses reduced QR square-root factors. For a
+marginal over unshared labels it stacks the corresponding factor column slices,
+then takes an SVD of that factor, instead of diagonalizing a contracted Gram.
+This avoids spurious negative Gram eigenvalues near null directions. Singular
+values below the square root of the metric threshold times the largest singular
+value across all conditional blocks retain a unit gauge; no
+bond directions are truncated by this gauge. This is an adaptation of standard
+QR/SVD conditioning (Trefethen and Bau, *Numerical Linear Algebra*, SIAM 1997,
+https://doi.org/10.1137/1.9780898719574), not an exact canonicalization of a
+correlated LETTA metric. The independent physical-energy preservation check
+and transactional recovery remain in force.

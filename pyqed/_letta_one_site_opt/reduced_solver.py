@@ -46,6 +46,7 @@ class ReducedLocalProblem:
     hamiltonian_action: object | None = None
     metric_action: object | None = None
     equilibrated_projector_factory: object | None = None
+    coordinates: object | None = None
 
     @property
     def local_dimension(self):
@@ -56,6 +57,8 @@ class ReducedLocalProblem:
         return self.embedding.target_size
 
     def apply_hamiltonian(self, vector):
+        if self.coordinates is not None:
+            return self.coordinates.source_hamiltonian(np.asarray(vector))
         if self.hamiltonian is not None:
             return self.hamiltonian @ np.asarray(vector)
         if self.hamiltonian_action is None:
@@ -63,6 +66,8 @@ class ReducedLocalProblem:
         return np.asarray(self.hamiltonian_action(vector))
 
     def apply_metric(self, vector):
+        if self.coordinates is not None:
+            return self.coordinates.metric(np.asarray(vector))
         if self.metric is not None:
             return self.metric @ np.asarray(vector)
         if self.metric_action is None:
@@ -386,39 +391,31 @@ def _projected_canonical_local_problem(
 
 
 def _native_local_problem(state, hamiltonian, site, sites, embedding,
-                          matrix_free, dense_solver_threshold, *, chains=None):
-    if chains is None:
-        h_chain = ReducedEnvironmentChain.build(sites, hamiltonian.native_mpo(state.physical_basis))
-        n_chain = ReducedNormChain.build(sites)
-    else:
-        h_chain, n_chain = chains
-    def action(chain, vector):
-        blocks = embedding.unpack_target(embedding.apply(vector))
-        return embedding.adjoint(embedding.pack_target(chain.local_action(site, blocks)))
-    h_action = lambda v: action(h_chain, v)
-    n_action = lambda v: action(n_chain, v)
-    h, n = None, None
-    if not matrix_free or embedding.source_size <= dense_solver_threshold:
-        identity = np.eye(embedding.source_size)
-        h = np.column_stack([h_action(v) for v in identity])
-        n = np.column_stack([n_action(v) for v in identity])
-        h = .5*(h+h.conj().T)
-        n = .5*(n+n.conj().T)
-    return ReducedLocalProblem(site=int(site), frame=None, embedding=embedding,
-        hamiltonian=h, metric=n, hamiltonian_action=h_action, metric_action=n_action,
-        equilibrated_projector_factory=lambda tol: n_chain.local_projector(
-            site, embedding, tol, equilibrated=True))
+                          matrix_free, dense_solver_threshold):
+    from .reduced_coordinates import ReducedLocalCoordinates
+    coordinates=ReducedLocalCoordinates(sites,embedding,site)
+    coordinates.set_hamiltonian(hamiltonian.native_mpo(state.physical_basis))
+    h_action=coordinates.source_hamiltonian
+    n_action=coordinates.metric
+    h,n=None,None
+    if not matrix_free or embedding.source_size<=dense_solver_threshold:
+        identity=np.eye(embedding.source_size)
+        h=np.column_stack([h_action(v) for v in identity])
+        n=np.column_stack([n_action(v) for v in identity])
+        h=.5*(h+h.conj().T);n=.5*(n+n.conj().T)
+    return ReducedLocalProblem(site=int(site),frame=None,embedding=embedding,
+        hamiltonian=h,metric=n,hamiltonian_action=h_action,metric_action=n_action,
+        equilibrated_projector_factory=coordinates.projector,coordinates=coordinates)
 
 
 class ReducedSweepContext:
-    """Moving native environments for one-site sweeps with frontier gauges."""
+    """Cache expanded cores and norm boundaries for frontier gauge updates."""
 
     def __init__(self, state, hamiltonian):
         self.state, self.hamiltonian = state, hamiltonian
         self.frontier = ReducedFrontier.from_state(state)
         self.embeddings = tuple(self.frontier.site_embedding(state, i) for i in range(state.nsites))
         self.sites = list(self.frontier.to_mps(state))
-        self.h_chain = ReducedEnvironmentChain.build(self.sites, hamiltonian.native_mpo(state.physical_basis))
         self.n_chain = ReducedNormChain.build(self.sites)
 
     def synchronize(self, indices):
@@ -427,13 +424,11 @@ class ReducedSweepContext:
             a = self.sites[i].copy()
             a.data = self.embeddings[i].expand_blocks(self.state.tensors[i])
             changes[i] = self.sites[i] = a
-        self.h_chain.replace_sites(changes)
         self.n_chain.replace_sites(changes)
 
     def local_problem(self, site, options):
         return _native_local_problem(self.state, self.hamiltonian, site, self.sites,
-            self.embeddings[site], options.matrix_free, options.dense_solver_threshold,
-            chains=(self.h_chain, self.n_chain))
+            self.embeddings[site], options.matrix_free, options.dense_solver_threshold)
 
 
 def reduced_local_frame(state, site):
@@ -761,7 +756,37 @@ def _lowest_generalized_matrix_free(problem, options, *, initial_vector):
     return energy, vector, explored_rank, float(np.linalg.norm(residual))
 
 
+def _lowest_coordinate_root(problem, options, initial_vector):
+    coordinates=problem.coordinates
+    coordinates.prepare(options.metric_tolerance)
+    initial=coordinates.coordinates(initial_vector)
+    if coordinates.rank==0:
+        raise ValueError('Reduced local metric has no retained directions')
+    local_options=replace(options,eigensolver_tolerance=options.eigensolver_tolerance/
+                          max(1.,coordinates.residual_amplification))
+    if not options.matrix_free or coordinates.rank<=options.dense_solver_threshold:
+        h=np.column_stack([coordinates.apply(v) for v in np.eye(coordinates.rank)])
+        local=SimpleNamespace(hamiltonian=.5*(h+h.conj().T),metric=np.eye(coordinates.rank),
+                              local_dimension=coordinates.rank)
+        _,z,_,_=_lowest_generalized(local,options.metric_tolerance,initial_vector=initial)
+    else:
+        local=SimpleNamespace(local_dimension=coordinates.rank,apply_hamiltonian=coordinates.apply,
+                              apply_metric=lambda z:z,metric_scale=1.)
+        _,z,_=_davidson_in_metric_coordinates(local,local_options,initial)
+    vector=coordinates.expand(z)
+    norm=coordinates.norm(vector)
+    if not np.isfinite(norm) or norm<=np.finfo(float).tiny:
+        raise FloatingPointError('Null QR-coordinate local solution')
+    vector/=np.sqrt(norm)
+    energy=coordinates.energy(vector)
+    from .reduced_updates import local_residual
+    residual,_=local_residual(problem,vector,metric_tolerance=options.metric_tolerance)
+    return energy,vector,coordinates.rank,residual
+
+
 def _solve_local_problem(problem, options, *, initial_vector):
+    if getattr(problem,'coordinates',None) is not None:
+        return _lowest_coordinate_root(problem,options,initial_vector)
     if problem.hamiltonian is None or problem.metric is None:
         return _lowest_generalized_matrix_free(
             problem, options, initial_vector=initial_vector
@@ -846,8 +871,10 @@ def _optimize_reduced_site_impl(state, hamiltonian, site, options, *, context=No
         options,
         initial_vector=problem.embedding.pack_source(state.tensors[int(site)]),
     )
-    from .reduced_updates import local_residual
-    _, relative_residual = local_residual(problem, vector)
+    from .reduced_updates import local_residual_diagnostics
+    diagnostics=local_residual_diagnostics(problem,vector,metric_tolerance=options.metric_tolerance)
+    residual=diagnostics['residual_norm']
+    relative_residual=diagnostics['relative_residual']
     old_blocks = {
         key: block.copy() for key, block in state.tensors[int(site)].items()
     }
@@ -869,7 +896,8 @@ def _optimize_reduced_site_impl(state, hamiltonian, site, options, *, context=No
         if context is None:
             state.normalize(center=int(site), balance=options.gauge_mode != 'frontier')
         else:
-            norm = float(np.real(np.vdot(vector, problem.apply_metric(vector))))
+            norm = (problem.coordinates.norm(vector) if problem.coordinates is not None
+                    else float(np.real(np.vdot(vector, problem.apply_metric(vector)))))
             state.tensors[int(site)] = problem.embedding.unpack_source(
                 vector*np.sqrt((state.target_two_j+1)/norm))
     if context is not None:
@@ -882,6 +910,8 @@ def _optimize_reduced_site_impl(state, hamiltonian, site, options, *, context=No
         local_dimension=problem.local_dimension,
         residual_norm=residual,
         relative_residual=relative_residual,
+        raw_residual_norm=diagnostics['raw_residual_norm'],
+        raw_relative_residual=diagnostics['raw_relative_residual'],
         local_converged=accepted and relative_residual <= options.eigensolver_tolerance,
         accepted=accepted,
         full_local_dimension=problem.full_local_dimension,

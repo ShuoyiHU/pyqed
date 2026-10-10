@@ -140,3 +140,43 @@ def test_gauge_failure_restores_both_cores_and_previous_gauge_steps(monkeypatch,
         else:shift_reduced_frontier_gauge(s,2,'lr')
     for before,core in zip(old,s.tensors):
         for key in before:np.testing.assert_array_equal(before[key],core[key])
+
+
+@pytest.mark.parametrize('direction', ['lr', 'rl'])
+@pytest.mark.parametrize('two_s', [0, 2])
+def test_frontier_qr_factors_reproduce_complex_marginal_grams(direction, two_s):
+    from pyqed._letta_one_site_opt.reduced_gauge import reduced_frontier_factors
+    _, state = example(two_s)
+    for cut in range(1, state.nsites):
+        grams = reduced_frontier_grams(state, cut, direction)
+        factors = reduced_frontier_factors(state, cut, direction)
+        assert grams.keys() == factors.keys()
+        for key, factor in factors.items():
+            np.testing.assert_allclose(factor.conj().T@factor, grams[key], atol=2e-12, rtol=2e-12)
+
+
+def test_qr_gauge_preserves_captured_ill_conditioned_ladder():
+    import pickle
+    from pathlib import Path
+    with (Path(__file__).parent/'data/letta_overlap_2x4_d20.pkl').open('rb') as stream:
+        state = pickle.load(stream)['state']
+    original = state.state_vector()
+    for center in (0, state.nsites-1):
+        canonicalize_reduced_frontier(state, center)
+        np.testing.assert_allclose(state.state_vector(), original, atol=2e-9, rtol=2e-9)
+
+
+@pytest.mark.parametrize('direction', ['lr', 'rl'])
+def test_gauge_does_not_amplify_negligible_sector(direction):
+    _, state = example()
+    site, axis, cut = (0, 2, 1) if direction == 'lr' else (3, 0, 3)
+    sector = next(iter(state.tensors[site]))[axis]
+    assert len({key[axis] for key in state.tensors[site]}) > 1
+    for key, block in state.tensors[site].items():
+        if key[axis] == sector:
+            block *= 1e-9
+    original = state.state_vector()
+    ranks = shift_reduced_frontier_gauge(state, cut, direction)
+    selected = [rank for (_, q), rank in ranks.items() if q == sector]
+    assert selected and all(rank == 0 for rank in selected)
+    np.testing.assert_allclose(state.state_vector(), original, atol=3e-11, rtol=3e-11)

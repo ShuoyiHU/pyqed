@@ -74,6 +74,34 @@ def reduced_frontier_grams(state, cut, direction, *, environment=None, strict=Fa
     return grams
 
 
+def reduced_frontier_factors(state, cut, direction, *, environment=None, strict=False):
+    """Square-root factors of the legal marginal Grams, without Gram products.
+
+    Adapts reduced sector QR and standard SVD whitening (Trefethen and Bau,
+    Numerical Linear Algebra, SIAM 1997, doi:10.1137/1.9780898719574).
+    Stacking conditional column slices implements the marginal partial trace.
+    This conditions legal bond gauges only, not the full correlated overlap.
+    """
+    from .reduced_coordinates import _canonical_sites
+    descriptor = _validate_cut(state, cut, direction, strict=strict)
+    variables = reduced_gauge_variables(state, cut)
+    if environment is None:
+        frontier = ReducedFrontier.from_state(state)
+        sites = frontier.to_mps(state)
+    else:
+        chain, frontier = environment
+        sites = chain.sites
+    _, left, right = _canonical_sites(sites, cut if direction == 'lr' else cut-1)
+    boundary = left if direction == 'lr' else right
+    groups = {}
+    for memory, configuration in enumerate(frontier._assignments(descriptor.physical_indices)):
+        assignment = dict(zip(descriptor.physical_indices, configuration))
+        shared = tuple(assignment[v] for v in variables)
+        for q, r in Counter(state.bond_sectors[cut-1]).items():
+            groups.setdefault((shared, q), []).append(boundary[q][:, memory*r:(memory+1)*r])
+    return {key: np.linalg.qr(np.concatenate(parts), mode='r') for key, parts in groups.items()}
+
+
 def _apply_conditional(state, site, axis, variables, matrices):
     basis = state.physical_basis
     labels = {(p.sector, p.copy): i for i, p in enumerate(basis.reduced_states)}
@@ -92,9 +120,11 @@ def _apply_conditional(state, site, axis, variables, matrices):
 def shift_reduced_frontier_gauge(state, cut, direction, *, tolerance=1e-12, environment=None, strict=False):
     """Whiten one completed side, absorbing its inverse into the neighbor.
 
-    Small metric eigenvalues retain an invertible unit gauge rather than
+    Small squared singular values retain an invertible unit gauge rather than
     deleting physical directions. Bond dimensions and tied dependencies are
-    unchanged. On a non-shared frontier only its legal marginal is whitened;
+    unchanged. The support threshold uses the largest singular value across
+    all conditional blocks, so negligible-weight blocks are not independently
+    amplified. On a non-shared frontier only its legal marginal is whitened;
     the full local metric remains correlated. Returns the supported rank of each
     (shared-label configuration, sector) block. Numerical failures restore both
     cores. ``strict=True`` disables the marginal fallback.
@@ -103,19 +133,23 @@ def shift_reduced_frontier_gauge(state, cut, direction, *, tolerance=1e-12, envi
     variables = reduced_gauge_variables(state, cut)
     if not np.isfinite(tolerance) or not 0 < tolerance < 1:
         raise ValueError('gauge tolerance must lie between zero and one')
-    grams = reduced_frontier_grams(state, cut, direction, environment=environment, strict=strict)
+    factors = reduced_frontier_factors(state, cut, direction, environment=environment, strict=strict)
     transforms, inverses, ranks = {}, {}, {}
-    for key, gram in grams.items():
-        if not np.all(np.isfinite(gram)):
-            raise FloatingPointError('nonfinite reduced frontier metric')
-        values, vectors = np.linalg.eigh(gram)
-        scale = float(np.max(np.abs(values), initial=0.))
-        threshold = max(tolerance, np.finfo(float).eps*len(values))*scale
-        if values[0] < -10*threshold:
-            raise FloatingPointError('reduced frontier metric is not positive semidefinite')
-        keep = values > threshold
-        weights = np.ones_like(values)
-        weights[keep] = np.sqrt(values[keep])
+    decompositions = {}
+    for key, factor in factors.items():
+        if not np.all(np.isfinite(factor)):
+            raise FloatingPointError('nonfinite reduced frontier factor')
+        from scipy.linalg import svd
+        _, singular, vh = svd(factor, full_matrices=True, lapack_driver='gesvd')
+        decompositions[key] = singular, vh
+    largest = max((float(s.max(initial=0.)) for s, _ in decompositions.values()), default=0.)
+    for key, (singular, vh) in decompositions.items():
+        weights = np.ones(vh.shape[0])
+        threshold = np.sqrt(max(tolerance, np.finfo(float).eps*len(weights)))*largest
+        keep = singular > threshold
+        supported = np.flatnonzero(keep)
+        weights[supported] = singular[keep]
+        vectors = vh.conj().T
         transforms[key] = (vectors/weights)@vectors.conj().T
         inverses[key] = (vectors*weights)@vectors.conj().T
         ranks[key] = int(np.count_nonzero(keep))

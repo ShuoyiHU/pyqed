@@ -17,24 +17,38 @@ def one_site_options(options):
     return LETTADMROptions(max_sweeps=1, **{k: getattr(options, k) for k in names})
 
 
-def local_residual(problem, vector):
-    """Report the unprojected Hx-E Nx residual in local coordinates.
+def local_residual_diagnostics(problem, vector, *, metric_tolerance=1e-12):
+    """Physical-coordinate stationarity plus unprojected coefficient residuals.
 
-    The relative value is scaled by the two terms in the generalized equation.
-    This is a local stationarity check, not a certificate of a global minimum.
+    QR coordinates use the retained overlap support. Their normalized residual
+    tests stationarity in that physical subspace, not a global energy minimum.
+    Raw residuals remain available to diagnose cutoff and conditioning effects.
+    Problems without QR coordinates retain the raw-coordinate convention.
     """
-    vector = np.asarray(vector)
-    h, n = problem.apply_hamiltonian(vector), problem.apply_metric(vector)
-    norm = float(np.vdot(vector, n).real)
-    if not np.isfinite(norm) or norm <= np.finfo(float).tiny:
-        raise FloatingPointError('null or nonfinite state in local residual check')
-    energy = float(np.vdot(vector, h).real/norm)
-    residual = float(np.linalg.norm(h-energy*n))
-    scale = max(float(np.linalg.norm(h)), abs(energy)*float(np.linalg.norm(n)),
-                np.finfo(float).tiny)
-    if not np.isfinite(energy) or not np.isfinite(residual):
-        raise FloatingPointError('nonfinite reduced local residual')
-    return residual, residual/scale
+    vector=np.asarray(vector)
+    h,n=problem.apply_hamiltonian(vector),problem.apply_metric(vector)
+    coordinates=getattr(problem,'coordinates',None)
+    norm=(coordinates.norm(vector) if coordinates is not None else float(np.vdot(vector,n).real))
+    if not np.isfinite(norm) or norm<=np.finfo(float).tiny:
+        raise FloatingPointError('Null or nonfinite state in local residual check')
+    energy=coordinates.energy(vector) if coordinates is not None else float(np.vdot(vector,h).real/norm)
+    raw=float(np.linalg.norm(h-energy*n))
+    raw_scale=max(float(np.linalg.norm(h)),abs(energy)*float(np.linalg.norm(n)),np.finfo(float).tiny)
+    if coordinates is not None:
+        coordinates.prepare(metric_tolerance)
+        h,n=coordinates.adjoint(h),coordinates.adjoint(n)
+    absolute=float(np.linalg.norm(h-energy*n))
+    scale=max(float(np.linalg.norm(h)),abs(energy)*float(np.linalg.norm(n)),np.finfo(float).tiny)
+    if not np.isfinite(energy) or not np.isfinite(absolute) or not np.isfinite(raw):
+        raise FloatingPointError('Nonfinite reduced local residual')
+    return dict(residual_norm=absolute,relative_residual=absolute/scale,
+                raw_residual_norm=raw,raw_relative_residual=raw/raw_scale)
+
+
+def local_residual(problem, vector, *, metric_tolerance=1e-12):
+    """Return the absolute and relative local stationarity residuals."""
+    report=local_residual_diagnostics(problem,vector,metric_tolerance=metric_tolerance)
+    return report['residual_norm'],report['relative_residual']
 
 
 def reduced_stationarity(state, hamiltonian, sites, options):
@@ -45,7 +59,7 @@ def reduced_stationarity(state, hamiltonian, sites, options):
         problem = reduced_local_problem(state, hamiltonian, site,
             matrix_free=options.matrix_free, dense_solver_threshold=options.dense_solver_threshold)
         vector = problem.embedding.pack_source(state.tensors[site])
-        absolute, relative = local_residual(problem, vector)
+        absolute, relative = local_residual(problem, vector, metric_tolerance=options.metric_tolerance)
         reports.append(dict(site=site, residual_norm=absolute, relative_residual=relative))
     return tuple(reports)
 

@@ -77,6 +77,8 @@ class LETTASiteUpdate:
     hamiltonian_applications: int = 0
     metric_kind: str = "general"
     relative_residual: float | None = None
+    raw_residual_norm: float | None = None
+    raw_relative_residual: float | None = None
     local_converged: bool | None = None
     recovery_reason: str | None = None
     cbe_timings: dict[str, float] | None = None
