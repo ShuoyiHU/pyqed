@@ -3,7 +3,8 @@ import argparse,hashlib,io,json,subprocess,tarfile,tempfile,shutil
 from pathlib import Path
 
 TESTS=('test_letta_cbe_stable_metric.py','test_letta_factor_coordinates.py',
-       'test_letta_reduced_cbe.py','test_letta_reduced_compression.py','test_letta_qchem.py')
+       'test_letta_reduced_cbe.py','test_letta_reduced_compression.py','test_letta_qchem.py',
+       'test_letta_reduced_one_site.py')
 CODE_SUFFIXES={'.py','.pyx','.pxd','.h','.hpp','.cpp','.c','.json','.toml','.yaml','.yml'}
 
 def stage(a):
