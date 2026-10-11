@@ -592,3 +592,240 @@ kernels are rebuilt exactly when needed; live environments retain their own
 references. Unreachable declared sectors have exact zero-row QR factors, so
 CBE's sparse sector changes do not cause missing-factor lookup errors. No
 nonzero state component is removed by this handling.
+
+Pair compression and local/pair support projectors likewise treat sectors absent
+from a boundary environment as exactly null: input layouts remain unchanged,
+while the metric root has zero output rows for those sectors. This matches the
+existing norm action and adds no numerical rank truncation. Regression cases
+cover both boundary directions, complex amplitudes, and singlet/non-singlet
+particle sectors against the directly contracted metric and physical norm.
+
+
+### CBE compression norm stability
+
+Open-boundary pair compression now constructs reduced QR boundary factors
+before forming its inverse-support SVD (Trefethen and Bau, *Numerical Linear
+Algebra*, SIAM 1997, https://doi.org/10.1137/1.9780898719574). This is an
+adaptation to the reduced LETTA representation, not a new globally optimal
+low-rank solver. Full QR maps evaluate physical compression losses, trial
+normalizations and acceptance diagnostics; inverse solves retain the existing
+relative metric cutoff. Thus cutoff directions are still counted in the
+physical loss. No determinant-space projection or lower precision is used.
+The final independent energy guard remains authoritative. Candidate gains
+within 100 machine epsilons times the energy scale do not replace the ordinary
+one-site baseline: roundoff alone should not rotate the state or its sectors.
+A locally better accepted step does not guarantee a better later sweep than a
+separate one-site trajectory. CBE projection/ALS budget exhaustion is still
+reported explicitly and is not silently called convergence.
+
+The open-boundary CBE tangent projection now uses orthonormal coordinates for
+each incumbent factor before applying LSMR. Its raw coefficient formulation
+could report a nonzero missing direction after a pure bond gauge change, or
+exhaust its budget without selecting an expansion. The preconditioner uses
+the same equilibrated QR/SVD support cutoff as the one-site solver, so
+numerically discarded tangent directions follow that cutoff; exact gauge
+invariance is only expected while physical support remains above it. Both
+incumbent factors are masked to their old bond entries. No dense pair tangent
+Jacobian is materialized. The cyclic adapter retains its existing projection
+path. Final energy acceptance is still checked independently.
+
+
+The reduced open-boundary selector also evaluates the Hamiltonian residual in
+these QR coordinates. It absorbs the boundary factors into the two separate
+site tensors before merging them, applies the reduced MPO there, and projects
+with the retained SVD unitary factors. This avoids forming a cancelling raw
+pair tensor or multiplying a raw Hamiltonian covector by an ill-conditioned
+inverse metric. This is the same reduced Hamiltonian and overlap-support
+policy, with a different, stable contraction order; it is not a dense physical
+projection or an extra variational solve. The canonical/magnetic fallback and
+cyclic adapters retain their existing Hamiltonian action paths.
+
+Compression ALS and nonlinear least squares now use the full QR physical
+objective for both their solves and acceptance loss. Previously an inverse
+support cutoff could remove directions from the solve while their error was
+still counted by the physical loss guard. The selector fits a unit-norm
+missing residual, then restores its magnitude in the returned factor product,
+selection loss, and captured weight. Factor-fit diagnostics explicitly mark
+`normalized_residual_objective` and report `residual_scale`; their internal
+losses and linear residuals belong to that unit-target problem. This scaling
+does not remove the nonconvexity or guarantee the globally best expansion.
+
+If the expanded one-site solve has no energy gain beyond the existing
+100-machine-epsilon guard, CBE keeps the ordinary baseline without running
+compression and pair energy refinement. This avoids paying for an ineffective
+expansion. Pair refinement can incidentally improve a state even without an
+expansion gain; that independent optimization is deliberately not triggered
+by this case. A retained expansion still uses the configured ALS and energy
+refinement budgets and the final same-state baseline guard. These changes
+improve numerical definitions; faster global convergence must be demonstrated
+separately on matched benchmark trajectories, not inferred from these guards.
+
+
+For the reduced open-boundary metric, the intermediate charge/spin sectors
+are orthogonal. If an allocation retains the sector set S, its squared
+physical fitting error obeys
+
+$$
+L = \sum_{q\in S}\|r_q-f_q\|^2
+    +\sum_{q\notin S}\|r_q\|^2
+    \ge \sum_{q\notin S}\|r_q\|^2.
+$$
+
+The selector visits allocations with the smallest lower bound first. It
+skips a remaining allocation only when its bound exceeds the best fitted
+loss, with a floating-point margin. This is an exact bound on that fixed
+allocation, not a heuristic reduction of the ALS budget or a claim that ALS
+finds the global factor optimum. With the same seeds and controls it cannot
+exclude a strictly better fitted candidate. Diagnostics report actual factor
+fit attempts and pruned allocations. The cyclic selector does not use this
+bound because its metric need not separate intermediate sectors this way.
+
+The same bound provides a compression certificate. If the incoming masked
+factors already match every retained sector to the configured relative
+physical-norm tolerance, the remaining error is unavoidable outside S.
+Compression returns this certified solution without iterative fitting and
+without trying a second starting point. The certificate applies only to
+physical-norm fitting for the chosen allocation; it does not certify an
+energy optimum. Energy refinement and the independent energy acceptance
+guard still run. For a partially truncated sector with appreciable residual,
+the existing selected compression solver and iteration budgets still apply.
+
+
+### Direct reduced factor least squares
+
+For open-boundary compression, each ALS half-step now uses the reduced
+QR overlap maps and a column-equilibrated SVD to construct an isometric map
+Q for the currently allowed factor entries. If C maps source coefficients
+into these coordinates and y is the full physical target, the half-step is
+
+$$
+\min_z \|Qz-y\|^2,\qquad Q^\dagger Q=I,\qquad
+z_*=Q^\dagger y,\qquad x_*=x_0+C^+(z_*-Cx_0).
+$$
+
+The partner factor is held fixed while constructing Q. Shared LETTA source
+entries are restricted before the SVD; SU(2) irrep weights remain in the
+physical inner product. No determinant or magnetic-state reconstruction is
+used. This adapts the QR/SVD least-squares formulation of L. N. Trefethen and
+D. Bau III, *Numerical Linear Algebra*, SIAM (1997),
+https://doi.org/10.1137/1.9780898719574; it is not a reproduction of a distinct
+published CBE algorithm. The pseudoinverse tolerance is applied per block to
+column-equilibrated singular values, independently of the one-site metric
+cutoff. Directions below that numerical rank threshold are omitted.
+
+The direct solve applies a correction to the incumbent factor rather than
+replacing it with a minimum-norm factor. This preserves its null component
+in the Euclidean source norm, as does a converged warm-started LSMR solve
+on the same numerical support. To obtain this correction without normal
+equations, write the retained coordinate map as C = diag(s) V† diag(w),
+factor (V† diag(w))† = QR, and apply C⁺z = Q(R†)⁻¹diag(s)⁻¹z.
+If the partner is zero, the current factor survives and the next ALS
+half-step can recover a nonzero product. Numerical rank decisions can still
+make the trajectory differ from finite-iteration LSMR. The full physical
+loss guard and energy acceptance tests remain
+in force. This gives a linear subproblem solution within retained numerical
+support, not a globally optimal factorization or ground-state guarantee.
+After reconstructing a factor in source coordinates, up to three residual
+corrections reuse the same QR map. A correction is retained only if it reduces
+the physical normal residual; the stationarity tolerance is unchanged. This
+is iterative refinement of the linear solve, not extra nonlinear ALS rounds.
+If the corrected solution still fails the original check, LSMR remains the
+fallback. This addresses rounding amplification during source reconstruction.
+ALS and energy-refinement budgets are unchanged. Cyclic compression retains
+its existing LSMR solve. Open-boundary solves also fall back to LSMR when
+estimated dense SVD workspace exceeds `max_workspace_mb`, or when the direct
+solution fails its physical stationarity check. This workspace estimate is
+not a limit on the total memory of the solver.
+
+Benchmark decisions must prioritize energy versus elapsed time and reliable
+stationarity over time per sweep. A faster half-step is insufficient evidence
+for adopting a change if longer optimization stalls at a worse energy.
+
+
+### Tangent projection and fixed-bond relaxation
+
+The open-boundary selector now contracts each orthonormal factor tangent map
+directly in canonical physical coordinates. It avoids reconstructing raw
+source coefficients merely to contract them back into the same space. If
+J denotes the concatenated left and right tangent maps, a bounded direct SVD
+forms the orthogonal residual using its retained left singular vectors:
+
+$$
+J=U\Sigma V^\dagger,\qquad r=(I-U_rU_r^\dagger)g.
+$$
+
+This is the standard QR/SVD orthogonal projection formulation in Trefethen
+and Bau (1997, DOI above), adapted to reduced-sector LETTA tangent maps.
+The projector uses singular vectors directly rather than evaluating J times
+large least-squares coefficients, avoiding cancellation for nearly dependent
+tangent spaces. The rank threshold is `compression.pinv_tolerance` relative
+to the largest singular value. This is within the previously retained pair
+inverse support and does not undo the metric cutoff.
+
+`cbe_projection_max_workspace_mb` defaults to 256 MiB and bounds an estimate
+of the direct matrix, singular vectors, and scratch storage. Zero disables
+direct projection. Larger spaces, failed SVDs, or failed orthogonality checks
+use physical-coordinate LSMR with the configured projection tolerance and
+iteration cap. An unresolved iterative projection retains the ordinary
+one-site baseline and reports nonconvergence. Diagnostics distinguish SVD
+from LSMR, disclose direct tangent matrix materialization, and record the
+retained rank or fallback reason. No dense Hamiltonian, determinant space,
+or magnetic-state expansion is used. This is not a global convergence proof.
+
+If no new directions are selected, a nonstationary neighboring tensor may
+still benefit from alternating fixed-bond Rayleigh-quotient minimization.
+That path uses the existing pair energy-refinement iteration/tolerance
+controls and accepts only an independently verified energy decrease relative
+to the ordinary one-site candidate. It does not enlarge or compress the bond.
+This is an alternating-coordinate variational relaxation added to the CBE
+workflow, not a two-site eigensolve or a reproduction of a literature CBE
+algorithm. The earlier no-gain shortcut for an *actually expanded* candidate
+remains in place. All variants remain nonconvex and must be compared by
+energy and stationarity at matched elapsed time, not only time per sweep.
+
+### CBE conditioning validation (2026-10-12)
+
+The matched local checks use open Hubbard ladders, U/t=12, diagonal hopping
+-0.25t, one hole, total spin 1/2, seed 4, and caps in SU(2) multiplets.
+ALS and alternating-energy caps remain 32; the inner eigen tolerance is
+1e-10, the pair metric cutoff 1e-12, and the projection cap 1000.
+All timings below are local measurements, with some concurrent validation
+load; they are not hardware-independent speedup guarantees.
+
+| Check | Earlier path | Updated path |
+|---|---:|---:|
+| Same saved 2x4, D=30 update: complete update | 307.79 s | 6.19 s |
+| Its first compression fit | 302.07 s | 0.39 s |
+| 2x4, D=30: two directional sweeps | 939.50 s, E=-3.7352069785 | 690.05 s, E=-3.7352072437 |
+| 2x4, D=30: six directional sweeps | 1427.60 s, E=-3.7366574683 | 1215.53 s, E=-3.7366576932 |
+
+The earlier path in this table already includes full physical-metric loss,
+direct tangent projection and warm QR factor solves; the update adds the
+Euclidean source correction and physical residual refinement. The saved
+update retains the same energy, -3.7074031665500664, with slightly lower
+compression loss. Its original QR checks triggered 62 LSMR fallbacks and
+31,396 Krylov iterations; residual correction resolves the rounding error
+without loosening the stationarity threshold.
+
+The updated 2x3, D=20 check converged in two directional sweeps (35.75 s),
+E=-3.048184152178527. The 2x4 check reached its six-sweep cap, **not
+convergence**: its last energy change is about 2.40e-5 per site. Nine tangent
+projections exhausted their matrix-free budget and retained the ordinary
+one-site candidate; these remain reported failures, not successful CBE
+expansions. Every accepted update obeyed the baseline energy guard and D=30.
+The older pre-conditioning CBE reached only E=-3.7050094689 at six sweeps;
+this does not establish its infinite-sweep limit. Independent occupation-basis
+expectations are validation-only and are never used by the active solver.
+
+Reproduce matched small checks with
+
+```bash
+PYTHONPATH=. python pyqed/_letta_one_site_opt/benchmarks/su2_cbe_guard_audit.py \
+  --length 4 --cap 30 --sweeps 6 --projection-iterations 1000 --output OUTPUT
+```
+
+with one BLAS/OpenMP thread. The benchmark writes energy histories, per-update
+guards and reproducible plots. The `hubbard_cbe_cluster` benchmark directory
+contains the matching larger-ladder templates, source-freezing tool and
+submission instructions; it reuses the shared environment and verifies the
+exact committed source before submission.

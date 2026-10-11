@@ -201,7 +201,10 @@ def test_four_site_tied_hubbard_cbe_reaches_independent_fci():
     assert result.energy == pytest.approx(exact, abs=2e-9)
     assert result.state.symmetry_violation() == 0.
     assert not any(u.cbe_recovery_reason for row in result.history for u in row.updates)
-    assert any(u.cbe_expansion_dimension for row in result.history for u in row.updates)
+    # Do not demand a spurious expansion when the incumbent tangent spans
+    # the pair residual. Genuine missing-sector growth is tested separately.
+    assert all(u.cbe_expansion_dimension or (u.cbe_missing_norm or 0.) <= controls().cbe_selection_tolerance
+               for row in result.history for u in row.updates)
 
 
 def test_four_site_heisenberg_cbe_matches_independent_spin_operator():
@@ -249,7 +252,7 @@ def test_unresolved_projection_returns_baseline_and_continues_next_step(monkeypa
         result[1] = 7
         return tuple(result)
     monkeypatch.setattr(cbe, 'lsmr', limited)
-    failed = reduced_cbe_site(s, h, 0, 'lr', 3, controls())
+    failed = reduced_cbe_site(s, h, 0, 'lr', 3, controls(cbe_projection_max_workspace_mb=0.))
     assert failed.cbe_fallback and not failed.local_converged
     assert 'LSMR 7' in failed.cbe_recovery_reason
     monkeypatch.setattr(cbe, 'lsmr', original)
@@ -257,3 +260,72 @@ def test_unresolved_projection_returns_baseline_and_continues_next_step(monkeypa
     assert next_step.cbe_expansion_dimension == 1
     assert next_step.energy < failed.energy-1e-4
     assert next_step.cbe_recovery_reason is None
+
+
+def test_sector_bound_is_an_unavoidable_physical_compression_loss():
+    from pyqed._letta_one_site_opt.reduced_cbe import _sector_loss_bounds
+    from pyqed._letta_two_site_opt.reduced_solver import _active_source_indices, _pair_vector_from_sources
+    p = ElectronicProblem(*integrals(3), (2, 1))
+    state = ReducedLatticeLETTA.random((1, 3), symmetry=p.symmetry('su2'),
+        neighborhoods=((0, 2), (1, 0), (2, 1)), real=False, seed=31)
+    state = _expand_reduced_pair_space(state, 1, len(state.bond_sectors[1])+1)
+    pair = reduced_pair_problem(state, p.su2_mpo(), 1, matrix_free=True, dense_solver_threshold=0)
+    root = ReducedPairMetricRoot(pair, state, 1e-12)
+    le, re = (pair.frontier.site_embedding(state, i) for i in (1, 2))
+    rng = np.random.default_rng(77)
+    target = rng.normal(size=pair.local_dimension)+1j*rng.normal(size=pair.local_dimension)
+    for sector in set(state.bond_sectors[1]):
+        allocation = {sector: 1}
+        li, ri = (_active_source_indices(e, allocation, side)
+                  for e, side in ((le, 'left'), (re, 'right')))
+        a, b = np.zeros(le.source_size, complex), np.zeros(re.source_size, complex)
+        a[li] = rng.normal(size=len(li))+1j*rng.normal(size=len(li))
+        b[ri] = rng.normal(size=len(ri))+1j*rng.normal(size=len(ri))
+        candidate = _pair_vector_from_sources(pair.layout, le, re, a, b)
+        bound = _sector_loss_bounds(root, target, [allocation])[0]
+        error = root.physical_layout.unpack(root.physical_apply(candidate-target))
+        unavoidable = sum(np.linalg.norm(v)**2 for k, v in error.items() if k[2] != sector)
+        assert bound == pytest.approx(unavoidable, abs=1e-11)
+        assert np.linalg.norm(root.physical_apply(candidate-target))**2 >= bound-1e-11
+
+
+@pytest.mark.parametrize('budget', [1, 2])
+def test_sector_bound_preserves_exhaustive_selector_result(monkeypatch, budget):
+    import pyqed._letta_one_site_opt.reduced_cbe as cbe
+    p = ElectronicProblem(*integrals(3), (2, 1))
+    state = ReducedLatticeLETTA.random((1, 3), symmetry=p.symmetry('su2'),
+        neighborhoods=((0, 2), (1, 0), (2, 1)), real=False, seed=31)
+    options = controls(cbe_expansion_dimension=budget)
+    bounded = cbe.select_reduced_cbe(state, p.su2_mpo(), 1, options)
+    monkeypatch.setattr(cbe, '_sector_loss_bounds', lambda root, target, allocations: [0.]*len(allocations))
+    exhaustive = cbe.select_reduced_cbe(state, p.su2_mpo(), 1, options)
+    assert bounded.loss == pytest.approx(exhaustive.loss, abs=1e-11)
+    assert bounded.captured_weight == pytest.approx(exhaustive.captured_weight, abs=1e-11)
+    assert bounded.multiplicities == exhaustive.multiplicities
+    assert bounded.factor_fit_attempts <= exhaustive.factor_fit_attempts
+
+
+def test_direct_projection_and_matrix_free_paths_agree():
+    s,h=incomplete()
+    direct=select_reduced_cbe(s,h,0,controls())
+    iterative=select_reduced_cbe(s,h,0,controls(cbe_projection_max_workspace_mb=0.))
+    assert direct.projection_solver=='svd' and direct.projection_materialized
+    assert iterative.projection_solver=='lsmr' and not iterative.projection_materialized
+    assert direct.projection_rank is not None
+    np.testing.assert_allclose(direct.missing_norm,iterative.missing_norm,atol=1e-10)
+
+
+def test_no_expansion_relaxes_pair_without_changing_bond_dimensions():
+    from test_letta_qchem import integrals
+    from pyqed._letta_one_site_opt.qchem import ElectronicProblem
+    from pyqed._letta_one_site_opt.reduced_solver import _energy
+    p=ElectronicProblem(*integrals(3),(2,1));h=p.su2_mpo()
+    s=ReducedLatticeLETTA.random((1,3),symmetry=p.symmetry('su2'),
+        multiplets_per_sector=1,real=False,seed=11)
+    dimensions=s.bond_dimensions
+    u=reduced_cbe_site(s,h,0,'lr',max(dimensions),LETTADMROptions(cbe_enabled=True,cbe_refinement_max_iterations=3,cbe_energy_refinement_max_iterations=8,gauge_mode='frontier'))
+    assert u.cbe_expansion_dimension==0
+    assert u.cbe_trim_method=='fixed-bond-energy-relaxation'
+    assert u.energy<u.cbe_baseline_energy-1e-4
+    assert s.bond_dimensions==dimensions
+    np.testing.assert_allclose(_energy(s,h,stable=True),u.energy,atol=1e-11)

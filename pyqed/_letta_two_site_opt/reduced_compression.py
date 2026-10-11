@@ -9,39 +9,102 @@ from types import SimpleNamespace
 import numpy as np
 from scipy.sparse.linalg import LinearOperator, lsmr
 
-from .._letta_compression import compress_factors
-from .._letta_one_site_opt.contractions import _equilibrated_metric_factors
+from .._letta_compression import CompressionResult, compress_factors
 from .._letta_one_site_opt.reduced_frontier import _BlockVectorLayout
-from .._letta_one_site_opt.reduced_norm import ReducedNormChain
 from .._letta_one_site_opt.reduced_symmetry import _sector_irrep
 
 
+def _overlap_factors(factor, tolerance):
+    """Equilibrate a QR factor and select inverse support without squaring it."""
+    diagonal = np.linalg.norm(factor, axis=0)
+    indices = np.flatnonzero(diagonal > 0.)
+    scaled = factor[:,indices]/diagonal[indices]
+    unitary, singular, vh = np.linalg.svd(scaled, full_matrices=False)
+    cutoff = max(float(tolerance),np.finfo(float).eps*factor.shape[1])
+    keep = singular > np.sqrt(cutoff)*singular.max(initial=0.)
+    singular, vh = singular[keep], vh[keep]
+    inverse = np.zeros((factor.shape[1],len(singular)),dtype=factor.dtype)
+    root = np.zeros((len(singular),factor.shape[1]),dtype=factor.dtype)
+    inverse[indices] = vh.conj().T/diagonal[indices,None]/singular
+    root[:,indices] = singular[:,None]*vh*diagonal[indices]
+    return inverse, root, unitary[:, keep]
+
+
 class ReducedPairMetricRoot:
-    """S with S†S=N on supported boundary multiplicity coordinates."""
+    """Reduced QR overlap maps and SVD inverse-support coordinates.
+
+    Adapts QR/SVD least squares from Trefethen and Bau, Numerical Linear
+    Algebra (SIAM, 1997), doi:10.1137/1.9780898719574. No determinant frame
+    is formed. physical_apply retains the complete QR map for physical loss
+    and norm checks; apply/unwhiten use the configured equilibrated SVD support.
+    This is a numerical adaptation, not a globally optimal compression method.
+
+    A declared sector absent from a boundary environment has exactly zero
+    physical support. Keep its input coordinates but give it zero output
+    rows, consistently with ReducedNormChain.pair_action. This is not an
+    additional numerical truncation.
+    """
 
     def __init__(self, problem, state, tolerance):
+        from .._letta_one_site_opt.reduced_coordinates import _canonical_sites
         sites = problem.frontier.to_mps(state)
-        chain = ReducedNormChain.build(sites)
         i = problem.left_site
-        scale = np.exp(.5*(chain.left_log_scales[i]+chain.right_log_scales[i+2]))
-        left = {q: _equilibrated_metric_factors(g, tolerance)
-                for q, g in chain.left[i].items()}
-        right = {q: _equilibrated_metric_factors(g, tolerance)
-                 for q, g in chain.right[i+2].items()}
+        self.canonical_sites, full_left, full_right = _canonical_sites(sites, i, last_center=i+1)
+        left = {q: _overlap_factors(r, tolerance) for q, r in full_left.items()}
+        right = {q: _overlap_factors(r, tolerance) for q, r in full_right.items()}
+        scale = 1.
+        self.physical_factors = {}
+        self.support_factors = {}
         self.input_layout = problem.layout
         self.factors = {}
         self.inverse_factors = {}
         shapes = {}
         for key, shape in problem.layout.shapes.items():
-            wl, l = left[key[0]]
-            wr, r = right[key[-1]]
+            if key[0] not in left:
+                left[key[0]] = (np.zeros((shape[0], 0)), np.zeros((0, shape[0])), np.zeros((0, 0)))
+            if key[-1] not in right:
+                right[key[-1]] = (np.zeros((shape[-1], 0)), np.zeros((0, shape[-1])), np.zeros((0, 0)))
+            self.physical_factors[key] = (full_left.get(key[0], np.zeros((0,shape[0]))),
+                full_right.get(key[-1], np.zeros((0,shape[-1]))), np.sqrt(_sector_irrep(key[-1]).dim))
+            wl, l, ul = left[key[0]]
+            wr, r, ur = right[key[-1]]
+            self.support_factors[key] = (ul, ur)
             self.inverse_factors[key] = (wl, wr, scale*np.sqrt(_sector_irrep(key[-1]).dim))
             self.factors[key] = (l, r, scale*np.sqrt(_sector_irrep(key[-1]).dim))
             shapes[key] = (l.shape[0], shape[1], shape[2], r.shape[0])
+        self.physical_layout = _BlockVectorLayout({key:(l.shape[0],problem.layout.shapes[key][1],
+            problem.layout.shapes[key][2],r.shape[0]) for key,(l,r,_) in self.physical_factors.items()})
         self.output_layout = _BlockVectorLayout(shapes)
         self.size = self.output_layout.size
         if not self.size:
             raise ValueError('reduced pair metric has no supported directions')
+
+    def project_physical(self, vector):
+        """Project canonical QR coordinates onto the retained inverse support.
+
+        Apply the stored SVD unitary factors directly, avoiding a round trip
+        through ill-conditioned raw coefficients and inverse overlap factors.
+        """
+        blocks = self.physical_layout.unpack(vector)
+        return self.output_layout.pack({key: np.einsum('al,apqb,br->lpqr',
+            l.conj(), blocks[key], r.conj(), optimize=True)
+            for key, (l, r) in self.support_factors.items()})
+
+    def embed_physical(self,vector):
+        blocks=self.output_layout.unpack(vector)
+        return self.physical_layout.pack({key:np.einsum('al,lpqr,br->apqb',
+            l,blocks[key],r,optimize=True) for key,(l,r) in self.support_factors.items()})
+
+    def physical_apply(self, vector):
+        """Full QR norm map, without the inverse-support SVD cutoff."""
+        blocks = self.input_layout.unpack(vector)
+        return self.physical_layout.pack({key:scale*np.einsum('al,br,lpqr->apqb',
+            l,r,blocks[key],optimize=True) for key,(l,r,scale) in self.physical_factors.items()})
+
+    def physical_adjoint(self, vector):
+        blocks = self.physical_layout.unpack(vector)
+        return self.input_layout.pack({key:scale*np.einsum('al,br,apqb->lpqr',
+            l.conj(),r.conj(),blocks[key],optimize=True) for key,(l,r,scale) in self.physical_factors.items()})
 
     def apply(self, vector):
         blocks = self.input_layout.unpack(vector)
@@ -108,11 +171,66 @@ def reduced_factor_blocks(state, site, left_embedding, right_embedding, retained
 
 
 class _PairMetric:
-    def __init__(self, problem, dtype):
-        self.problem, self.dtype = problem, dtype
+    def __init__(self, problem, dtype, *, root=None):
+        self.problem, self.dtype, self.root = problem, dtype, root
 
     def __matmul__(self, vector):
+        if self.root is not None:
+            return self.root.physical_adjoint(self.root.physical_apply(vector))
         return self.problem.apply_metric(vector)
+
+
+def _factor_coordinates(state, problem, root, le, re, left, right, retained, side, options):
+    """Isometric physical map for one factor with its partner held fixed."""
+    from .._letta_one_site_opt.reduced_coordinates import ReducedLocalCoordinates
+    from .reduced_solver import _active_source_indices
+    working = state.copy()
+    site = problem.left_site
+    working.tensors[site] = le.unpack_source(left)
+    working.tensors[site+1] = re.unpack_source(right)
+    embedding = le if side == 0 else re
+    coordinates = ReducedLocalCoordinates(problem.frontier.to_mps(working), embedding, site+side)
+    coordinates.restrict(_active_source_indices(embedding, retained, 'left' if side == 0 else 'right'))
+    coordinates.prepare(0., singular_tolerance=options.pinv_tolerance,
+                        max_workspace_mb=options.max_workspace_mb)
+    forward,pullback=_physical_factor_map(coordinates,root,site,side)
+    return coordinates,forward,pullback
+
+
+def _physical_factor_map(coordinates,root,site,side):
+    partner = coordinates.sites[site+1 if side == 0 else site].data
+
+    def apply(vector):
+        center = coordinates.orthogonal_expand(vector)
+        blocks = {}
+        for key, shape in root.physical_layout.shapes.items():
+            left_key, right_key = key[:3], key[2:]
+            active_key = left_key if side == 0 else right_key
+            if active_key not in center:
+                blocks[key] = np.zeros(shape, dtype=complex)
+            elif side == 0:
+                weight = np.sqrt(_sector_irrep(key[-1]).dim/_sector_irrep(key[2]).dim)
+                blocks[key] = weight*np.einsum('lpm,mqr->lpqr', center[left_key], partner[right_key])
+            else:
+                blocks[key] = np.einsum('lpm,mqr->lpqr', partner[left_key], center[right_key])
+        return root.physical_layout.pack(blocks)
+
+    def adjoint(vector):
+        blocks = root.physical_layout.unpack(vector)
+        center = coordinates.orthogonal_expand(np.zeros(coordinates.rank))
+        for key, block in blocks.items():
+            left_key, right_key = key[:3], key[2:]
+            active_key = left_key if side == 0 else right_key
+            if active_key not in center:
+                continue
+            if side == 0:
+                weight = np.sqrt(_sector_irrep(key[-1]).dim/_sector_irrep(key[2]).dim)
+                center[left_key] += weight*np.einsum('lpqr,mqr->lpm', block, partner[right_key].conj())
+            else:
+                center[right_key] += np.einsum('lpm,lpqr->mqr', partner[left_key].conj(), block)
+        return coordinates.orthogonal_adjoint(center)
+
+    return apply, adjoint
 
 
 def compress_reduced_pair(target, problem, state, left, right, retained, *, options,
@@ -121,7 +239,19 @@ def compress_reduced_pair(target, problem, state, left, right, retained, *, opti
 
     All algorithms share the same native metric and legal factor gauge blocks.
     Budget exhaustion preserves the best iterate and is reported, not called
-    convergence. There is no magnetic or determinant-space reconstruction.
+    convergence. If the retained sectors already match the target to the
+    physical relative tolerance, the omitted-sector loss certifies the global
+    optimum within this fixed allocation and iterative fitting is unnecessary.
+    This certificate does not optimize the allocation or the energy. There is
+    no magnetic or determinant-space reconstruction.
+
+    Open-boundary ALS uses reduced QR/SVD factor coordinates to solve each
+    linear least-squares subproblem directly, adapting Trefethen and Bau,
+    Numerical Linear Algebra (SIAM, 1997), doi:10.1137/1.9780898719574.
+    This is a LETTA adaptation, not a global low-rank optimization guarantee.
+    The configured pseudoinverse cutoff acts on column-equilibrated singular
+    values. Oversized factorizations or failed physical stationarity checks
+    fall back to LSMR; both paths minimize the full physical residual.
     """
     from .reduced_solver import (_pair_vector_from_sources, _active_source_indices,
         _expanded_source_blocks, _left_source_adjoint, _right_source_adjoint)
@@ -135,57 +265,127 @@ def compress_reduced_pair(target, problem, state, left, right, retained, *, opti
     right[np.setdiff1d(np.arange(right.size), ri)] = 0
     merge = lambda a, b: _pair_vector_from_sources(problem.layout, le, re, a, b)
     root = ReducedPairMetricRoot(problem, state, metric_tolerance)
+    physical_target = root.physical_layout.unpack(root.physical_apply(target))
+    physical_error = root.physical_layout.unpack(root.physical_apply(merge(left, right)-target))
+    target_norm = sum(np.linalg.norm(v)**2 for v in physical_target.values())
+    lower_bound = sum(np.linalg.norm(v)**2 for key, v in physical_target.items()
+                      if not retained.get(key[2], 0))
+    retained_error = sum(np.linalg.norm(v)**2 for key, v in physical_error.items()
+                         if retained.get(key[2], 0))
+    if (np.isfinite(target_norm) and np.isfinite(retained_error) and
+            retained_error <= options.tolerance**2*max(target_norm, np.finfo(float).tiny)):
+        value = float(sum(np.linalg.norm(v)**2 for v in physical_error.values()))
+        return CompressionResult(left, right, value, 0,
+            dict(requested_solver=options.solver, used_solver='exact-sector-projection',
+                 status='orthogonal-sector loss bound reached', initial_loss=value,
+                 final_loss=value, optimizer_success=True, fallback_reason=None,
+                 certified_sector_optimum=True, loss_lower_bound=float(lower_bound),
+                 retained_sector_error=float(retained_error)))
     groups = reduced_factor_blocks(state, i, le, re, retained)
-    metric = _PairMetric(problem, dtype)
+    metric = _PairMetric(problem, dtype, root=root)
     def adjoint(side, a, b, vector):
         if side == 0:
             return _left_source_adjoint(problem.layout, vector, _expanded_source_blocks(re, b), le)[li]
         return _right_source_adjoint(problem.layout, _expanded_source_blocks(le, a), vector, re)[ri]
 
+    def direct_solve(side,a,b):
+        try:
+            coordinates,forward,pullback=_factor_coordinates(state,problem,root,le,re,
+                                                            a,b,retained,side,options)
+        except MemoryError as error:
+            return None,dict(fallback_reason=str(error))
+        rhs=root.physical_apply(target)
+        old = a if side == 0 else b
+        # Preserve invisible source entries so the next ALS half-step can use them.
+        try:
+            vector = old + coordinates.least_squares_correction(
+                pullback(rhs)-coordinates.coordinates(old))
+        except (MemoryError, np.linalg.LinAlgError) as error:
+            return None, dict(fallback_reason=f'QR source correction failed: {type(error).__name__}')
+        residual=root.physical_apply((merge(vector,b) if side==0 else merge(a,vector))-target)
+        normal=float(np.linalg.norm(pullback(residual)))
+        # Source reconstruction can lose a few digits even when Q is isometric.
+        # Correct that physical residual before resorting to an iterative solve.
+        corrections = 0
+        threshold = options.tolerance*max(float(np.linalg.norm(rhs)), np.finfo(float).tiny)
+        for _ in range(3):
+            if normal <= threshold:
+                break
+            try:
+                trial = vector-coordinates.least_squares_correction(pullback(residual))
+            except (MemoryError, np.linalg.LinAlgError):
+                break
+            trial_residual = root.physical_apply(
+                (merge(trial,b) if side==0 else merge(a,trial))-target)
+            trial_normal = float(np.linalg.norm(pullback(trial_residual)))
+            if not np.isfinite(trial_normal) or trial_normal >= normal:
+                break
+            vector, residual, normal = trial, trial_residual, trial_normal
+            corrections += 1
+        converged=np.isfinite(normal) and normal<=threshold
+        if not converged or not np.all(np.isfinite(vector)):
+            return None,dict(fallback_reason='QR factor solution failed physical stationarity check')
+        return vector,dict(side='left' if side==0 else 'right',solver='qr',iterations=1,
+            residual_norm=float(np.linalg.norm(residual)),normal_residual_norm=normal,
+            rank=coordinates.rank,refinement_steps=corrections,converged=True)
+
     return fit_metric_factors(target, metric, left, right, merge=merge, root=root,
         adjoint=adjoint, left_indices=li, right_indices=ri, gauge_blocks=groups,
         options=options, metric_tolerance=metric_tolerance,
-        als_max_iterations=als_max_iterations)
+        als_max_iterations=als_max_iterations, linear_solver=direct_solve)
 
 
 def fit_metric_factors(target, metric, left, right, *, merge, root, adjoint,
                        left_indices, right_indices, gauge_blocks, options,
-                       metric_tolerance=1e-12, als_max_iterations=100):
+                       metric_tolerance=1e-12, als_max_iterations=100, linear_solver=None):
     """Shared ALS/nonlinear fitting loop for open and cyclic reduced metrics.
 
     ``adjoint(side, a, b, v)`` returns only the active side coordinates.
     Topology is entirely in merge/adjoint/root; budgets and loss guards match.
+    ALS solves the same full physical-root objective as its loss guard; the
+    inverse-support root must not silently discard residual directions.
     """
     li, ri, groups = left_indices, right_indices, gauge_blocks
     dtype = np.result_type(target, left, right, complex)
-    rhs = root.apply(target)
+    forward_root = getattr(root, "physical_apply", root.apply)
+    adjoint_root = getattr(root, "physical_adjoint", root.adjoint)
+    rhs = np.asarray(forward_root(target), dtype=dtype)
     reports = []
     als_info = {}
 
     def loss(a, b):
         error = merge(a, b)-target
-        value = float(np.vdot(error, metric@error).real)
+        physical = getattr(root, "physical_apply", None)
+        value = (float(np.linalg.norm(physical(error))**2) if physical is not None
+                 else float(np.vdot(error, metric@error).real))
         if not np.isfinite(value) or value < -1e-10:
             raise FloatingPointError('invalid reduced compression loss')
         return max(0., value)
 
     def solve(side, a, b):
+        reason=None
+        if linear_solver is not None:
+            vector,report=linear_solver(side,a,b)
+            if vector is not None:
+                reports.append(report)
+                return vector
+            reason=report['fallback_reason']
         indices, old = (li, a) if side == 0 else (ri, b)
         def unpack(v):
-            out = np.zeros_like(old)
+            out = np.zeros(old.shape, dtype=dtype)
             out[indices] = v
             return out
         def forward(v):
-            return root.apply(merge(unpack(v), b) if side == 0 else merge(a, unpack(v)))
-        operator = LinearOperator((root.size, len(indices)), matvec=forward,
-            rmatvec=lambda v: adjoint(side, a, b, root.adjoint(v)), dtype=dtype)
+            return forward_root(merge(unpack(v), b) if side == 0 else merge(a, unpack(v)))
+        operator = LinearOperator((len(rhs), len(indices)), matvec=forward,
+            rmatvec=lambda v: adjoint(side, a, b, adjoint_root(v)), dtype=dtype)
         limit = options.lsmr_max_iterations or max(50, min(1000, 5*len(indices)))
-        answer = lsmr(operator, rhs, x0=old[indices], atol=options.tolerance,
+        answer = lsmr(operator, rhs, x0=np.asarray(old[indices], dtype=dtype), atol=options.tolerance,
                       btol=options.tolerance, maxiter=limit)
         reports.append(dict(side='left' if side == 0 else 'right', solver='lsmr',
             stop_code=int(answer[1]), iterations=int(answer[2]), max_iterations=limit,
             residual_norm=float(answer[3]), normal_residual_norm=float(answer[4]),
-            converged=answer[1] in (0, 1, 2, 4, 5)))
+            converged=answer[1] in (0, 1, 2, 4, 5), fallback_reason=reason))
         if not np.all(np.isfinite(answer[0])):
             raise FloatingPointError('nonfinite reduced least-squares solution')
         return unpack(answer[0])

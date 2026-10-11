@@ -1,0 +1,91 @@
+{
+  "config": {
+    "U": 12.0,
+    "t": 1.0,
+    "t_diagonal": -0.25,
+    "V": 0.0,
+    "boundary": "open",
+    "seed": 4,
+    "max_sweeps": 400,
+    "energy_tolerance": 1e-06,
+    "metric_tolerance": 1e-12,
+    "projection_max_iterations": 1000,
+    "als_max_iterations": 32,
+    "energy_refinement_max_iterations": 32,
+    "source_revision": "PENDING_VALIDATED_COMMIT"
+  },
+  "tasks": [
+    {
+      "width": 2,
+      "length": 6,
+      "cap": 200,
+      "holes": 1,
+      "stationarity_tolerance": 1e-10,
+      "method": "cbe",
+      "memory": "64G"
+    },
+    {
+      "width": 2,
+      "length": 6,
+      "cap": 1000,
+      "holes": 1,
+      "stationarity_tolerance": 1e-10,
+      "method": "cbe",
+      "memory": "256G"
+    },
+    {
+      "width": 2,
+      "length": 12,
+      "cap": 200,
+      "holes": 2,
+      "stationarity_tolerance": 1e-10,
+      "method": "cbe",
+      "memory": "64G"
+    },
+    {
+      "width": 2,
+      "length": 12,
+      "cap": 1000,
+      "holes": 2,
+      "stationarity_tolerance": 1e-10,
+      "method": "cbe",
+      "memory": "256G"
+    },
+    {
+      "width": 2,
+      "length": 18,
+      "cap": 200,
+      "holes": 3,
+      "stationarity_tolerance": 1e-10,
+      "method": "cbe",
+      "memory": "64G"
+    },
+    {
+      "width": 2,
+      "length": 18,
+      "cap": 1000,
+      "holes": 3,
+      "stationarity_tolerance": 1e-10,
+      "method": "cbe",
+      "memory": "256G"
+    },
+    {
+      "width": 4,
+      "length": 6,
+      "cap": 200,
+      "holes": 2,
+      "stationarity_tolerance": 1e-06,
+      "method": "cbe",
+      "memory": "256G"
+    },
+    {
+      "width": 4,
+      "length": 12,
+      "cap": 200,
+      "holes": 4,
+      "stationarity_tolerance": 1e-06,
+      "method": "cbe",
+      "memory": "256G"
+    }
+  ]
+}

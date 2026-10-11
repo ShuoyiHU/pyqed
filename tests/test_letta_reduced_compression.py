@@ -79,7 +79,7 @@ def test_reduced_als_and_linear_budgets_are_independent():
     rng = np.random.default_rng(9)
     target = p.old_vector+.2*(rng.normal(size=p.local_dimension)+1j*rng.normal(size=p.local_dimension))
     fit = compress_reduced_pair(target, p, s, a, b, retained,
-        options=MetricCompressionOptions(als_max_iterations=1, lsmr_max_iterations=1))
+        options=MetricCompressionOptions(als_max_iterations=1, lsmr_max_iterations=1, max_workspace_mb=1e-6))
     assert fit.iterations == 1
     reports = fit.diagnostics['linear_solves']
     assert len(reports) == 2
@@ -108,3 +108,26 @@ def test_reduced_two_site_dispatches_requested_compressor(solver):
         if solver == 'als':
             assert update.truncation_iterations <= 2
             assert all(x['iterations'] <= 12 for x in update.compression_diagnostics['linear_solves'])
+
+
+@pytest.mark.parametrize('solver', ['als', 'variable-projection', 'joint-ls', 'grassmann-newton'])
+def test_whole_sector_projection_certifies_optimum_without_iterative_fits(monkeypatch, solver):
+    import pyqed._letta_two_site_opt.reduced_compression as compression
+    from pyqed._letta_two_site_opt.reduced_solver import _pair_vector_from_sources
+    state, pair, le, re, a, b, retained = example(((0, 2), (1, 0), (2, 1)))
+    root = ReducedPairMetricRoot(pair, state, 1e-12)
+    target_blocks = root.physical_layout.unpack(root.physical_apply(pair.old_vector))
+    discarded = next(key[2] for key, v in target_blocks.items() if np.linalg.norm(v) > 1e-8)
+    retained = {q: rank for q, rank in retained.items() if q != discarded}
+    assert retained
+    lower_bound = sum(np.linalg.norm(v)**2 for key, v in target_blocks.items() if key[2] == discarded)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('iterative fit was called after reaching the exact sector-loss bound')
+    monkeypatch.setattr(compression, 'fit_metric_factors', forbidden)
+    fit = compression.compress_reduced_pair(pair.old_vector, pair, state, a, b, retained,
+        options=MetricCompressionOptions(solver=solver))
+    assert fit.iterations == 0
+    assert fit.diagnostics['certified_sector_optimum']
+    assert fit.loss == pytest.approx(lower_bound, abs=1e-12)
+    error = _pair_vector_from_sources(pair.layout, le, re, fit.left, fit.right)-pair.old_vector
+    assert np.vdot(error, pair.apply_metric(error)).real == pytest.approx(lower_bound, abs=1e-12)

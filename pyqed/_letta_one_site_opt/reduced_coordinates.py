@@ -4,7 +4,10 @@ from types import SimpleNamespace
 import numpy as np
 from .reduced_symmetry import _sector_irrep
 
-def _canonical_sites(sites,center):
+def _canonical_sites(sites,center, *, last_center=None):
+    last_center = center if last_center is None else last_center
+    if not 0 <= center <= last_center < len(sites):
+        raise ValueError("invalid active interval")
     sites=[a.copy() for a in sites]
     left={q:np.eye(d) for q,d in Counter(sites[0].qns[0]).items()}
     for i in range(center):
@@ -25,7 +28,7 @@ def _canonical_sites(sites,center):
         tensor.qns[2]=[q for q,R in next_left.items() for _ in range(R.shape[0])]
         left=next_left
     right={q:np.eye(d) for q,d in Counter(sites[-1].qns[2]).items()}
-    for i in range(len(sites)-1,center,-1):
+    for i in range(len(sites)-1,last_center,-1):
         tensor=sites[i];groups=defaultdict(list)
         for key,a in tensor.data.items():
             b=np.einsum('kr,lpr->lpk',right[key[2]],a)
@@ -43,9 +46,14 @@ def _canonical_sites(sites,center):
         tensor.qns[2]=[q for q,R in right.items() for _ in range(R.shape[0])]
         right=next_right
     tensor=sites[center]
-    tensor.data={key:np.einsum('al,lpr,br->apb',left[key[0]],a,right[key[2]]) for key,a in tensor.data.items()}
+    if last_center == center:
+        tensor.data={key:np.einsum('al,lpr,br->apb',left[key[0]],a,right[key[2]]) for key,a in tensor.data.items()}
+    else:
+        tensor.data={key:np.einsum('al,lpr->apr',left[key[0]],a) for key,a in tensor.data.items()}
+        last=sites[last_center]
+        last.data={key:np.einsum('br,lpr->lpb',right[key[2]],a) for key,a in last.data.items()}
     tensor.qns[0]=[q for q,R in left.items() for _ in range(R.shape[0])]
-    tensor.qns[2]=[q for q,R in right.items() for _ in range(R.shape[0])]
+    sites[last_center].qns[2]=[q for q,R in right.items() for _ in range(R.shape[0])]
     return tuple(sites),left,right
 
 
@@ -137,10 +145,34 @@ class ReducedLocalCoordinates:
         out=np.zeros(self.dimension,dtype=np.result_type(v,complex))
         for sl,F in self.blocks:out[sl]=F.adjoint(F.apply(v[sl]))
         return out
-    def prepare(self,tolerance):
-        if getattr(self,'tolerance',None)==tolerance:
+    def restrict(self,active):
+        """Restrict the source domain before forming any dense SVD blocks."""
+        blocks,images=[],[]
+        for (indices,factor),image in zip(self.blocks,self.images):
+            take=np.flatnonzero(np.isin(indices,active))
+            if not len(take):continue
+            inverse=np.full(len(indices),-1,dtype=int);inverse[take]=np.arange(len(take))
+            keep=inverse[factor.source]>=0
+            blocks.append((indices[take],_OverlapFactor(factor.left,factor.right,
+                inverse[factor.source[keep]],factor.lmap[keep],factor.pmap[keep],
+                factor.rmap[keep],factor.nphysical,len(take),factor.weight)))
+            images.append(image)
+        self.blocks,self.images=blocks,images
+        self.stored_elements=sum(f.stored_elements for _,f in blocks)
+        self.tolerance=None
+
+    def prepare(self,tolerance, *, singular_tolerance=None,max_workspace_mb=None):
+        settings=(tolerance,singular_tolerance,max_workspace_mb)
+        if getattr(self,'tolerance',None)==settings:
             return
-        self.tolerance=tolerance
+        if max_workspace_mb is not None:
+            # Conservative bound for dense blocks, retained SVD factors, and
+            # LAPACK work arrays; this is not a bound on total solver memory.
+            elements=sum(f.left.shape[0]*f.nphysical*f.right.shape[0]*f.size
+                         for _,f in self.blocks)
+            if 8*16*elements>max_workspace_mb*1024**2:
+                raise MemoryError('factor SVD workspace exceeds max_workspace_mb')
+        self.tolerance=settings
         factors=[];largest=0.
         for sl,factor_map in self.blocks:
             F=factor_map.dense()
@@ -163,7 +195,8 @@ class ReducedLocalCoordinates:
         for i in range(len(factors)):
             sl,roots,inv,s,vh,u=factors[i]
             factors[i]=None
-            keep=s>cutoff;s=s[keep];vh=vh[keep]
+            threshold=cutoff if singular_tolerance is None else singular_tolerance*s.max(initial=0.)
+            keep=s>threshold;s=s[keep];vh=vh[keep]
             self.maps.append((sl,slice(offset,offset+len(s)),inv,s,vh,roots));offset+=len(s)
             self.spectral_images.append(u[:,keep])
             self.support.append((sl,vh))
@@ -176,6 +209,21 @@ class ReducedLocalCoordinates:
         out=np.zeros(self.dimension,dtype=np.result_type(z,complex))
         for sl,small,inv,s,vh,roots in self.maps:out[sl]=inv*(vh.conj().T@(z[small]/s))
         return out
+    def least_squares_correction(self, z):
+        """Minimum Euclidean source correction on the retained physical support.
+
+        QR of the coordinate map adjoint avoids forming normal equations and
+        preserves the incumbent's source nullspace in a warm ALS solve.
+        """
+        from scipy.linalg import solve_triangular
+        out = np.zeros(self.dimension, dtype=np.result_type(z, complex))
+        for indices, small, inv, s, vh, roots in self.maps:
+            if not len(s):
+                continue
+            q, r = np.linalg.qr((vh * roots).conj().T, mode='reduced')
+            out[indices] = q @ solve_triangular(r.conj().T, z[small] / s, lower=True)
+        return out
+
     def adjoint(self,v):
         out=np.zeros(self.rank,dtype=np.result_type(v,complex))
         for sl,small,inv,s,vh,roots in self.maps:out[small]=(vh@(inv*v[sl]))/s

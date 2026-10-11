@@ -811,6 +811,10 @@ def compress_reduced_pair_vector(state, hamiltonian, problem, vector, local_ener
         return _optimize_untied_split(state, hamiltonian, problem, vector,
             local_energy, metric_rank, residual, direction, bond_dim, options,
             acceptance_energy=acceptance_energy)
+    from .reduced_compression import ReducedPairMetricRoot
+    norm_root = ReducedPairMetricRoot(problem, state, options.metric_tolerance)
+    def physical_norm(v):
+        return float(np.linalg.norm(norm_root.physical_apply(v))**2)
     optimized = problem.layout.unpack(vector)
     sites = tuple(problem.frontier.to_mps(state))
     split = _split_reduced_pair(
@@ -846,7 +850,7 @@ def compress_reduced_pair_vector(state, hamiltonian, problem, vector, local_ener
             ),
     )
     norm_threshold = np.finfo(float).eps * max(
-        1.0, float(np.real(_metric_inner(problem, vector, vector)))
+        1.0, physical_norm(vector)
     )
     # Projection can erase complementary factors and create an ALS stationary
     # point, even when its initial loss beats the incumbent. Compare *refined*
@@ -855,7 +859,7 @@ def compress_reduced_pair_vector(state, hamiltonian, problem, vector, local_ener
     for initial_left, initial_right in starts:
         merged = _pair_vector_from_sources(problem.layout, left_embedding,
             right_embedding, initial_left, initial_right)
-        if float(np.real(_metric_inner(problem, merged, merged))) <= norm_threshold:
+        if physical_norm(merged) <= norm_threshold:
             continue
         from .reduced_compression import compress_reduced_pair
         fit = compress_reduced_pair(vector, problem, state, initial_left, initial_right,
@@ -864,10 +868,12 @@ def compress_reduced_pair_vector(state, hamiltonian, problem, vector, local_ener
             metric_tolerance=options.metric_tolerance)
         merged = _pair_vector_from_sources(problem.layout, left_embedding,
             right_embedding, fit.left, fit.right)
-        norm_squared = float(np.real(_metric_inner(problem, merged, merged)))
+        norm_squared = physical_norm(merged)
         if np.isfinite(norm_squared) and norm_squared > norm_threshold:
             refinements.append(_ReducedMetricProjection(fit.left, fit.right,
                 fit.loss, norm_squared, fit.iterations, fit.diagnostics))
+            if fit.diagnostics.get('certified_sector_optimum', False):
+                break
     if not refinements:
         raise ValueError("reduced pair projection produced a zero or non-finite state")
     refinement = min(refinements, key=lambda trial: trial.loss)
@@ -880,9 +886,7 @@ def compress_reduced_pair_vector(state, hamiltonian, problem, vector, local_ener
         normalized_left,
         normalized_right,
     )
-    projection_loss = _pair_metric_loss(
-        vector, normalized_pair, problem
-    )
+    projection_loss = physical_norm(vector-normalized_pair)
     left_source = _shrink_source_blocks(
         left_embedding.unpack_source(normalized_left), retained, "left"
     )

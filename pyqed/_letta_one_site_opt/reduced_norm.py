@@ -207,6 +207,9 @@ class ReducedNormChain(MovingReducedEnvironments):
         for key in embedding.source_layout.keys:
             shape = embedding.source_layout.shapes[key]
             ql, _qp, qr = key
+            # Missing boundary blocks are exactly null, just as in local_action.
+            if ql not in self.left[site] or qr not in self.right[site+1]:
+                continue
             source_start = embedding.source_layout.offsets[key][0]
             target_start = embedding.target_layout.offsets[key][0]
             for physical in np.ndindex(shape[1:-1]):
@@ -232,8 +235,9 @@ class ReducedNormChain(MovingReducedEnvironments):
         right = {q: _support_projector(a, tolerance, equilibrated=equilibrated) for q, a in self.right[site+2].items()}
         def project(vector):
             blocks = layout.unpack(vector)
-            return layout.pack({key: cached_einsum('al,br,lpqr->apqb',
-                left[key[0]], right[key[-1]], a) for key, a in blocks.items()})
+            return layout.pack({key: (np.zeros_like(a) if key[0] not in left or key[-1] not in right
+                else cached_einsum('al,br,lpqr->apqb', left[key[0]], right[key[-1]], a))
+                for key, a in blocks.items()})
         return project
 
     def _advance_left(self, i):

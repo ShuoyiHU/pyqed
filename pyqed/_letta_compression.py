@@ -238,23 +238,27 @@ def compress_factors(target, metric, left, right, *, options, fallback,
     left, right = np.array(left, dtype=dtype), np.array(right, dtype=dtype)
     merge = (lambda a, b: a @ b) if layout is None else layout.merge
     physical_merge = merge
+    physical_root = getattr(square_root, "physical_apply", None)
+    def norm_squared(vector):
+        return (float(np.linalg.norm(physical_root(vector))**2) if physical_root is not None
+                else float(np.real(np.vdot(vector, metric @ vector))))
     def loss(a, b):
         d = (physical_merge(a, b)-target).ravel()
-        value = float(np.real(np.vdot(d, metric @ d)))
+        value = norm_squared(d)
         return max(0., value) if np.isfinite(value) and value >= -1e-12 else np.inf
     if not (np.all(np.isfinite(target)) and np.all(np.isfinite(left)) and np.all(np.isfinite(right))):
         raise ValueError("compression target and initial factors must be finite.")
     initial_loss = loss(left, right)
     best = [left.copy(), right.copy(), initial_loss]
     factor_scale = max(1., np.linalg.norm(left)*np.linalg.norm(right))
-    target_norm = float(np.real(np.vdot(target.ravel(), metric @ target.ravel())))
+    target_norm = norm_squared(target.ravel())
     rejected_candidates = [0]
     def observe(a, b):
         if np.linalg.norm(a)*np.linalg.norm(b) > options.max_factor_norm_growth**2*factor_scale:
             rejected_candidates[0] += 1
             return
         merged = physical_merge(a, b).ravel()
-        norm = float(np.real(np.vdot(merged, metric @ merged)))
+        norm = norm_squared(merged)
         if target_norm > 0 and (not np.isfinite(norm) or norm <= np.finfo(float).tiny):
             rejected_candidates[0] += 1
             return
@@ -312,7 +316,8 @@ def compress_factors(target, metric, left, right, *, options, fallback,
     try:
         root = _MetricSquareRoot(metric, metric_tolerance) if square_root is None else square_root
         def weighted(a):
-            v = root.apply(np.asarray(a).ravel())
+            apply = getattr(root, "physical_apply", root.apply)
+            v = apply(np.asarray(a).ravel())
             if not np.all(np.isfinite(v)):
                 raise FloatingPointError("nonfinite weighted residual/design")
             return np.r_[v.real, v.imag] if complex_data else v.real
@@ -377,7 +382,7 @@ def compress_factors(target, metric, left, right, *, options, fallback,
     except np.linalg.LinAlgError:
         a, c, balanced_loss = best[0], best[1], np.inf
     slack = 100*np.finfo(float).eps*max(1., initial_loss)
-    balanced_norm = float(np.real(np.vdot(physical_merge(a, c).ravel(), metric @ physical_merge(a, c).ravel())))
+    balanced_norm = norm_squared(physical_merge(a, c).ravel())
     balanced = (np.isfinite(balanced_loss) and balanced_loss <= best[2]+slack
                 and (target_norm <= 0 or balanced_norm > np.finfo(float).tiny))
     if balanced:

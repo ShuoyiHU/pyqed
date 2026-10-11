@@ -414,11 +414,13 @@ class ReducedLatticeLETTA:
         return vector
 
     def norm(self):
-        from .reduced_norm import ReducedNormChain
+        from .reduced_norm import ReducedNormChain, left_canonical_reduced_sites
         from .reduced_frontier import ReducedFrontier
 
         sites = tuple(ReducedFrontier.from_state(self).to_mps(self))
-        value = ReducedNormChain.build(sites).expectation()
+        # Form reduced QR factors before squaring: raw Gram propagation can
+        # erase a finite norm carried by cancelling multiplicity paths.
+        value = ReducedNormChain.build(left_canonical_reduced_sites(sites)).expectation()
         # The open right boundary contains the complete target multiplet, so
         # the invariant contraction sums identical norms over all of its
         # magnetic components.  ``state_vector`` and the optimizer use one

@@ -52,6 +52,7 @@ class LETTADMROptions:
     cbe_refinement_max_iterations: int = 4
     cbe_projection_tolerance: float = 1.0e-10
     cbe_projection_max_iterations: int = 100
+    cbe_projection_max_workspace_mb: float = 256.0
     cbe_baseline_guard_fraction: float = 0.0
     cbe_conditional_trim: bool = True
     cbe_energy_refinement_max_iterations: int = 32
@@ -1284,6 +1285,8 @@ def letta_dmrg(
         raise ValueError("cbe_coupled_metric_tolerance must be less than one.")
     if options.cbe_projection_tolerance <= 0.0:
         raise ValueError("cbe_projection_tolerance must be positive.")
+    if not np.isfinite(options.cbe_projection_max_workspace_mb) or options.cbe_projection_max_workspace_mb < 0:
+        raise ValueError("cbe_projection_max_workspace_mb must be finite and nonnegative.")
     if options.cbe_projection_max_iterations <= 0:
         raise ValueError("cbe_projection_max_iterations must be positive.")
     if not 0.0 <= options.cbe_baseline_guard_fraction <= 1.0:
