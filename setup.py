@@ -11,7 +11,7 @@ with open('README.rst') as readme_file:
 with open('HISTORY.rst') as history_file:
     history = history_file.read()
 
-requirements = ['Click>=6.0', 'jax', 'numpy', 'opt_einsum', 'scipy']
+requirements = ['Click>=6.0', 'jax', 'numpy', 'opt_einsum', 'scipy', 'Cython>=3', 'setuptools']
 
 setup_requirements = ['pytest-runner', ]
 
@@ -43,6 +43,8 @@ setup(
     license="MIT license",
     long_description=readme + '\n\n' + history,
     include_package_data=True,
+    package_data={"pyqed._letta_one_site_opt": ["frontier_indices.c"],
+                  "pyqed._letta_two_site_opt": ["pair_metric_kernels.pyx"]},
     keywords='pyqed',
     name='pyqed',
     packages=find_packages(),

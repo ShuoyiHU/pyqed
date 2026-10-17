@@ -352,7 +352,7 @@ def _projected_canonical_local_problem(
 ):
     _validate_reduced_mpo(hamiltonian, state)
     frontier = ReducedFrontier.from_state(state)
-    sites = tuple(frontier.to_mps(state))
+    sites = tuple(frontier.to_mps(state, compact=hamiltonian.contraction_backend == 'reduced'))
     embedding = frontier.site_embedding(state, site)
     if hamiltonian.contraction_backend == 'reduced':
         return _native_local_problem(state, hamiltonian, site, sites, embedding,
@@ -391,9 +391,9 @@ def _projected_canonical_local_problem(
 
 
 def _native_local_problem(state, hamiltonian, site, sites, embedding,
-                          matrix_free, dense_solver_threshold):
+                          matrix_free, dense_solver_threshold, boundary_cache=None):
     from .reduced_coordinates import ReducedLocalCoordinates
-    coordinates=ReducedLocalCoordinates(sites,embedding,site)
+    coordinates=ReducedLocalCoordinates(sites,embedding,site,mpo=hamiltonian.native_mpo(state.physical_basis),boundary_cache=boundary_cache,action_only=True)
     coordinates.set_hamiltonian(hamiltonian.native_mpo(state.physical_basis))
     h_action=coordinates.source_hamiltonian
     n_action=coordinates.metric
@@ -408,6 +408,27 @@ def _native_local_problem(state, hamiltonian, site, sites, embedding,
         equilibrated_projector_factory=coordinates.projector,coordinates=coordinates)
 
 
+class StableEnergyCache:
+    """Reuse QR-checked energy only for identical tensor values and fixed H.
+
+    Holds a scalar signature and bounded independent QR energy prefixes.
+    Changed values always trigger a fresh contraction of the changed suffix.
+    """
+    def __init__(self, hamiltonian):
+        self.hamiltonian = hamiltonian
+        self.key = self.value = None
+        from .frontier_contraction import EnergyBoundaryCache
+        self.boundaries = EnergyBoundaryCache()
+
+    def __call__(self, state):
+        from .frontier_contraction import state_signature
+        key = state_signature(state)
+        if key != self.key:
+            value = _energy(state, self.hamiltonian, stable=True, energy_boundaries=self.boundaries)
+            self.key, self.value = key, value
+        return self.value
+
+
 class ReducedSweepContext:
     """Cache expanded cores and norm boundaries for frontier gauge updates."""
 
@@ -415,20 +436,41 @@ class ReducedSweepContext:
         self.state, self.hamiltonian = state, hamiltonian
         self.frontier = ReducedFrontier.from_state(state)
         self.embeddings = tuple(self.frontier.site_embedding(state, i) for i in range(state.nsites))
-        self.sites = list(self.frontier.to_mps(state))
-        self.n_chain = ReducedNormChain.build(self.sites)
+        self.sites = list(self.frontier.to_mps(state, compact=True))
+        self.n_chain = ReducedNormChain.build(self.sites, lazy=True)
+        from .frontier_contraction import CanonicalBoundaryCache
+        self.boundary_cache = CanonicalBoundaryCache()
+        self._energy_key = None
+        self._energy_value = None
+        from .frontier_contraction import EnergyBoundaryCache
+        self.energy_boundaries = EnergyBoundaryCache()
+
+    def stable_energy(self, state=None):
+        """Reuse an independent contraction only for identical tensor values.
+
+        The Hamiltonian is fixed for the lifetime of this sweep context.
+        Normalization, gauges, and in-place changes all change the value key.
+        """
+        from .frontier_contraction import state_signature
+        state=self.state if state is None else state
+        key=state_signature(state)
+        if key!=self._energy_key:
+            value=_energy(state,self.hamiltonian,stable=True,energy_boundaries=self.energy_boundaries)
+            self._energy_key,self._energy_value=key,value
+        return self._energy_value
 
     def synchronize(self, indices):
         changes = {}
         for i in indices:
-            a = self.sites[i].copy()
-            a.data = self.embeddings[i].expand_blocks(self.state.tensors[i])
+            from .frontier_contraction import shallow_site, scatter_blocks
+            a = shallow_site(self.sites[i])
+            a.data = scatter_blocks(self.embeddings[i],self.state.tensors[i])
             changes[i] = self.sites[i] = a
         self.n_chain.replace_sites(changes)
 
     def local_problem(self, site, options):
         return _native_local_problem(self.state, self.hamiltonian, site, self.sites,
-            self.embeddings[site], options.matrix_free, options.dense_solver_threshold)
+            self.embeddings[site], options.matrix_free, options.dense_solver_threshold, self.boundary_cache)
 
 
 def reduced_local_frame(state, site):
@@ -826,9 +868,13 @@ def _mpo_expectation(state, factors, *, stable=False):
     return final.expectation()
 
 
-def _energy(state, hamiltonian, *, stable=False):
+def _energy(state, hamiltonian, *, stable=False, energy_boundaries=None):
     if (isinstance(hamiltonian, ReducedMPOHamiltonian)
             and hamiltonian.contraction_backend == 'reduced'):
+        if stable and ReducedFrontier.from_state(state).requires_compact(state):
+            from .frontier_contraction import frontier_energy
+            numerator, denominator = frontier_energy(state, hamiltonian.native_mpo(state.physical_basis), cache=energy_boundaries)
+            return _checked_energy(numerator, denominator)
         sites = tuple(ReducedFrontier.from_state(state).to_mps(state))
         if stable:
             sites = left_canonical_reduced_sites(sites)
@@ -864,10 +910,12 @@ def _checked_energy(numerator, denominator):
     return float(np.real(value))
 
 
-def _optimize_reduced_site_impl(state, hamiltonian, site, options, *, context=None):
+def _optimize_reduced_site_impl(state, hamiltonian, site, options, *, context=None, energy_cache=None):
     """Solve and accept one exact reduced local generalized eigenproblem."""
 
     from .solver import LETTASiteUpdate
+    evaluate = (context.stable_energy if context is not None else energy_cache
+                if energy_cache is not None else lambda s: _energy(s, hamiltonian, stable=True))
 
     problem = context.local_problem(site, options) if context is not None else reduced_local_problem(
         state,
@@ -892,9 +940,9 @@ def _optimize_reduced_site_impl(state, hamiltonian, site, options, *, context=No
     # Decide acceptance with an independently QR-conditioned reduced contraction,
     # also when the eigensolver uses moving environments. This does not expand
     # a determinant vector or change the variational state.
-    old_energy = _energy(state, hamiltonian, stable=True)
+    old_energy = evaluate(state)
     state.tensors[int(site)] = problem.embedding.unpack_source(vector)
-    new_energy = _energy(state, hamiltonian, stable=True)
+    new_energy = evaluate(state)
     accepted = new_energy <= old_energy + options.energy_increase_tolerance
     if not accepted:
         state.tensors[int(site)] = old_blocks
@@ -928,18 +976,20 @@ def _optimize_reduced_site_impl(state, hamiltonian, site, options, *, context=No
     )
 
 
-def optimize_reduced_site(state, hamiltonian, site, options, *, context=None):
+def optimize_reduced_site(state, hamiltonian, site, options, *, context=None, energy_cache=None):
     """Commit a finite energy-checked update, or restore all tensors and caches."""
     from .reduced_updates import NUMERICAL_ERRORS
+    evaluate = (context.stable_energy if context is not None else energy_cache
+                if energy_cache is not None else lambda s: _energy(s, hamiltonian, stable=True))
     snapshot = state.copy()
-    old_energy = _energy(snapshot, hamiltonian, stable=True)
+    old_energy = evaluate(snapshot)
     def restore():
         state.tensors, state.bond_sectors = snapshot.tensors, snapshot.bond_sectors
         if context is not None:
             context.synchronize(list(range(state.nsites)))
     try:
-        update = _optimize_reduced_site_impl(state, hamiltonian, site, options, context=context)
-        actual = _energy(state, hamiltonian, stable=True)
+        update = _optimize_reduced_site_impl(state, hamiltonian, site, options, context=context, energy_cache=energy_cache)
+        actual = evaluate(state)
         if not np.isfinite(actual) or actual > old_energy+options.energy_increase_tolerance:
             restore()
             return replace(update, accepted=False, energy=old_energy, local_converged=False)
@@ -991,7 +1041,10 @@ def reduced_letta_dmrg(hamiltonian, *, state, options):
     context = (ReducedSweepContext(state, hamiltonian)
         if isinstance(hamiltonian, ReducedMPOHamiltonian)
         and hamiltonian.contraction_backend == 'reduced' and options.gauge_mode == 'frontier' else None)
+    end_energy = StableEnergyCache(hamiltonian)
     for sweep in range(1, int(options.max_sweeps) + 1):
+        from .reduced_gauge import GaugeQRBoundary
+        gauge_boundary=GaugeQRBoundary(state,direction) if options.gauge_mode=='frontier' else None
         sites = (
             range(state.nsites)
             if direction == "lr"
@@ -1026,7 +1079,7 @@ def reduced_letta_dmrg(hamiltonian, *, state, options):
                 cut = site+1 if direction == 'lr' else site
                 if 0 < cut < state.nsites:
                     reason = condition_reduced_sweep(state, hamiltonian, options,
-                        cut=cut, direction=direction, context=context)
+                        cut=cut, direction=direction, context=context, qr_boundary=gauge_boundary)
                     if reason:
                         prior = updates[-1].recovery_reason
                         updates[-1] = replace(updates[-1], local_converged=False,
@@ -1034,7 +1087,7 @@ def reduced_letta_dmrg(hamiltonian, *, state, options):
                         if context is not None:
                             context = ReducedSweepContext(state, hamiltonian)
         updates = tuple(updates)
-        energy = _energy(state, hamiltonian, stable=True)
+        energy = context.stable_energy() if context is not None else end_energy(state)
         change = abs(energy - previous_energy)
         density_change = change / state.nsites
         history.append(
@@ -1066,7 +1119,7 @@ def reduced_letta_dmrg(hamiltonian, *, state, options):
         previous_energy = energy
         if options.alternate:
             direction = "rl" if direction == "lr" else "lr"
-    final_energy = _energy(state, hamiltonian, stable=True)
+    final_energy = context.stable_energy() if context is not None else end_energy(state)
     return LETTADMRGResult(
         state=state,
         energy=float(final_energy),

@@ -432,3 +432,62 @@ Every pair update records:
 ## Selectable compression solvers
 
 Both CBE trimming and two-site norm compression accept `compression=MetricCompressionOptions(solver="variable-projection")`. Other choices are `"als"`, `"joint-ls"`, and `"grassmann-newton"`. ALS remains the default. See the [compression solver guide](COMPRESSION.md) for examples, equations, budgets, diagnostics, and limitations.
+
+
+### Reduced SU(2) pair eigensolve
+
+The reduced-backend pair optimizer now solves in orthonormal physical coordinates
+obtained from the boundary QR factors and their supported SVD inverses. This is
+an adaptation of QR/SVD conditioning (Trefethen and Bau, *Numerical Linear Algebra*,
+SIAM, 1997, https://doi.org/10.1137/1.9780898719574), not a new ansatz or a
+reproduction of a separate published two-site algorithm. The Hamiltonian acts
+through canonical reduced environments, without determinant-space projection,
+a full pair Gram matrix, or inverse-Gram Hamiltonian contractions. Whole-multiplet
+weights are included on both sides of the coordinate action.
+
+The configured metric cutoff defines retained overlap support. A fresh physical
+Ritz residual must satisfy the eigensolver tolerance; exhausting the iterative
+budget with a larger residual triggers the existing transactional one-site
+fallback, recorded in `recovery_reason`. The tolerance and iteration cap are not
+relaxed. Residual convergence certifies stationarity on retained support, not a
+global ground-state guarantee. Compression and post-compression refinement remain
+separate and can still change the target energy. The canonical-factor backend
+continues to use its existing generalized solve.
+
+
+### Compiled pair metric engine
+
+The supported metric root, full physical QR root, inverse coordinates, and
+adjoints use prepared `PairMetricMap` schedules. Their sector loops and the
+two matrix products per block execute in C generated from
+`pair_metric_kernels.pyx`, through SciPy's real/complex BLAS interface. Python
+retains solver orchestration and builds the schedules once per root/map.
+Restricted middle-sector roots receive fresh schedules. No determinant-space
+projection, new rank cutoff, or reduction of inner iterations is introduced.
+
+This is an exact algebraic implementation of the existing two-sided metric
+maps; contraction ordering can change floating-point roundoff. Validate final
+energies, physical residuals, and adjoints rather than requiring bitwise solver
+trajectories. Tests cover zero-support sectors, complex conjugation, singlet,
+doublet, and triplet states, as well as strongly rescaled gauges.
+
+First use requires a C compiler, Cython 3, setuptools, and SciPy; the extension
+is compiled with `-O3` and without fast-math in a content-addressed temporary
+cache. Compiler failures are explicit. The `.pyx` source is included in package
+data. The installed SciPy supplies the BLAS linkage, avoiding an Apple-specific
+LAPACK dependency. Linux runtime validation is still required before deployment.
+
+The compiled pair metric preserves the established greedy contraction order,
+planned once per map. Choosing order solely by FLOP count was rejected because
+it amplified cancellation in an ill-conditioned Hubbard ALS residual. The
+regression fixture `tests/data/letta_metric_cancellation.npz` includes a reference
+evaluated at 70 decimal digits; runtime calculations remain double precision.
+Coordinate scatter geometry is cached on each fixed frontier embedding, while
+state-dependent QR and SVD factors are rebuilt on every ALS update.
+
+Within an ALS fit, the expanded outer MPS tensors are reused because only the
+active pair changes. Both active tensors are replaced from the current factors
+before rebuilding the local QR/SVD coordinates. This removes repeated full-chain
+embedding and state copying without reusing stale numerical factors. First-use
+compilation requires Cython, setuptools, SciPy, and a C compiler; the Python
+packages are declared runtime dependencies.

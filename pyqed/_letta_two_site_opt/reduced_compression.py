@@ -47,9 +47,14 @@ class ReducedPairMetricRoot:
 
     def __init__(self, problem, state, tolerance):
         from .._letta_one_site_opt.reduced_coordinates import _canonical_sites
-        sites = problem.frontier.to_mps(state)
+        from .._letta_one_site_opt.frontier_contraction import state_signature
         i = problem.left_site
-        self.canonical_sites, full_left, full_right = _canonical_sites(sites, i, last_center=i+1)
+        cached = getattr(problem,'canonical_data',None)
+        if cached is not None and cached[0] == state_signature(state):
+            self.canonical_sites, full_left, full_right, self.environment = cached[1:]
+        else:
+            sites = problem.frontier.to_mps(state, compact=True)
+            self.canonical_sites, full_left, full_right = _canonical_sites(sites, i, last_center=i+1)
         left = {q: _overlap_factors(r, tolerance) for q, r in full_left.items()}
         right = {q: _overlap_factors(r, tolerance) for q, r in full_right.items()}
         scale = 1.
@@ -76,59 +81,70 @@ class ReducedPairMetricRoot:
             problem.layout.shapes[key][2],r.shape[0]) for key,(l,r,_) in self.physical_factors.items()})
         self.output_layout = _BlockVectorLayout(shapes)
         self.size = self.output_layout.size
+        self._compiled_maps = {}
         if not self.size:
             raise ValueError('reduced pair metric has no supported directions')
 
+    def restrict_middle_sector(self, sector):
+        """Restrict an orthogonal middle-irrep block without rebuilding QR maps."""
+        from copy import copy
+        result = copy(self)
+        for name in ('physical_factors', 'support_factors', 'factors', 'inverse_factors'):
+            setattr(result,name,{k:v for k,v in getattr(self,name).items() if k[2]==sector})
+        for name in ('input_layout', 'output_layout', 'physical_layout'):
+            setattr(result,name,_BlockVectorLayout({k:v for k,v in getattr(self,name).shapes.items()
+                                                   if k[2]==sector}))
+        result.size=result.output_layout.size
+        result._compiled_maps = {}
+        return result
+
+    def _contract_map(self, name, vector, source, target, factors, *, adjoint=False, inverse=False):
+        from .pair_metric import PairMetricMap
+        if name not in self._compiled_maps:
+            prepared = {}
+            for key, values in factors.items():
+                left, right = values[:2]
+                scale = values[2] if len(values) == 3 else 1.
+                if adjoint:
+                    left, right = left.conj().T, right.conj().T
+                prepared[key] = (left, right, 1./scale if inverse else scale)
+            self._compiled_maps[name] = PairMetricMap(source, target, prepared)
+        return self._compiled_maps[name](vector)
+
     def project_physical(self, vector):
-        """Project canonical QR coordinates onto the retained inverse support.
+        """Project QR coordinates onto retained SVD support without inverse factors."""
+        return self._contract_map('project', vector, self.physical_layout,
+            self.output_layout, self.support_factors, adjoint=True)
 
-        Apply the stored SVD unitary factors directly, avoiding a round trip
-        through ill-conditioned raw coefficients and inverse overlap factors.
-        """
-        blocks = self.physical_layout.unpack(vector)
-        return self.output_layout.pack({key: np.einsum('al,apqb,br->lpqr',
-            l.conj(), blocks[key], r.conj(), optimize=True)
-            for key, (l, r) in self.support_factors.items()})
-
-    def embed_physical(self,vector):
-        blocks=self.output_layout.unpack(vector)
-        return self.physical_layout.pack({key:np.einsum('al,lpqr,br->apqb',
-            l,blocks[key],r,optimize=True) for key,(l,r) in self.support_factors.items()})
+    def embed_physical(self, vector):
+        return self._contract_map('embed', vector, self.output_layout,
+            self.physical_layout, self.support_factors)
 
     def physical_apply(self, vector):
         """Full QR norm map, without the inverse-support SVD cutoff."""
-        blocks = self.input_layout.unpack(vector)
-        return self.physical_layout.pack({key:scale*np.einsum('al,br,lpqr->apqb',
-            l,r,blocks[key],optimize=True) for key,(l,r,scale) in self.physical_factors.items()})
+        return self._contract_map('physical', vector, self.input_layout,
+            self.physical_layout, self.physical_factors)
 
     def physical_adjoint(self, vector):
-        blocks = self.physical_layout.unpack(vector)
-        return self.input_layout.pack({key:scale*np.einsum('al,br,apqb->lpqr',
-            l.conj(),r.conj(),blocks[key],optimize=True) for key,(l,r,scale) in self.physical_factors.items()})
+        return self._contract_map('physical_adjoint', vector, self.physical_layout,
+            self.input_layout, self.physical_factors, adjoint=True)
 
     def apply(self, vector):
-        blocks = self.input_layout.unpack(vector)
-        return self.output_layout.pack({key: scale*np.einsum('al,br,lpqr->apqb',
-            l, r, blocks[key], optimize=True) for key, (l, r, scale) in self.factors.items()})
+        return self._contract_map('apply', vector, self.input_layout,
+            self.output_layout, self.factors)
 
     def adjoint(self, vector):
-        blocks = self.output_layout.unpack(vector)
-        return self.input_layout.pack({key: scale*np.einsum('al,br,apqb->lpqr',
-            l.conj(), r.conj(), blocks[key], optimize=True)
-            for key, (l, r, scale) in self.factors.items()})
+        return self._contract_map('adjoint', vector, self.output_layout,
+            self.input_layout, self.factors, adjoint=True)
 
     def unwhiten(self, vector):
         """Map supported orthonormal coordinates back to pair coefficients."""
-        blocks = self.output_layout.unpack(vector)
-        return self.input_layout.pack({key: np.einsum('la,rb,apqb->lpqr',
-            l, r, blocks[key], optimize=True)/scale
-            for key, (l, r, scale) in self.inverse_factors.items()})
+        return self._contract_map('unwhiten', vector, self.output_layout,
+            self.input_layout, self.inverse_factors, inverse=True)
 
     def unwhiten_adjoint(self, vector):
-        blocks = self.input_layout.unpack(vector)
-        return self.output_layout.pack({key: np.einsum('la,rb,lpqr->apqb',
-            l.conj(), r.conj(), blocks[key], optimize=True)/scale
-            for key, (l, r, scale) in self.inverse_factors.items()})
+        return self._contract_map('unwhiten_adjoint', vector, self.input_layout,
+            self.output_layout, self.inverse_factors, adjoint=True, inverse=True)
 
     def inverse_action(self, vector):
         """Apply a supported inverse: N inverse_action(N x) = N x.
@@ -180,16 +196,20 @@ class _PairMetric:
         return self.problem.apply_metric(vector)
 
 
-def _factor_coordinates(state, problem, root, le, re, left, right, retained, side, options):
+def _factor_coordinates(state, problem, root, le, re, left, right, retained, side, options, *, sites=None):
     """Isometric physical map for one factor with its partner held fixed."""
     from .._letta_one_site_opt.reduced_coordinates import ReducedLocalCoordinates
     from .reduced_solver import _active_source_indices
-    working = state.copy()
     site = problem.left_site
-    working.tensors[site] = le.unpack_source(left)
-    working.tensors[site+1] = re.unpack_source(right)
+    # Only the two active tensors change during ALS. Reuse the expanded outer
+    # sites, while rebuilding the partner-dependent QR coordinates each time.
+    current=list(problem.frontier.to_mps(state, compact=True) if sites is None else sites)
+    for index,embedding,vector in ((site,le,left),(site+1,re,right)):
+        from .._letta_one_site_opt.frontier_contraction import shallow_site, scatter_blocks
+        current[index]=shallow_site(current[index])
+        current[index].data=scatter_blocks(embedding,embedding.unpack_source(vector))
     embedding = le if side == 0 else re
-    coordinates = ReducedLocalCoordinates(problem.frontier.to_mps(working), embedding, site+side)
+    coordinates = ReducedLocalCoordinates(current, embedding, site+side, retain_outer=False)
     coordinates.restrict(_active_source_indices(embedding, retained, 'left' if side == 0 else 'right'))
     coordinates.prepare(0., singular_tolerance=options.pinv_tolerance,
                         max_workspace_mb=options.max_workspace_mb)
@@ -234,7 +254,7 @@ def _physical_factor_map(coordinates,root,site,side):
 
 
 def compress_reduced_pair(target, problem, state, left, right, retained, *, options,
-                          metric_tolerance=1e-12, als_max_iterations=100):
+                          metric_tolerance=1e-12, als_max_iterations=100, root=None):
     """Fit reduced source factors with explicit outer and inner budgets.
 
     All algorithms share the same native metric and legal factor gauge blocks.
@@ -264,7 +284,7 @@ def compress_reduced_pair(target, problem, state, left, right, retained, *, opti
     left[np.setdiff1d(np.arange(left.size), li)] = 0
     right[np.setdiff1d(np.arange(right.size), ri)] = 0
     merge = lambda a, b: _pair_vector_from_sources(problem.layout, le, re, a, b)
-    root = ReducedPairMetricRoot(problem, state, metric_tolerance)
+    root = root if root is not None else ReducedPairMetricRoot(problem, state, metric_tolerance)
     physical_target = root.physical_layout.unpack(root.physical_apply(target))
     physical_error = root.physical_layout.unpack(root.physical_apply(merge(left, right)-target))
     target_norm = sum(np.linalg.norm(v)**2 for v in physical_target.values())
@@ -288,10 +308,12 @@ def compress_reduced_pair(target, problem, state, left, right, retained, *, opti
             return _left_source_adjoint(problem.layout, vector, _expanded_source_blocks(re, b), le)[li]
         return _right_source_adjoint(problem.layout, _expanded_source_blocks(le, a), vector, re)[ri]
 
+    factor_sites = problem.frontier.to_mps(state, compact=True)
+
     def direct_solve(side,a,b):
         try:
             coordinates,forward,pullback=_factor_coordinates(state,problem,root,le,re,
-                                                            a,b,retained,side,options)
+                                                            a,b,retained,side,options,sites=factor_sites)
         except MemoryError as error:
             return None,dict(fallback_reason=str(error))
         rhs=root.physical_apply(target)

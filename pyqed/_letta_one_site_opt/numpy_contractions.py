@@ -1,4 +1,9 @@
-"""Pre-parsed NumPy execution of fixed opt_einsum plans for local actions."""
+"""Pre-parsed NumPy execution of fixed opt_einsum plans for local actions.
+
+Shape-plan caches retain up to 8192 entries: a width-three SU(2) sweep
+uses thousands of distinct block shapes. Entries hold no tensor values;
+eviction only repeats planning and never changes the numerical operation.
+"""
 
 from functools import lru_cache, partial
 from math import prod
@@ -7,7 +12,7 @@ import numpy as np
 from opt_einsum import contract_expression, parser
 
 
-@lru_cache(maxsize=512)
+@lru_cache(maxsize=8192)
 def _tensordot_plan(shape_a, shape_b, axes):
     """Cache only NumPy's matrix shapes and axis order for a prepared step."""
     axes_a, axes_b = axes
@@ -67,7 +72,7 @@ def _numpy_steps(key):
     return tuple(steps)
 
 
-@lru_cache(maxsize=512)
+@lru_cache(maxsize=8192)
 def _einsum_steps(equation, shapes):
     expression = contract_expression(equation, *shapes, optimize='greedy')
     key = tuple((tuple(step[0]), frozenset(step[1]), step[2], step[-1])

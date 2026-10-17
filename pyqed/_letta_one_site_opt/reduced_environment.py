@@ -184,38 +184,56 @@ class ReducedEnvironmentChain(MovingReducedEnvironments):
         scale = np.exp(self.left_log_scales[site]+self.right_log_scales[site+1])
         return {key: a*scale for key, a in out.items()}
 
-    def prepare_local_action(self, site):
-        """Bind fixed environments for one immutable local eigensolve.
-
-        Reuses the existing NumPy contraction plan and operation order exactly.
-        Rebuild the callable after changing any site, boundary, or MPO tensor.
-        """
-        from opt_einsum import contract_expression
-        from .numpy_contractions import prepare_numpy_contraction
+    def prepare_local_action(self, site, *, shapes=None):
+        """Bind an immutable reduced Hamiltonian schedule for compiled actions."""
+        from .._letta_two_site_opt.sector_operator import SectorOperator
         self.ensure(site, site+1)
-        actions = []
+        terms=[]
         for transfer in self.transfers[site]:
-            left = self.left[site].get(transfer.left_key)
-            right = self.right[site+1].get(transfer.right_key)
-            if left is None or right is None:
-                continue
-            operands = (left, transfer.kernel, right, self.sites[site].data[transfer.ket_key])
-            expression = contract_expression('xal,xyop,ybr,lpr->aob',
-                *(a.shape for a in operands), optimize='greedy')
-            action = prepare_numpy_contraction(expression.contraction_list, operands, 3)
-            actions.append((transfer.bra_key, transfer.ket_key, action))
-        fixed_types = tuple(t.kernel.dtype for t in self.transfers[site]) + tuple(
-            a.dtype for boundary in (self.left[site], self.right[site+1]) for a in boundary.values())
-        scale = np.exp(self.left_log_scales[site]+self.right_log_scales[site+1])
-        def apply(blocks):
-            dtype = np.result_type(*(a.dtype for a in blocks.values()), *fixed_types)
-            out = {key: np.zeros(a.shape, dtype=dtype) for key, a in blocks.items()}
-            for bra, ket, action in actions:
-                out[bra] += action(blocks[ket])
-            return {key: a*scale for key, a in out.items()}
-        return apply
+            left=self.left[site].get(transfer.left_key)
+            right=self.right[site+1].get(transfer.right_key)
+            if left is not None and right is not None:
+                terms.append((transfer.bra_key,transfer.ket_key,left,transfer.kernel,right))
+        if shapes is None:
+            shapes={key:a.shape for key,a in self.sites[site].data.items()}
+        scale=np.exp(self.left_log_scales[site]+self.right_log_scales[site+1])
+        return SectorOperator(shapes,terms,scale)
 
     def pair_action(self, site, blocks):
+        """Apply a cached compiled pair schedule; rebuild after site replacement."""
+        signature=(int(site),tuple((key,a.shape) for key,a in blocks.items()))
+        if not hasattr(self,'_prepared_pairs'):
+            self._prepared_pairs={}
+        if signature not in self._prepared_pairs:
+            self._prepared_pairs[signature]=self.prepare_pair_action(site,blocks)
+        return self._prepared_pairs[signature](blocks)
+
+    def prepare_pair_action(self, site, blocks):
+        from .._letta_two_site_opt.sector_operator import SectorOperator
+        self.ensure(site,site+2)
+        right_by_middle=defaultdict(list)
+        for transfer in self.transfers[site+1]:
+            right_by_middle[transfer.left_key].append(transfer)
+        terms=[]
+        for first in self.transfers[site]:
+            left=self.left[site].get(first.left_key)
+            if left is None:
+                continue
+            for second in right_by_middle[first.right_key]:
+                right=self.right[site+2].get(second.right_key)
+                bra=first.bra_key+second.bra_key[1:]
+                ket=first.ket_key+second.ket_key[1:]
+                if right is None or bra not in blocks or ket not in blocks:
+                    continue
+                kernel=np.einsum('xyop,yzuv->xzoupv',first.kernel,second.kernel,optimize=True)
+                kernel=kernel.reshape(kernel.shape[:2]+(kernel.shape[2]*kernel.shape[3],kernel.shape[4]*kernel.shape[5]))
+                kernel=kernel/_sector_irrep(first.bra_key[2]).dim
+                terms.append((bra,ket,left,kernel,right))
+        scale=np.exp(self.left_log_scales[site]+self.right_log_scales[site+2])
+        return SectorOperator({key:a.shape for key,a in blocks.items()},terms,scale)
+
+    def _pair_action_reference(self, site, blocks):
+        """Python contraction reference for validation of compiled pair actions."""
         self.ensure(site, site+2)
         dtype = np.result_type(*[a.dtype for a in blocks.values()],
                                *[t.kernel.dtype for t in self.transfers[site]],
@@ -247,6 +265,7 @@ class ReducedEnvironmentChain(MovingReducedEnvironments):
         return {key: a*scale for key, a in out.items()}
 
     def replace_sites(self, changes):
+        self._prepared_pairs={}
         super().replace_sites(changes)
         transfers = list(self.transfers)
         for i, site in changes.items():

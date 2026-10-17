@@ -123,10 +123,16 @@ class ReducedNormChain(MovingReducedEnvironments):
     right_log_scales: list
 
     @classmethod
-    def build(cls, sites):
+    def build(cls, sites, *, lazy=False):
         sites = tuple(sites)
         if not sites:
             raise ValueError('norm contraction requires at least one site')
+        if lazy:
+            n=len(sites)
+            result=cls(sites,[_boundary(sites[0],0)]+[None]*n,
+                       [None]*n+[_boundary(sites[-1],2)],[0.]*(n+1),[0.]*(n+1))
+            result.left_valid,result.right_valid=0,n
+            return result
         left, ll = [_boundary(sites[0], 0)], [0.]
         for site in sites:
             blocks, scale = _normalize(advance_norm_left(left[-1], site), ll[-1])

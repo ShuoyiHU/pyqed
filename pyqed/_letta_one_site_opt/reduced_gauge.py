@@ -74,7 +74,86 @@ def reduced_frontier_grams(state, cut, direction, *, environment=None, strict=Fa
     return grams
 
 
-def reduced_frontier_factors(state, cut, direction, *, environment=None, strict=False):
+class GaugeQRBoundary:
+    """One moving, value-validated QR boundary for conditional gauge shifts.
+
+    Adaptation of sector QR (Trefethen and Bau, Numerical Linear Algebra,
+    SIAM 1997, doi:10.1137/1.9780898719574). Only the requested side is
+    contracted. After a gauge changes its last site, that site is refactored
+    from the unchanged incoming boundary, preserving the full-rebuild order.
+    No rank cutoff or approximation is added. Only R is retained; no Q is
+    needed for the marginal gauge factors. This does not remove the dense
+    QR cost of an individual wide frontier.
+    """
+    def __init__(self, state, direction):
+        if direction not in ('lr','rl'):raise ValueError('direction must be lr or rl')
+        self.state=state;self.direction=direction;self.site_contractions=0
+        self.reset()
+
+    def reset(self):
+        self.frontier=ReducedFrontier.from_state(self.state)
+        self.cut=0 if self.direction=='lr' else self.state.nsites
+        sectors=(self.state.left_virtual_sectors(0) if self.direction=='lr'
+                 else self.state.right_virtual_sectors(self.state.nsites-1))
+        self.boundary={q:np.eye(d) for q,d in Counter(sectors).items()}
+        self.incoming=None;self.last_site=None
+        self.signature=self._signature()
+
+    def _signature(self):
+        import hashlib
+        digest=hashlib.blake2b()
+        bonds=self.state.bond_sectors[:self.cut] if self.direction=='lr' else self.state.bond_sectors[max(0,self.cut-1):]
+        digest.update(repr((self.state.neighborhoods,bonds)).encode())
+        indices=range(self.cut) if self.direction=='lr' else range(self.cut,self.state.nsites)
+        for i in indices:
+            for key,a in self.state.tensors[i].items():
+                digest.update(repr((key,a.shape,a.dtype.str)).encode())
+                digest.update(np.ascontiguousarray(a).view(np.uint8))
+        return digest.digest()
+
+    def _advance(self, site, incoming):
+        from collections import defaultdict
+        from .frontier_contraction import scatter_blocks, contract_block
+        from .reduced_symmetry import _sector_irrep
+        embedding=self.frontier.site_embedding(self.state,site)
+        blocks=scatter_blocks(embedding,self.state.tensors[site])
+        groups=defaultdict(list)
+        lr=self.direction=='lr'
+        for key,a in blocks.items():
+            if lr:
+                b=contract_block(a,left=incoming[key[0]])
+                groups[key[2]].append(b.reshape(-1,b.shape[2]))
+            else:
+                b=contract_block(a,right=incoming[key[2]])
+                weight=np.sqrt(_sector_irrep(key[2]).dim/_sector_irrep(key[0]).dim)
+                groups[key[0]].append(weight*b.transpose(2,1,0).reshape(-1,b.shape[0]))
+        sectors=(self.state.right_virtual_sectors(site) if lr else self.state.left_virtual_sectors(site))
+        labels=(self.frontier.right_variables(site) if lr else self.frontier.left_variables(site))
+        result={q:np.zeros((0,d*self.frontier.reduced_dim**len(labels))) for q,d in Counter(sectors).items()}
+        for q,entries in groups.items():result[q]=np.linalg.qr(np.concatenate(entries),mode='r')
+        self.site_contractions+=1
+        return result
+
+    def at(self, cut):
+        cut=index(cut)
+        if not 0<=cut<=self.state.nsites:raise IndexError('invalid boundary cut')
+        reversed_request=cut<self.cut if self.direction=='lr' else cut>self.cut
+        if reversed_request or self.signature!=self._signature():self.reset()
+        while self.cut!=cut:
+            site=self.cut if self.direction=='lr' else self.cut-1
+            self.incoming=self.boundary;self.last_site=site
+            self.boundary=self._advance(site,self.incoming)
+            self.cut+=1 if self.direction=='lr' else -1
+        self.signature=self._signature()
+        return self.boundary
+
+    def refresh(self):
+        """Called only after a successful gauge changes the last processed site."""
+        if self.last_site is not None:self.boundary=self._advance(self.last_site,self.incoming)
+        self.signature=self._signature()
+
+
+def reduced_frontier_factors(state, cut, direction, *, environment=None, strict=False, qr_boundary=None):
     """Square-root factors of the legal marginal Grams, without Gram products.
 
     Adapts reduced sector QR and standard SVD whitening (Trefethen and Bau,
@@ -82,17 +161,13 @@ def reduced_frontier_factors(state, cut, direction, *, environment=None, strict=
     Stacking conditional column slices implements the marginal partial trace.
     This conditions legal bond gauges only, not the full correlated overlap.
     """
-    from .reduced_coordinates import _canonical_sites
     descriptor = _validate_cut(state, cut, direction, strict=strict)
     variables = reduced_gauge_variables(state, cut)
-    if environment is None:
-        frontier = ReducedFrontier.from_state(state)
-        sites = frontier.to_mps(state)
-    else:
-        chain, frontier = environment
-        sites = chain.sites
-    _, left, right = _canonical_sites(sites, cut if direction == 'lr' else cut-1)
-    boundary = left if direction == 'lr' else right
+    boundary_cache=GaugeQRBoundary(state,direction) if qr_boundary is None else qr_boundary
+    if boundary_cache.state is not state or boundary_cache.direction!=direction:
+        raise ValueError('QR boundary belongs to another state or direction')
+    boundary=boundary_cache.at(cut)
+    frontier=boundary_cache.frontier
     groups = {}
     for memory, configuration in enumerate(frontier._assignments(descriptor.physical_indices)):
         assignment = dict(zip(descriptor.physical_indices, configuration))
@@ -117,7 +192,7 @@ def _apply_conditional(state, site, axis, variables, matrices):
         state.tensors[site][key] = np.real_if_close(out)
 
 
-def shift_reduced_frontier_gauge(state, cut, direction, *, tolerance=1e-12, environment=None, strict=False):
+def shift_reduced_frontier_gauge(state, cut, direction, *, tolerance=1e-12, environment=None, strict=False, qr_boundary=None):
     """Whiten one completed side, absorbing its inverse into the neighbor.
 
     Small squared singular values retain an invertible unit gauge rather than
@@ -133,7 +208,7 @@ def shift_reduced_frontier_gauge(state, cut, direction, *, tolerance=1e-12, envi
     variables = reduced_gauge_variables(state, cut)
     if not np.isfinite(tolerance) or not 0 < tolerance < 1:
         raise ValueError('gauge tolerance must lie between zero and one')
-    factors = reduced_frontier_factors(state, cut, direction, environment=environment, strict=strict)
+    factors = reduced_frontier_factors(state, cut, direction, environment=environment, strict=strict, qr_boundary=qr_boundary)
     transforms, inverses, ranks = {}, {}, {}
     decompositions = {}
     for key, factor in factors.items():
@@ -164,13 +239,15 @@ def shift_reduced_frontier_gauge(state, cut, direction, *, tolerance=1e-12, envi
                                {key: a.T for key, a in transforms.items()})
             _apply_conditional(state, cut-1, 2, variables,
                                {key: a.T for key, a in inverses.items()})
+        if qr_boundary is not None:qr_boundary.refresh()
     except Exception:
         state.tensors[cut-1], state.tensors[cut] = original
+        if qr_boundary is not None:qr_boundary.reset()
         raise
     return ranks
 
 
-def canonicalize_reduced_frontier(state, center, *, tolerance=1e-12, strict=False):
+def canonicalize_reduced_frontier(state, center, *, tolerance=1e-12, strict=False, verbosity=0):
     """Condition both sides using complete shared or legal marginal Grams.
 
     Packed reduced center coordinates still carry CG norm weights; the local
@@ -184,12 +261,17 @@ def canonicalize_reduced_frontier(state, center, *, tolerance=1e-12, strict=Fals
     original = [{key: a.copy() for key, a in core.items()} for core in state.tensors]
     reports = []
     try:
-        for cut in range(1, center+1):
-            reports.append(shift_reduced_frontier_gauge(state, cut, 'lr',
-                tolerance=tolerance, strict=strict))
-        for cut in range(state.nsites-1, center, -1):
-            reports.append(shift_reduced_frontier_gauge(state, cut, 'rl',
-                tolerance=tolerance, strict=strict))
+        left_boundary=GaugeQRBoundary(state,'lr')
+        right_boundary=GaugeQRBoundary(state,'rl')
+        import time
+        for direction,cuts,boundary in [('lr',range(1,center+1),left_boundary),
+                                       ('rl',range(state.nsites-1,center,-1),right_boundary)]:
+            for cut in cuts:
+                start=time.perf_counter()
+                if verbosity:print(f'reduced SU(2) initial gauge cut={cut} direction={direction} begin',flush=True)
+                reports.append(shift_reduced_frontier_gauge(state,cut,direction,
+                    tolerance=tolerance,strict=strict,qr_boundary=boundary))
+                if verbosity:print(f'reduced SU(2) initial gauge cut={cut} direction={direction} done seconds={time.perf_counter()-start:.3f}',flush=True)
     except Exception:
         state.tensors = original
         raise
@@ -197,7 +279,7 @@ def canonicalize_reduced_frontier(state, center, *, tolerance=1e-12, strict=Fals
 
 
 def condition_reduced_sweep(state, hamiltonian, options, *, center=None,
-                            cut=None, direction='lr', context=None):
+                            cut=None, direction='lr', context=None, qr_boundary=None):
     """Condition a sweep transactionally, returning a recovery reason or None.
 
     A caller with moving environments must rebuild that context on recovery.
@@ -206,17 +288,22 @@ def condition_reduced_sweep(state, hamiltonian, options, *, center=None,
     from .reduced_solver import _energy
     from .reduced_updates import NUMERICAL_ERRORS
     snapshot = state.copy()
-    before = _energy(snapshot, hamiltonian, stable=True)
+    before = (context.stable_energy(snapshot) if context is not None else _energy(snapshot, hamiltonian, stable=True))
     try:
         if center is not None:
-            canonicalize_reduced_frontier(state, center, tolerance=options.metric_tolerance)
+            canonicalize_reduced_frontier(state, center, tolerance=options.metric_tolerance,
+                                          verbosity=options.verbosity)
             changed = list(range(state.nsites))
         else:
+            boundary=qr_boundary
+            if boundary is None and context is not None:boundary=getattr(context,'gauge_boundary',None)
+            if boundary is None or boundary.state is not state or boundary.direction!=direction:
+                boundary=GaugeQRBoundary(state,direction)
             shift_reduced_frontier_gauge(state, cut, direction,
-                tolerance=options.metric_tolerance,
-                environment=None if context is None else (context.n_chain, context.frontier))
+                tolerance=options.metric_tolerance, qr_boundary=boundary)
+            if context is not None:context.gauge_boundary=boundary
             changed = [cut-1, cut]
-        checked = _energy(state, hamiltonian, stable=True)
+        checked = (context.stable_energy() if context is not None else _energy(state, hamiltonian, stable=True))
         allowance = max(options.energy_increase_tolerance, 1e-10*max(1., abs(before)))
         if not np.isfinite(checked) or abs(checked-before) > allowance:
             raise FloatingPointError('reduced gauge changed the physical energy')

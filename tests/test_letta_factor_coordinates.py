@@ -110,3 +110,21 @@ def test_qr_als_preserves_a_factor_when_its_partner_is_zero():
     # minimizer. Preserve the incumbent so the right half-step can recover.
     assert fit.loss < 1e-20
     assert np.linalg.norm(fit.left) > 0
+
+
+@pytest.mark.parametrize('side',[0,1])
+def test_reused_outer_factor_sites_match_fresh_partner_coordinates(side):
+    s,p,le,re,a,b,retained=example()
+    root=ReducedPairMetricRoot(p,s,1e-12)
+    sites=p.frontier.to_mps(s)
+    originals=[{k:v.copy() for k,v in t.data.items()} for t in sites]
+    a=1.3*a;b=b/1.3
+    args=(s,p,root,le,re,a,b,retained,side,MetricCompressionOptions())
+    fresh,forward,_=_factor_coordinates(*args)
+    cached,cached_forward,_=_factor_coordinates(*args,sites=sites)
+    assert fresh.rank==cached.rank
+    z=np.random.default_rng(51).normal(size=fresh.rank)
+    np.testing.assert_array_equal(fresh.expand(z),cached.expand(z))
+    np.testing.assert_array_equal(forward(z),cached_forward(z))
+    for site,original in zip(sites,originals):
+        for key in original:np.testing.assert_array_equal(site.data[key],original[key])

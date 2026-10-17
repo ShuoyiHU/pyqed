@@ -1,7 +1,8 @@
 """Controlled expansion with native reduced pair residuals and legal factors.
 
 The selector removes the incumbent one-site tangent space in the physical norm.
-A greedy metric fit allocates complete multiplets to the remaining residual.
+Independent sector fits allocate complete multiplets to the residual.
+Cached rank profiles reuse the shared two-site metric compression routine.
 Only an expanded *one-site* Hamiltonian is diagonalized. Pair actions and pair
 coefficient vectors are materialized. The OBC adapter avoids a dense pair
 metric; the shared selector accepts other topology-specific metric roots.
@@ -49,6 +50,11 @@ def select_reduced_cbe(state, hamiltonian, left_site, options):
     optimal low-rank factorization. The latter is a nonconvex metric fit; its
     solver, residual and iteration status are returned explicitly.
 
+    Residual expansion adapts Gleis, Li, and von Delft, PRL 130, 246402
+    (2023), doi:10.1103/PhysRevLett.130.246402; this is not their shrewd
+    selector. Orthogonal-sector rank profiles cache the shared two-site
+    compression solves and retain per-sector convergence diagnostics.
+
     The open-boundary tangent projection adapts reduced QR/SVD orthogonal
     projection (Trefethen and Bau, Numerical Linear Algebra, SIAM 1997,
     doi:10.1137/1.9780898719574). A bounded direct SVD avoids near-dependent
@@ -80,7 +86,7 @@ def select_reduced_cbe(state, hamiltonian, left_site, options):
     def compress(target, u, v, allocation):
         return compress_reduced_pair(target, problem, scaffold, u, v, allocation,
             options=options.compression, metric_tolerance=options.metric_tolerance,
-            als_max_iterations=options.cbe_refinement_max_iterations)
+            als_max_iterations=options.cbe_refinement_max_iterations, root=root)
     return select_metric_cbe(scaffold, problem, root, old, Counter(scaffold.bond_sectors[left_site]),
         (le, re), (a, b), options=options,
         merge=lambda u, v: _pair_vector_from_sources(problem.layout, le, re, u, v),
@@ -88,9 +94,113 @@ def select_reduced_cbe(state, hamiltonian, left_site, options):
         complex_data=any(np.iscomplexobj(v) for tensor in state.tensors for v in tensor.values()),
         tangent_coordinates=lambda: _tangent_coordinates(scaffold, problem, (le, re), old, options),
         physical_tangent=True,
+        residual_fit=lambda target, available: _fit_residual_pair(
+            scaffold, problem, target, available, (le, re), options),
         weighted_residual=(lambda: _canonical_pair_residual(problem, scaffold, hamiltonian, root))
             if hamiltonian.contraction_backend == "reduced" else None,
         allocation_bounds=lambda target, allocations: _sector_loss_bounds(root, target, allocations))
+
+
+def _fit_residual_pair(state, problem, target, capacities, embeddings, options):
+    """Cache orthogonal-sector rank fits instead of refitting full allocations.
+
+    Pair metric blocks preserve the middle irrep. Consequently the residual
+    loss is a sum over sectors and previously fitted sectors do not change
+    when one sector gains a multiplet. Greedy rank allocation uses measured
+    metric losses, not raw singular weights. Fits remain nonconvex; a warm
+    start supplements two independent starts at each new rank.
+    """
+    from .._letta_two_site_opt.reduced_solver import _active_source_indices
+    le, re = embeddings
+    rng = np.random.default_rng(2817+problem.left_site)
+    seeds = [(rng.normal(size=le.source_size).astype(complex),
+              rng.normal(size=re.source_size).astype(complex)) for _ in range(2)]
+    if any(np.iscomplexobj(v) for tensor in state.tensors for v in tensor.values()):
+        seeds = [(a+1j*rng.normal(size=a.size), b+1j*rng.normal(size=b.size))
+                 for a,b in seeds]
+    root = ReducedPairMetricRoot(problem,state,options.metric_tolerance)
+    weights = Counter()
+    for key, block in root.physical_layout.unpack(root.physical_apply(target)).items():
+        weights[key[2]] += float(np.linalg.norm(block)**2)
+    total = sum(weights.values())
+    target_blocks = problem.layout.unpack(target)
+    sector_problems = {}
+    cache = {}
+    attempts = 0
+    def profile(q, rank):
+        nonlocal attempts
+        key = (q, rank)
+        if key in cache:
+            return cache[key]
+        allocation = {q: rank}
+        if q not in sector_problems:
+            local_root = root.restrict_middle_sector(q)
+            local_target = local_root.input_layout.pack({k:target_blocks[k]
+                                                        for k in local_root.input_layout.shapes})
+            local_problem = replace(problem,layout=local_root.input_layout,
+                old_vector=np.zeros(local_root.input_layout.size,dtype=target.dtype),
+                hamiltonian=None,metric=None,source_frame=None,hamiltonian_action=None,
+                metric_action=None,equilibrated_projector_factory=None)
+            sector_problems[q]=(local_problem,local_root,local_target)
+        local_problem,local_root,local_target=sector_problems[q]
+        starts = list(seeds)
+        previous = cache.get((q, rank-1))
+        if previous is not None:
+            a, b = previous.left.copy(), previous.right.copy()
+            old = _active_source_indices(re, {q:rank-1}, 'right')
+            new = _active_source_indices(re, allocation, 'right')
+            extra = np.setdiff1d(new, old)
+            b[extra] = seeds[0][1][extra]
+            starts.insert(0, (a, b))
+        fits = []
+        for a, b in starts:
+            fit = compress_reduced_pair(local_target,local_problem,state,a,b,allocation,
+                options=options.compression,metric_tolerance=options.metric_tolerance,
+                als_max_iterations=options.cbe_refinement_max_iterations,root=local_root)
+            fit = replace(fit,loss=fit.loss+total-weights[q])
+            attempts += 1
+            if np.isfinite(fit.loss):
+                fits.append(fit)
+        cache[key] = min(fits, key=lambda fit:fit.loss) if fits else None
+        return cache[key]
+    retained = {}
+    chosen = {}
+    for _ in range(options.cbe_expansion_dimension):
+        def upper_bound(q):
+            return (chosen[q].loss-total+weights[q]) if q in chosen else weights[q]
+        best = None
+        for q in sorted(capacities,key=upper_bound,reverse=True):
+            rank = retained.get(q, 0)
+            if rank >= capacities[q]:continue
+            bound = upper_bound(q)
+            if bound <= (0. if best is None else best[0])-100*np.finfo(float).eps:
+                continue
+            if bound <= 0.:continue
+            fit = profile(q, rank+1)
+            if fit is None:continue
+            old_loss = chosen[q].loss if q in chosen else total
+            gain = old_loss-fit.loss
+            if best is None or gain > best[0]:best=(gain,q,fit)
+        if best is None or best[0] <= 0.:break
+        gain,q,fit = best
+        retained[q] = retained.get(q,0)+1
+        chosen[q] = fit
+    if not chosen:return retained,None,attempts
+    left = sum((fit.left for fit in chosen.values()), np.zeros(le.source_size,complex))
+    right = sum((fit.right for fit in chosen.values()), np.zeros(re.source_size,complex))
+    # Recompute the joint physical loss rather than subtract nearly equal
+    # omitted-sector constants from independently reported losses.
+    from .._letta_two_site_opt.reduced_solver import _pair_vector_from_sources
+    loss=float(np.linalg.norm(root.physical_apply(
+        _pair_vector_from_sources(problem.layout,le,re,left,right)-target))**2)
+    from .._letta_compression import CompressionResult
+    reports=[dict(fit.diagnostics,sector=str(q),rank=retained[q],iterations=fit.iterations)
+             for q,fit in chosen.items()]
+    info=dict(requested_solver=options.compression.solver,used_solver=options.compression.solver,
+        allocation_method='cached-sector-metric-fits',sector_fits=reports,
+        optimizer_success=all(fit.diagnostics.get('optimizer_success',False) for fit in chosen.values()),
+        final_loss=loss,rank_profiles=len(cache))
+    return retained,CompressionResult(left,right,loss,max(fit.iterations for fit in chosen.values()),info),attempts
 
 
 def _sector_loss_bounds(root, target, allocations):
@@ -125,8 +235,10 @@ def _canonical_pair_residual(problem, state, hamiltonian, root):
     y = root.physical_layout.pack({key: value*root.physical_factors[key][2]
                                    for key, value in pair.items()})
     blocks = root.physical_layout.unpack(y)
-    chain = ReducedEnvironmentChain.build(root.canonical_sites,
-        hamiltonian.native_mpo(state.physical_basis), lazy=True)
+    chain = getattr(root,'environment',None)
+    if chain is None:
+        chain = ReducedEnvironmentChain.build(root.canonical_sites,
+            hamiltonian.native_mpo(state.physical_basis), lazy=True)
     applied = chain.pair_action(problem.left_site,
         {key: value/root.physical_factors[key][2] for key, value in blocks.items()})
     hy = root.physical_layout.pack({key: value/root.physical_factors[key][2]
@@ -143,11 +255,11 @@ def _tangent_coordinates(scaffold, problem, embeddings, old, options):
     """
     from .reduced_coordinates import ReducedLocalCoordinates
     from .._letta_two_site_opt.reduced_solver import _active_source_indices
-    sites = problem.frontier.to_mps(scaffold)
+    sites = problem.frontier.to_mps(scaffold, compact=True)
     result = []
     for side, embedding in enumerate(embeddings):
         active = _active_source_indices(embedding, old, 'left' if side == 0 else 'right')
-        coordinates = ReducedLocalCoordinates(sites, embedding, problem.left_site+side)
+        coordinates = ReducedLocalCoordinates(sites, embedding, problem.left_site+side, retain_outer=False)
         coordinates.restrict(active)
         coordinates.prepare(options.metric_tolerance)
         result.append(coordinates)
@@ -156,7 +268,7 @@ def _tangent_coordinates(scaffold, problem, embeddings, old, options):
 
 def select_metric_cbe(scaffold, problem, root, old, capacities, embeddings, factors, *,
                       merge, factor_adjoint, compress, options, seed, complex_data, tangent_coordinates=None,
-                      weighted_residual=None, allocation_bounds=None, physical_tangent=False):
+                      weighted_residual=None, allocation_bounds=None, physical_tangent=False, residual_fit=None):
     """Common physical-metric residual projection and whole-sector selection.
 
     Topology-specific adapters supply the true overlap root and source maps.
@@ -260,6 +372,21 @@ def select_metric_cbe(scaffold, problem, root, old, capacities, embeddings, fact
     # stopping tolerances do not change the selected subspace near convergence.
     target = root.unwhiten(missing/missing_norm)
     available = {q: capacities[q]-old[q] for q in capacities if capacities[q] > old[q]}
+    if residual_fit is not None:
+        retained, best, attempts = residual_fit(target, available)
+        if best is None or 1.-best.loss <= (options.cbe_selection_tolerance/missing_norm)**2:
+            return ReducedCBESelection(**empty, multiplicities={}, left={}, right={},
+                captured_weight=0., loss=missing_norm**2, diagnostics=(),
+                factor_fit_attempts=attempts)
+        report = {**best.diagnostics, 'iterations': best.iterations,
+            'normalized_residual_objective': True, 'residual_scale': missing_norm,
+            'factor_fit_attempts': attempts}
+        return ReducedCBESelection(**empty, multiplicities=retained,
+            left=le.unpack_source(best.left*np.sqrt(missing_norm)),
+            right=re.unpack_source(best.right*np.sqrt(missing_norm)),
+            captured_weight=missing_norm**2*max(0., 1.-best.loss),
+            loss=missing_norm**2*best.loss, diagnostics=(report,),
+            factor_fit_attempts=attempts)
     retained, best, reports = {}, None, []
     best_loss = 1.
     rng = np.random.default_rng(seed)
@@ -355,16 +482,22 @@ def reduced_cbe_site(state, hamiltonian, site, direction, bond_dim, options):
 
     A numerical failure discards the entire expansion candidate and commits the
     independently computed ordinary step. The next site can attempt CBE again.
+    Trimming preserves at least one multiplet of each incumbent bond sector.
+    This constrained LETTA adaptation prevents norm-ranked compression from
+    deleting a sector needed by later one-site updates; multiplicities may still
+    change within the fixed total budget. It is not globally optimal compression
+    or a guarantee of convergence to the best fixed-D energy.
     """
-    from .reduced_solver import _energy, optimize_reduced_site
+    from .reduced_solver import StableEnergyCache, optimize_reduced_site
     from .._letta_two_site_opt.reduced_solver import reduced_pair_problem, compress_reduced_pair_vector
     if direction not in {'lr', 'rl'}:
         raise ValueError('CBE direction must be lr or rl')
-    before = _energy(state, hamiltonian, stable=True)
+    energy_cache = StableEnergyCache(hamiltonian)
+    before = energy_cache(state)
     baseline = state.copy()
     try:
-        ordinary = optimize_reduced_site(baseline, hamiltonian, site, one_site_options(options))
-        base_energy = _energy(baseline, hamiltonian, stable=True)
+        ordinary = optimize_reduced_site(baseline, hamiltonian, site, one_site_options(options), energy_cache=energy_cache)
+        base_energy = energy_cache(baseline)
     except NUMERICAL_ERRORS as error:
         from .solver import LETTASiteUpdate
         return LETTASiteUpdate(site=site, local_energy=before, energy=before,
@@ -398,8 +531,8 @@ def reduced_cbe_site(state, hamiltonian, site, direction, bond_dim, options):
                     allocation=tuple((str(q), n) for q, n in selection.multiplicities.items())))
             if selection.multiplicities:
                 candidate = expand_reduced_cbe(baseline, selection, direction)
-                expanded = optimize_reduced_site(candidate, hamiltonian, site, one_site_options(options))
-                expanded_energy = _energy(candidate, hamiltonian, stable=True)
+                expanded = optimize_reduced_site(candidate, hamiltonian, site, one_site_options(options), energy_cache=energy_cache)
+                expanded_energy = energy_cache(candidate)
                 update = replace(update, cbe_expanded_energy=expanded_energy)
                 expansion_guard = 100*np.finfo(float).eps*max(1., abs(base_energy), abs(expanded_energy))
                 if expanded_energy < base_energy-expansion_guard:
@@ -408,8 +541,9 @@ def reduced_cbe_site(state, hamiltonian, site, direction, bond_dim, options):
                     trim = compress_reduced_pair_vector(candidate, hamiltonian, problem,
                         problem.old_vector, expanded.local_energy, expanded.metric_rank,
                         expanded.residual_norm, direction, bond_dim, _trim_options(options),
-                        acceptance_energy=base_energy)
-                    energy = _energy(candidate, hamiltonian, stable=True)
+                        acceptance_energy=base_energy,
+                        minimum_multiplicities={q: 1 for q in baseline.bond_sectors[i]})
+                    energy = energy_cache(candidate)
                     update = replace(update, cbe_trimmed_energy=trim.energy_refinement_initial_energy,
                         cbe_refined_energy=trim.energy_refinement_energy,
                         cbe_trim_loss=trim.metric_truncation_loss,
@@ -433,7 +567,7 @@ def reduced_cbe_site(state, hamiltonian, site, direction, bond_dim, options):
                     refinement = refine_reduced_pair_energy(baseline, hamiltonian, i, options,
                         max_iterations=options.cbe_energy_refinement_max_iterations,
                         tolerance=options.cbe_energy_refinement_tolerance, direction=direction)
-                    energy = _energy(refinement.state, hamiltonian, stable=True)
+                    energy = energy_cache(refinement.state)
                     update = replace(update, cbe_refined_energy=energy,
                         cbe_trim_method='fixed-bond-energy-relaxation',
                         cbe_energy_refinement_iterations=refinement.iterations,

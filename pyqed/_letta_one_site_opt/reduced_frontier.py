@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
+from functools import cached_property
 from itertools import product
 
 import numpy as np
@@ -64,6 +66,30 @@ class FrontierSiteEmbedding:
     left_variables: tuple[int, ...]
     right_variables: tuple[int, ...]
 
+    @cached_property
+    def coordinate_routes(self):
+        """Immutable index geometry reused across changing ALS factor values."""
+        routes=[]
+        for key in self.source_layout.keys:
+            lo,hi=self.source_layout.offsets[key]
+            tlo,thi=self.target_layout.offsets[key]
+            source_shape=self.source_layout.shapes[key]
+            source_grid=np.arange(lo,hi).reshape(source_shape)
+            shape=self.target_layout.shapes[key]
+            for physical in np.ndindex(source_shape[1:-1]):
+                indices=source_grid[(slice(None),)+physical+(slice(None),)].ravel()
+                mask=np.isin(self.source_indices,indices)
+                source=np.searchsorted(indices,self.source_indices[mask])
+                target=self.target_indices[mask]-tlo
+                if np.any(target<0) or np.any(target>=thi-tlo):
+                    raise AssertionError('Norm embedding couples different reduced keys')
+                li,pi,ri=np.unravel_index(target,shape)
+                ul,lmap=np.unique(li,return_inverse=True)
+                up,pmap=np.unique(pi,return_inverse=True)
+                ur,rmap=np.unique(ri,return_inverse=True)
+                routes.append((key,indices,source,ul,lmap,up,pmap,ur,rmap,shape[1]))
+        return tuple(routes)
+
     @property
     def source_size(self):
         return self.source_layout.size
@@ -116,6 +142,9 @@ class ReducedFrontier:
         self.neighborhoods = tuple(tuple(int(value) for value in item) for item in neighborhoods)
         self.nsites = len(self.neighborhoods)
         self.reduced_dim = int(reduced_dim)
+        self._embedding_cache = OrderedDict()
+        self._embedding_cache_bytes = 0
+        self._embedding_cache_budget = 64*1024**2
         if self.reduced_dim <= 0:
             raise ValueError("reduced_dim must be positive")
         occurrences = [set([site]) for site in range(self.nsites)]
@@ -165,14 +194,21 @@ class ReducedFrontier:
 
         left_variables = self.left_variables(site)
         right_variables = self.right_variables(site)
-        left_assignments = self._assignments(left_variables)
-        right_assignments = self._assignments(right_variables)
+        left_count = self.reduced_dim ** len(left_variables)
+        right_count = self.reduced_dim ** len(right_variables)
         source_shapes = {key: block.shape for key, block in state.tensors[site].items()}
+        neighborhood = state.site_neighborhood(site)
+        physical_labels=tuple((item.sector,item.copy) for item in state.physical_basis.reduced_states)
+        signature=(tuple(source_shapes.items()),neighborhood,physical_labels)
+        cached=self._embedding_cache.get(site)
+        if cached is not None and cached[0]==signature:
+            self._embedding_cache.move_to_end(site)
+            return cached[1]
         target_shapes = {
             key: (
-                block.shape[0] * len(left_assignments),
+                block.shape[0] * left_count,
                 block.shape[1],
-                block.shape[-1] * len(right_assignments),
+                block.shape[-1] * right_count,
             )
             for key, block in state.tensors[site].items()
         }
@@ -183,57 +219,20 @@ class ReducedFrontier:
             for idx, item in enumerate(state.physical_basis.reduced_states)
         }
 
-        source_indices = []
-        target_indices = []
+        from .frontier_indices import block_indices
+        source_parts, target_parts = [], []
         neighborhood = state.site_neighborhood(site)
         for key in source_layout.keys:
-            q_left, q_phys, _q_right = key
-            del q_left
-            source_shape = source_layout.shapes[key]
-            target_shape = target_layout.shapes[key]
-            source_offset = source_layout.offsets[key][0]
-            target_offset = target_layout.offsets[key][0]
-            d_left = source_shape[0]
-            d_phys = source_shape[1]
-            d_right = source_shape[-1]
-            left_slots, right_slots = np.indices((d_left, d_right))
-            for left_memory, left_values in enumerate(left_assignments):
-                left_map = dict(zip(left_variables, left_values))
-                for physical_copy in range(d_phys):
-                    physical_value = state_index[(q_phys, physical_copy)]
-                    for right_memory, right_values in enumerate(right_assignments):
-                        assignment = dict(left_map)
-                        consistent = True
-                        if site in assignment and assignment[site] != physical_value:
-                            consistent = False
-                        assignment[site] = physical_value
-                        for variable, value in zip(right_variables, right_values):
-                            if variable in assignment and assignment[variable] != value:
-                                consistent = False
-                                break
-                            assignment[variable] = value
-                        if not consistent or any(
-                            variable not in assignment for variable in neighborhood
-                        ):
-                            continue
-                        dependencies = tuple(
-                            assignment[variable] for variable in neighborhood[1:]
-                        )
-                        source_local = np.ravel_multi_index(
-                            (left_slots, physical_copy) + dependencies + (right_slots,),
-                            source_shape,
-                        )
-                        target_local = np.ravel_multi_index(
-                            (left_memory*d_left + left_slots, physical_copy,
-                             right_memory*d_right + right_slots),
-                            target_shape,
-                        )
-                        source_indices.extend((source_offset + source_local).ravel().tolist())
-                        target_indices.extend((target_offset + target_local).ravel().tolist())
-        target_indices = np.asarray(target_indices, dtype=int)
+            physical = [state_index[(key[1], k)] for k in range(source_shapes[key][1])]
+            source, target = block_indices(source_shapes[key], left_variables,
+                right_variables, neighborhood, physical, site, self.nsites, self.reduced_dim)
+            source_parts.append(source + source_layout.offsets[key][0])
+            target_parts.append(target + target_layout.offsets[key][0])
+        source_indices = np.concatenate(source_parts) if source_parts else np.empty(0, dtype=np.int64)
+        target_indices = np.concatenate(target_parts) if target_parts else np.empty(0, dtype=np.int64)
         if target_indices.size != np.unique(target_indices).size:
             raise RuntimeError("frontier embedding assigned one MPS entry more than once")
-        return FrontierSiteEmbedding(
+        embedding = FrontierSiteEmbedding(
             source_layout=source_layout,
             target_layout=target_layout,
             source_indices=np.asarray(source_indices, dtype=int),
@@ -241,12 +240,40 @@ class ReducedFrontier:
             left_variables=left_variables,
             right_variables=right_variables,
         )
+        # Retain only the current layout at each site; changing tensors with
+        # the same layout only changes values passed through this sparse map.
+        prior=self._embedding_cache.pop(site,None)
+        if prior is not None:
+            self._embedding_cache_bytes-=prior[2]
+        # Include a conservative allowance for cached coordinate-route arrays.
+        size=12*embedding.source_indices.nbytes+8*source_layout.size
+        while self._embedding_cache and self._embedding_cache_bytes+size>self._embedding_cache_budget:
+            _,old=self._embedding_cache.popitem(last=False)
+            self._embedding_cache_bytes-=old[2]
+        if size<=self._embedding_cache_budget:
+            self._embedding_cache[site]=(signature,embedding,size)
+            self._embedding_cache_bytes+=size
+        return embedding
 
-    def to_mps(self, state):
+    def dense_bytes(self, state):
+        """Dense auxiliary-chain payload, excluding copies and workspaces."""
+        return sum(sum(a.shape[0]*a.shape[1]*a.shape[-1]*np.dtype(np.result_type(a,float)).itemsize
+                       for a in state.tensors[i].values())
+                   *self.reduced_dim**(len(self.left_variables(i))+len(self.right_variables(i)))
+                   for i in range(state.nsites))
+
+    def requires_compact(self, state):
+        return self.dense_bytes(state)>64*1024**2
+
+    def to_mps(self, state, *, compact=False):
         sites = []
         for site in range(self.nsites):
             embedding = self.site_embedding(state, site)
-            blocks = embedding.expand_blocks(state.tensors[site])
+            if compact:
+                from .frontier_contraction import scatter_blocks
+                blocks = scatter_blocks(embedding,state.tensors[site])
+            else:
+                blocks = embedding.expand_blocks(state.tensors[site])
             left_memory = self.reduced_dim ** len(self.left_variables(site))
             right_memory = self.reduced_dim ** len(self.right_variables(site))
             left_qns = [
@@ -269,7 +296,7 @@ class ReducedFrontier:
             ]
             sites.append(
                 NonabelianTensor(
-                    data=blocks,
+                    data={} if compact else blocks,
                     qns=[left_qns, physical_qns, right_qns],
                     dirs=[-1, 1, 1],
                     metadata={
@@ -279,6 +306,8 @@ class ReducedFrontier:
                     },
                 )
             )
+            if compact:
+                sites[-1].data = blocks
         return sites
 
 

@@ -45,6 +45,7 @@ class ReducedPairProblem:
     hamiltonian_action: object | None = None
     metric_action: object | None = None
     equilibrated_projector_factory: object | None = None
+    canonical_data: object | None = None
 
     @property
     def local_dimension(self):
@@ -87,12 +88,33 @@ def _merge_pair_blocks(left, right):
             if middle_2 != q_middle:
                 continue
             key = (q_left, q_phys_left, q_middle, q_phys_right, q_right)
-            merged[key] = np.einsum(
-                "apm,mqb->apqb", left_block, right_block, optimize=True
-            )
+            from .._letta_one_site_opt.frontier_contraction import merge_scatter_pair
+            merged[key] = merge_scatter_pair(left_block,right_block)
     if not merged:
         raise ValueError("adjacent reduced MPS sites have no compatible bond blocks")
     return merged
+
+
+
+def _pair_layout(left, right):
+    a=left if isinstance(left,dict) else left.data
+    b=right if isinstance(right,dict) else right.data
+    shapes={(ql,pl,qm,pr,qr):(x.shape[0],x.shape[1],y.shape[1],y.shape[2])
+            for (ql,pl,qm),x in a.items() for (qm2,pr,qr),y in b.items() if qm==qm2}
+    if not shapes:raise ValueError('adjacent reduced MPS sites have no compatible bond blocks')
+    return _BlockVectorLayout(shapes)
+
+
+def _merge_pair_vector(layout,left,right):
+    from .._letta_one_site_opt.frontier_contraction import merge_scatter_pair
+    a=left if isinstance(left,dict) else left.data
+    b=right if isinstance(right,dict) else right.data
+    vector=np.empty(layout.size,dtype=np.result_type(float,*[x.dtype for x in a.values()],*[x.dtype for x in b.values()]))
+    for key in layout.keys:
+        ql,pl,qm,pr,qr=key
+        start,stop=layout.offsets[key]
+        vector[start:stop]=merge_scatter_pair(a[ql,pl,qm],b[qm,pr,qr]).ravel()
+    return vector
 
 
 def _expand_pair_blocks(blocks, left, right):
@@ -271,10 +293,9 @@ def reduced_pair_problem(
     if not 0 <= left_site < state.nsites - 1:
         raise IndexError("left_site is not an internal pair start")
     frontier = ReducedFrontier.from_state(state)
-    sites = tuple(frontier.to_mps(state))
-    merged = _merge_pair_blocks(sites[left_site], sites[left_site + 1])
-    layout = _BlockVectorLayout({key: block.shape for key, block in merged.items()})
-    old_vector = layout.pack(merged)
+    sites = tuple(frontier.to_mps(state, compact=hamiltonian.contraction_backend == 'reduced' and frontier.requires_compact(state)))
+    layout = _pair_layout(sites[left_site], sites[left_site + 1])
+    old_vector = _merge_pair_vector(layout,sites[left_site],sites[left_site + 1])
     left = sites[left_site]
     right = sites[left_site + 1]
     expanded_shape = (
@@ -285,10 +306,28 @@ def reduced_pair_problem(
     )
     expanded_dimension = int(np.prod(expanded_shape, dtype=int))
     if hamiltonian.contraction_backend == 'reduced':
-        h_chain = ReducedEnvironmentChain.build(sites, hamiltonian.native_mpo(state.physical_basis))
-        n_chain = ReducedNormChain.build(sites)
-        h_action = lambda v: layout.pack(h_chain.pair_action(left_site, layout.unpack(v)))
-        n_action = lambda v: layout.pack(n_chain.pair_action(left_site, layout.unpack(v)))
+        if not frontier.requires_compact(state):
+            h_chain=ReducedEnvironmentChain.build(sites,hamiltonian.native_mpo(state.physical_basis))
+            n_chain=ReducedNormChain.build(sites)
+            h_action=lambda v:layout.pack(h_chain.pair_action(left_site,layout.unpack(v)))
+            n_action=lambda v:layout.pack(n_chain.pair_action(left_site,layout.unpack(v)))
+            h,n=None,None
+            if not matrix_free or layout.size<=dense_solver_threshold:
+                identity=np.eye(layout.size)
+                h=np.column_stack([h_action(v) for v in identity]);n=np.column_stack([n_action(v) for v in identity])
+                h,n=.5*(h+h.conj().T),.5*(n+n.conj().T)
+            return ReducedPairProblem(left_site=left_site,old_vector=old_vector,layout=layout,
+                frontier=frontier,expanded_dimension=expanded_dimension,hamiltonian=h,metric=n,
+                hamiltonian_action=h_action,metric_action=n_action,
+                equilibrated_projector_factory=lambda tol:n_chain.pair_projector(left_site,layout,tol,equilibrated=True))
+        from .._letta_one_site_opt.frontier_contraction import state_signature, canonical_environment
+        canonical,full_left,full_right,h_chain=canonical_environment(
+            sites,left_site,hamiltonian.native_mpo(state.physical_basis),last_center=left_site+1)
+        from .._letta_one_site_opt.frontier_contraction import raw_pair_environments
+        raw_h,raw_n=raw_pair_environments(sites,left_site,hamiltonian.native_mpo(state.physical_basis))
+        h_action=lambda v:layout.pack(raw_h.pair_action(left_site,layout.unpack(v)))
+        n_action=lambda v:layout.pack(raw_n.pair_action(left_site,layout.unpack(v)))
+        projector=lambda tolerance:raw_n.pair_projector(left_site,layout,tolerance,equilibrated=True)
         h, n = None, None
         if not matrix_free or layout.size <= dense_solver_threshold:
             identity = np.eye(layout.size)
@@ -298,8 +337,8 @@ def reduced_pair_problem(
         return ReducedPairProblem(left_site=left_site, old_vector=old_vector,
             layout=layout, frontier=frontier, expanded_dimension=expanded_dimension,
             hamiltonian=h, metric=n, hamiltonian_action=h_action, metric_action=n_action,
-            equilibrated_projector_factory=lambda tol: n_chain.pair_projector(
-                left_site, layout, tol, equilibrated=True))
+            equilibrated_projector_factory=projector,
+            canonical_data=(state_signature(state),canonical,full_left,full_right,h_chain))
     hamiltonian_chain = CanonicalEnvironmentChain.build(sites, hamiltonian.canonical_factors)
     metric_chain = CanonicalEnvironmentChain.build(sites, identity_canonical_factors(sites))
     hamiltonian_action = lambda vector: _canonical_pair_action(
@@ -336,7 +375,7 @@ def reduced_pair_problem(
     )
 
 
-def _select_multiplet_ranks(decompositions, bond_dim):
+def _select_multiplet_ranks(decompositions, bond_dim, *, minimum_multiplicities=None):
     """Maximize retained weighted norm under a reduced-multiplet budget."""
 
     try:
@@ -345,6 +384,12 @@ def _select_multiplet_ranks(decompositions, bond_dim):
         raise ValueError("bond_dim must be an integer") from error
     if bond_dim <= 0:
         raise ValueError("bond_dim must be positive")
+    minimum = {} if minimum_multiplicities is None else dict(minimum_multiplicities)
+    if any(index(n) < 0 or q not in decompositions or n > decompositions[q]['available']
+           for q, n in minimum.items()):
+        raise ValueError('required sector support is unavailable')
+    if sum(minimum.values()) > bond_dim:
+        raise ValueError('required sector support exceeds bond budget')
     items = []
     for q_middle, decomposition in decompositions.items():
         singular_values = decomposition["singular_values"]
@@ -359,8 +404,12 @@ def _select_multiplet_ranks(decompositions, bond_dim):
                     irrep_dimension * float(singular_values[position] ** 2),
                 )
             )
-    states = {0: (0.0, ())}
+    mandatory = tuple(i for i, (q, position, _, _) in enumerate(items)
+                      if position < minimum.get(q, 0))
+    states = {len(mandatory): (sum(items[i][3] for i in mandatory), mandatory)}
     for item_index, (_sector, _position, cost, value) in enumerate(items):
+        if item_index in mandatory:
+            continue
         updated = dict(states)
         for used, (retained, selected) in states.items():
             proposed_cost = used + cost
@@ -399,6 +448,7 @@ def _split_reduced_pair(
     sector_capacities,
     direction,
     cutoff,
+    minimum_multiplicities=None,
 ):
     direction = str(direction).lower()
     if direction not in {"lr", "rl"}:
@@ -463,7 +513,8 @@ def _split_reduced_pair(
             "vh": vh,
             "available": min(capacity, available),
         }
-    retained = _select_multiplet_ranks(decompositions, bond_dim)
+    retained = _select_multiplet_ranks(decompositions, bond_dim,
+        minimum_multiplicities=minimum_multiplicities)
     left_blocks = {
         key: np.zeros(np.asarray(block).shape, dtype=dtype)
         for key, block in left_template.data.items()
@@ -541,7 +592,10 @@ class _ReducedMetricProjection:
 
 
 def _expanded_source_blocks(embedding, source_vector):
-    return embedding.unpack_target(embedding.apply(source_vector))
+    if embedding.target_size*16<=64*1024**2:
+        return embedding.unpack_target(embedding.apply(source_vector))
+    from .._letta_one_site_opt.frontier_contraction import scatter_blocks
+    return scatter_blocks(embedding,embedding.unpack_source(source_vector))
 
 
 def _pair_vector_from_sources(
@@ -549,43 +603,62 @@ def _pair_vector_from_sources(
 ):
     left_blocks = _expanded_source_blocks(left_embedding, left_vector)
     right_blocks = _expanded_source_blocks(right_embedding, right_vector)
-    return layout.pack(_merge_pair_blocks(left_blocks, right_blocks))
+    return _merge_pair_vector(layout,left_blocks,right_blocks)
 
 
-def _left_source_adjoint(
-    layout, gradient_vector, right_blocks, left_embedding
-):
-    gradients = {
-        key: np.zeros(shape, dtype=np.result_type(gradient_vector, complex))
-        for key, shape in left_embedding.target_layout.shapes.items()
-    }
-    for key, gradient in layout.unpack(gradient_vector).items():
-        q_left, q_phys_left, q_middle, q_phys_right, q_right = key
-        right = right_blocks.get((q_middle, q_phys_right, q_right))
-        if right is None:
-            continue
-        gradients[(q_left, q_phys_left, q_middle)] += np.einsum(
-            "apqb,mqb->apm", gradient, np.asarray(right).conj(), optimize=True
-        )
-    return left_embedding.adjoint(left_embedding.pack_target(gradients))
+def _source_factor_adjoint(layout, gradient_vector, partner, embedding, side):
+    from .._letta_one_site_opt.frontier_contraction import factor_adjoint
+    result=np.zeros(embedding.source_size,dtype=np.result_type(gradient_vector,complex))
+    for key in layout.keys:
+        ql,pl,qm,pr,qr=key
+        partner_key=(qm,pr,qr) if side==0 else (ql,pl,qm)
+        block=partner.get(partner_key)
+        if block is None:continue
+        start,stop=layout.offsets[key]
+        gradient=np.asarray(gradient_vector)[start:stop].reshape(layout.shapes[key])
+        contracted=factor_adjoint(gradient,block,side)
+        target_key=(ql,pl,qm) if side==0 else (qm,pr,qr)
+        lo,hi=embedding.target_layout.offsets[target_key]
+        take=(embedding.target_indices>=lo)&(embedding.target_indices<hi)
+        np.add.at(result,embedding.source_indices[take],
+                  contracted.ravel()[embedding.target_indices[take]-lo])
+    return result
 
 
-def _right_source_adjoint(
-    layout, left_blocks, gradient_vector, right_embedding
-):
-    gradients = {
-        key: np.zeros(shape, dtype=np.result_type(gradient_vector, complex))
-        for key, shape in right_embedding.target_layout.shapes.items()
-    }
-    for key, gradient in layout.unpack(gradient_vector).items():
-        q_left, q_phys_left, q_middle, q_phys_right, q_right = key
-        left = left_blocks.get((q_left, q_phys_left, q_middle))
-        if left is None:
-            continue
-        gradients[(q_middle, q_phys_right, q_right)] += np.einsum(
-            "apm,apqb->mqb", np.asarray(left).conj(), gradient, optimize=True
-        )
-    return right_embedding.adjoint(right_embedding.pack_target(gradients))
+def _left_source_adjoint(layout, gradient_vector, right_blocks, left_embedding):
+    if all(isinstance(a,np.ndarray) for a in right_blocks.values()):
+        gradients = {
+            key: np.zeros(shape, dtype=np.result_type(gradient_vector, complex))
+            for key, shape in left_embedding.target_layout.shapes.items()
+        }
+        for key, gradient in layout.unpack(gradient_vector).items():
+            q_left, q_phys_left, q_middle, q_phys_right, q_right = key
+            right = right_blocks.get((q_middle, q_phys_right, q_right))
+            if right is None:
+                continue
+            gradients[(q_left, q_phys_left, q_middle)] += np.einsum(
+                "apqb,mqb->apm", gradient, np.asarray(right).conj(), optimize=True
+            )
+        return left_embedding.adjoint(left_embedding.pack_target(gradients))
+    return _source_factor_adjoint(layout,gradient_vector,right_blocks,left_embedding,0)
+
+
+def _right_source_adjoint(layout, left_blocks, gradient_vector, right_embedding):
+    if all(isinstance(a,np.ndarray) for a in left_blocks.values()):
+        gradients = {
+            key: np.zeros(shape, dtype=np.result_type(gradient_vector, complex))
+            for key, shape in right_embedding.target_layout.shapes.items()
+        }
+        for key, gradient in layout.unpack(gradient_vector).items():
+            q_left, q_phys_left, q_middle, q_phys_right, q_right = key
+            left = left_blocks.get((q_left, q_phys_left, q_middle))
+            if left is None:
+                continue
+            gradients[(q_middle, q_phys_right, q_right)] += np.einsum(
+                "apm,apqb->mqb", np.asarray(left).conj(), gradient, optimize=True
+            )
+        return right_embedding.adjoint(right_embedding.pack_target(gradients))
+    return _source_factor_adjoint(layout,gradient_vector,left_blocks,right_embedding,1)
 
 
 def _active_source_indices(embedding, retained, side):
@@ -779,6 +852,61 @@ def _expand_reduced_pair_space(state, left_site, bond_dim):
     return candidate
 
 
+def _orthogonal_pair_action(problem, root, state, hamiltonian):
+    """Contract H directly in canonical reduced coordinates, avoiding inverse Grams."""
+    chain = getattr(root,'environment',None)
+    if chain is None:
+        chain = ReducedEnvironmentChain.build(root.canonical_sites,
+            hamiltonian.native_mpo(state.physical_basis),lazy=True)
+    weights = {k: np.sqrt(_sector_irrep(k[-1]).dim) for k in root.physical_layout.keys}
+
+    def apply(vector):
+        blocks = root.physical_layout.unpack(root.embed_physical(vector))
+        output = chain.pair_action(problem.left_site,
+            {k: block / weights[k] for k, block in blocks.items()})
+        return root.project_physical(root.physical_layout.pack(
+            {k: output[k] / weights[k] for k in blocks}))
+    return apply
+
+
+def _solve_reduced_pair_root(problem, state, hamiltonian, options):
+    """Solve the pair root on QR/SVD overlap support and certify its residual.
+
+    QR/SVD coordinates adapt Trefethen and Bau, Numerical Linear Algebra
+    (SIAM, 1997), doi:10.1137/1.9780898719574. The reduced environment action
+    is unchanged mathematically. The configured overlap cutoff removes null
+    or numerically unsupported directions; no determinant projection is used.
+    Residual convergence certifies stationarity on that support, not a global
+    many-body minimum. Compression remains a separate constrained problem.
+    """
+    if hamiltonian.contraction_backend != 'reduced':
+        return _solve_local_problem(problem, options, initial_vector=problem.old_vector)
+    from types import SimpleNamespace
+    from .reduced_compression import ReducedPairMetricRoot
+    from .._letta_one_site_opt.reduced_solver import _davidson_in_metric_coordinates
+    root = ReducedPairMetricRoot(problem, state, options.metric_tolerance)
+    apply = _orthogonal_pair_action(problem, root, state, hamiltonian)
+    initial = root.apply(problem.old_vector)
+    if not options.matrix_free or root.size <= options.dense_solver_threshold:
+        matrix = np.column_stack([apply(v) for v in np.eye(root.size)])
+        local = SimpleNamespace(hamiltonian=.5*(matrix+matrix.conj().T),
+            metric=np.eye(root.size), local_dimension=root.size)
+        energy, vector, _, _ = _solve_local_problem(local, options, initial_vector=initial)
+    else:
+        local = SimpleNamespace(local_dimension=root.size, apply_hamiltonian=apply,
+            apply_metric=lambda v: v, metric_scale=1.)
+        energy, vector, _ = _davidson_in_metric_coordinates(local, options, initial)
+    vector = vector / np.linalg.norm(vector)
+    hvector = apply(vector)
+    energy = float(np.vdot(vector, hvector).real)
+    residual = float(np.linalg.norm(hvector-energy*vector))
+    scale = max(1., abs(energy), float(np.linalg.norm(hvector)))
+    if not np.isfinite(residual) or residual > options.eigensolver_tolerance*scale:
+        raise FloatingPointError('pair eigensolver did not converge: '
+            f'physical relative residual {residual/scale:.3e} > {options.eigensolver_tolerance:.3e}')
+    return energy, root.unwhiten(vector), root.size, residual
+
+
 def _optimize_allocated_reduced_pair(
     state, hamiltonian, left_site, direction, bond_dim, options
 ):
@@ -789,16 +917,39 @@ def _optimize_allocated_reduced_pair(
         matrix_free=options.matrix_free,
         dense_solver_threshold=options.dense_solver_threshold,
     )
-    local_energy, vector, metric_rank, residual = _solve_local_problem(
-        problem, options, initial_vector=problem.old_vector
+    local_energy, vector, metric_rank, residual = _solve_reduced_pair_root(
+        problem, state, hamiltonian, options
     )
     return compress_reduced_pair_vector(state, hamiltonian, problem, vector,
         local_energy, metric_rank, residual, direction, bond_dim, options)
 
 
+def _metric_pair_split(problem, root, vector, sites, *, bond_dim,
+                       sector_capacities, direction, cutoff, minimum_multiplicities=None):
+    """Allocate multiplets in the physical metric before the tied factor fit.
+
+    QR removes the external environments; dividing by sqrt(dim J_middle)
+    compensates the whole-multiplet weight applied by _split_reduced_pair.
+    This is a gauge-invariant Schmidt allocation in the unrestricted frontier
+    space, only a heuristic for the constrained tied-factor problem. ALS and
+    energy refinement still enforce the legal LETTA factors afterward.
+    """
+    i=problem.left_site
+    physical={k:v/np.sqrt(_sector_irrep(k[2]).dim)
+              for k,v in root.physical_layout.unpack(root.physical_apply(vector)).items()}
+    ranked=_split_reduced_pair(physical,root.canonical_sites[i],root.canonical_sites[i+1],
+        bond_dim=bond_dim,sector_capacities=sector_capacities,direction=direction,
+        cutoff=cutoff,minimum_multiplicities=minimum_multiplicities)
+    retained=dict(ranked.retained_multiplicities)
+    raw=_split_reduced_pair(problem.layout.unpack(vector),sites[i],sites[i+1],
+        bond_dim=bond_dim,sector_capacities=retained,direction=direction,cutoff=0.,
+        minimum_multiplicities=retained)
+    return replace(raw,discarded_weight=ranked.discarded_weight)
+
+
 def compress_reduced_pair_vector(state, hamiltonian, problem, vector, local_energy,
                                  metric_rank, residual, direction, bond_dim, options,
-                                 *, acceptance_energy=None):
+                                 *, acceptance_energy=None, minimum_multiplicities=None):
     """Compress a supplied pair target, without performing a pair eigensolve.
 
     CBE supplies its expanded one-site result and compares the compressed state
@@ -815,17 +966,11 @@ def compress_reduced_pair_vector(state, hamiltonian, problem, vector, local_ener
     norm_root = ReducedPairMetricRoot(problem, state, options.metric_tolerance)
     def physical_norm(v):
         return float(np.linalg.norm(norm_root.physical_apply(v))**2)
-    optimized = problem.layout.unpack(vector)
-    sites = tuple(problem.frontier.to_mps(state))
-    split = _split_reduced_pair(
-        optimized,
-        sites[left_site],
-        sites[left_site + 1],
-        bond_dim=bond_dim,
-        sector_capacities=Counter(state.bond_sectors[left_site]),
-        direction=direction,
-        cutoff=options.conditional_svd_cutoff,
-    )
+    sites = tuple(problem.frontier.to_mps(state, compact=True))
+    split = _metric_pair_split(problem, norm_root, vector, sites,
+        bond_dim=bond_dim, sector_capacities=Counter(state.bond_sectors[left_site]),
+        direction=direction, cutoff=options.conditional_svd_cutoff,
+        minimum_multiplicities=minimum_multiplicities)
     left_embedding = problem.frontier.site_embedding(state, left_site)
     right_embedding = problem.frontier.site_embedding(state, left_site + 1)
     retained = dict(split.retained_multiplicities)
@@ -865,7 +1010,7 @@ def compress_reduced_pair_vector(state, hamiltonian, problem, vector, local_ener
         fit = compress_reduced_pair(vector, problem, state, initial_left, initial_right,
             retained, options=options.compression,
             als_max_iterations=options.truncation_max_iterations,
-            metric_tolerance=options.metric_tolerance)
+            metric_tolerance=options.metric_tolerance, root=norm_root)
         merged = _pair_vector_from_sources(problem.layout, left_embedding,
             right_embedding, fit.left, fit.right)
         norm_squared = physical_norm(merged)
@@ -1081,6 +1226,8 @@ def reduced_two_site_dmrg(hamiltonian, *, state, bond_dim, options):
     converged = False
     message = "STOP: MAXIMUM SWEEPS REACHED"
     for sweep in range(1, int(options.max_sweeps) + 1):
+        from .._letta_one_site_opt.reduced_gauge import GaugeQRBoundary
+        gauge_boundary=GaugeQRBoundary(state,direction) if options.gauge_mode=='frontier' else None
         pair_sites = (
             range(state.nsites - 1)
             if direction == "lr"
@@ -1096,7 +1243,7 @@ def reduced_two_site_dmrg(hamiltonian, *, state, bond_dim, options):
                 initial_recovery = None
             if options.gauge_mode == 'frontier':
                 reason = condition_reduced_sweep(state, hamiltonian, options,
-                    cut=site+1, direction=direction)
+                    cut=site+1, direction=direction, qr_boundary=gauge_boundary)
                 if reason:
                     prior = updates[-1].recovery_reason
                     updates[-1] = replace(updates[-1], recovery_reason=reason if prior is None else prior+'; '+reason)

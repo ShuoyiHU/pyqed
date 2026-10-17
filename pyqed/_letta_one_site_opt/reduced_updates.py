@@ -89,7 +89,7 @@ def refine_reduced_pair_energy(state, hamiltonian, left_site, options, *,
     Work on a copy. Each local update performs a fresh physical energy check
     and is transactional. Flat energy alone is not called convergence.
     """
-    from .reduced_solver import _energy, optimize_reduced_site
+    from .reduced_solver import StableEnergyCache, optimize_reduced_site
     limit = index(max_iterations)
     if limit < 0 or not np.isfinite(tolerance) or tolerance <= 0:
         raise ValueError('invalid energy-refinement budget or tolerance')
@@ -98,7 +98,8 @@ def refine_reduced_pair_energy(state, hamiltonian, left_site, options, *,
     candidate = state.copy()
     local_options = one_site_options(options)
     sites = (left_site, left_site+1) if direction == 'lr' else (left_site+1, left_site)
-    initial = _energy(candidate, hamiltonian, stable=True)
+    energy_cache = StableEnergyCache(hamiltonian)
+    initial = energy_cache(candidate)
     energies = [initial]
     accepted = 0
     status = 'maximum energy-refinement rounds reached'
@@ -108,7 +109,7 @@ def refine_reduced_pair_energy(state, hamiltonian, left_site, options, *,
         before = energies[-1]
         updates = []
         for site in sites:
-            update = optimize_reduced_site(candidate, hamiltonian, site, local_options)
+            update = optimize_reduced_site(candidate, hamiltonian, site, local_options, energy_cache=energy_cache)
             updates.append(update)
             accepted += int(update.accepted)
             energies.append(update.energy)
@@ -121,5 +122,5 @@ def refine_reduced_pair_energy(state, hamiltonian, left_site, options, *,
     if not stationary or status != 'converged':
         stationary = reduced_stationarity(candidate, hamiltonian, sites, local_options)
     return ReducedEnergyRefinement(candidate, initial,
-        _energy(candidate, hamiltonian, stable=True), iteration, accepted, tuple(energies),
+        energy_cache(candidate), iteration, accepted, tuple(energies),
         status == 'converged', status, stationary)

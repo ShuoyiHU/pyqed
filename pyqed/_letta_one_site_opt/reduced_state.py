@@ -414,6 +414,10 @@ class ReducedLatticeLETTA:
         return vector
 
     def norm(self):
+        from .reduced_frontier import ReducedFrontier
+        if ReducedFrontier.from_state(self).requires_compact(self):
+            from .frontier_contraction import frontier_norm
+            return frontier_norm(self)
         from .reduced_norm import ReducedNormChain, left_canonical_reduced_sites
         from .reduced_frontier import ReducedFrontier
 
