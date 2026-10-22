@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Source after FECO_ROOT is set. No block2 runtime or MKL preloading is required.
 if [[ -z ${LETTA_PYTHON:-} ]]; then
-    LETTA_PYTHON=/share/home/gubingLab/hushuoyi/miniconda3/envs/block2-pyscf/bin/python
+    LETTA_PYTHON="${PYQED_SU2_ENV:-/share/home/gubingLab/hushuoyi/miniconda3/envs/pyqed_letta_su2}/bin/python"
 fi
 [[ -x "$LETTA_PYTHON" ]] || { echo "Set LETTA_PYTHON to a Python with PySCF, NumPy, SciPy, Cython, setuptools." >&2; return 1; }
 export LETTA_PYTHON

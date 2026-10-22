@@ -25,7 +25,7 @@ Default partition `gubing`, QOS `huge`. Override PARTITION/QOS if needed.
 Preparations request eight CPUs/64 GB; solvers one CPU/64 GB, with single-thread
 BLAS for reproducible resource use. SCF uses exact direct integrals and a
 disk-backed AO-to-active-MO transformation; no AO four-index array is requested.
-Set LETTA_PYTHON if the existing block2-pyscf environment is elsewhere. It must
+Set LETTA_PYTHON if the existing pyqed_letta_su2 environment is elsewhere. It must
 provide PySCF, NumPy, SciPy, matplotlib, Cython and setuptools; the bundle vendors
 its existing pure-Python sympy/mpmath/opt_einsum/tensorly dependencies. Linux needs
 a C++17 compiler, OpenMP and LP64 BLAS/LAPACK libraries. The build gate checks the
@@ -85,11 +85,15 @@ retains all logs, and uses a new `results_retry_DATE_TIME` directory.
 Recovery waits for the build and tiny H2 validation to succeed before submitting
 chemistry jobs, so a setup failure does not create another blocked job graph.
 
-The earlier Hubbard campaign uses `pyqed_letta_su2`; this QC campaign uses
-`block2-pyscf`. Install compiler dependencies into the selected QC environment:
+Use the established `pyqed_letta_su2` environment, as in the Hubbard campaign.
+`PYQED_SU2_ENV` can override its location; `LETTA_PYTHON` can explicitly select
+another interpreter. Preflight verifies that imported pyqed is the bundled,
+source-verified snapshot, rather than another installation in the environment.
+Check dependencies in this environment before recovery:
 
 ```bash
-/share/home/gubingLab/hushuoyi/miniconda3/envs/block2-pyscf/bin/python -m pip install 'Cython>=3,<4' setuptools
+/share/home/gubingLab/hushuoyi/miniconda3/envs/pyqed_letta_su2/bin/python -c 'import Cython, setuptools, numpy, scipy, pyscf; print("Dependencies available")'
 ```
 
-No separate Python package directory or environment is needed.
+Install only missing dependencies in this environment. No separate Python
+package directory or environment is needed.
