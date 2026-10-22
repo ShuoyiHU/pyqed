@@ -102,30 +102,53 @@ def _boundary(site, mpo_site, axis):
             for q, r in Counter(site.qns[axis]).items()}
 
 
-def advance_left(environment, site, transfers):
-    result = {}
-    for t in transfers:
-        left = environment.get(t.left_key)
-        if left is None:
-            continue
-        value = cached_einsum('xal,xyop,aob,lpr->ybr', left, t.kernel,
-            site.data[t.bra_key].conj(), site.data[t.ket_key])
-        value /= _sector_irrep(t.bra_key[2]).dim
-        result[t.right_key] = result.get(t.right_key, 0.) + value
-    return result
+@lru_cache(maxsize=None)
+def _environment_pool(workers):
+    from concurrent.futures import ThreadPoolExecutor
+    return ThreadPoolExecutor(max_workers=workers,thread_name_prefix='letta-environment')
 
 
-def advance_right(environment, site, transfers):
-    result = {}
+def _advance_environment(environment,site,transfers,direction, *, structured=False):
+    """Independent output-sector groups; preserve each group's term order."""
+    import os
+    from .numpy_contractions import accumulate_einsum
+    from .boundary_structure import BoundaryProducts
+    products=BoundaryProducts(site,direction) if structured else None
+    bra_blocks=({k:(a.conj() if np.iscomplexobj(a) else a) for k,a in site.data.items()}
+                if structured else None)
+    lr=direction=='lr';groups={}
     for t in transfers:
-        right = environment.get(t.right_key)
-        if right is None:
-            continue
-        value = cached_einsum('ybr,xyop,aob,lpr->xal', right, t.kernel,
-            site.data[t.bra_key].conj(), site.data[t.ket_key])
-        value /= _sector_irrep(t.bra_key[0]).dim
-        result[t.left_key] = result.get(t.left_key, 0.) + value
-    return result
+        incoming=t.left_key if lr else t.right_key
+        if incoming in environment:
+            output=t.right_key if lr else t.left_key
+            groups.setdefault(output,[]).append(t)
+    def build(item):
+        key,terms=item;value=None
+        for t in terms:
+            incoming=environment[t.left_key if lr else t.right_key]
+            if products is not None:
+                # Transpose MPO channel axes for a left absorption.
+                transfer=t if not lr else ReducedTransfer(t.bra_key,t.ket_key,t.left_key,t.right_key,t.kernel.transpose(1,0,2,3))
+                sparse=products.accumulate(incoming,transfer,1./_sector_irrep(t.bra_key[2 if lr else 0]).dim,value)
+                if sparse is not None:
+                    value=sparse;continue
+            equation='xal,xyop,aob,lpr->ybr' if lr else 'ybr,xyop,aob,lpr->xal'
+            value=accumulate_einsum(equation,(incoming,t.kernel,
+                (bra_blocks[t.bra_key] if bra_blocks is not None else site.data[t.bra_key].conj()),site.data[t.ket_key]),
+                alpha=1./_sector_irrep(t.bra_key[2 if lr else 0]).dim,out=value)
+        return key,value
+    workers=int(os.environ.get('PYQED_ENVIRONMENT_THREADS',os.environ.get('PYQED_SECTOR_THREADS','1')))
+    if workers<1:raise ValueError('environment worker count must be positive')
+    if workers==1 or len(groups)<2:return dict(map(build,groups.items()))
+    return dict(_environment_pool(min(workers,len(groups))).map(build,groups.items()))
+
+
+def advance_left(environment,site,transfers, *, structured=False):
+    return _advance_environment(environment,site,transfers,'lr',structured=structured)
+
+
+def advance_right(environment,site,transfers, *, structured=False):
+    return _advance_environment(environment,site,transfers,'rl',structured=structured)
 
 
 @dataclass
@@ -186,7 +209,7 @@ class ReducedEnvironmentChain(MovingReducedEnvironments):
 
     def prepare_local_action(self, site, *, shapes=None):
         """Bind an immutable reduced Hamiltonian schedule for compiled actions."""
-        from .._letta_two_site_opt.sector_operator import SectorOperator
+        from .._letta_two_site_opt.sector_operator import SectorOperator, combine_fixed_channels
         self.ensure(site, site+1)
         terms=[]
         for transfer in self.transfers[site]:
@@ -197,7 +220,7 @@ class ReducedEnvironmentChain(MovingReducedEnvironments):
         if shapes is None:
             shapes={key:a.shape for key,a in self.sites[site].data.items()}
         scale=np.exp(self.left_log_scales[site]+self.right_log_scales[site+1])
-        return SectorOperator(shapes,terms,scale)
+        return combine_fixed_channels(SectorOperator(shapes,terms,scale))
 
     def pair_action(self, site, blocks):
         """Apply a cached compiled pair schedule; rebuild after site replacement."""
@@ -209,7 +232,7 @@ class ReducedEnvironmentChain(MovingReducedEnvironments):
         return self._prepared_pairs[signature](blocks)
 
     def prepare_pair_action(self, site, blocks):
-        from .._letta_two_site_opt.sector_operator import SectorOperator
+        from .._letta_two_site_opt.sector_operator import SectorOperator, combine_fixed_channels
         self.ensure(site,site+2)
         right_by_middle=defaultdict(list)
         for transfer in self.transfers[site+1]:

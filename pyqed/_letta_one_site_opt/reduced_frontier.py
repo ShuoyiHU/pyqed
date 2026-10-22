@@ -45,12 +45,13 @@ class _BlockVectorLayout:
             vector[start:stop] = block.reshape(-1)
         return vector
 
-    def unpack(self, vector):
+    def unpack(self, vector, *, copy=True):
         vector = np.asarray(vector).reshape(-1)
         if vector.size != self.size:
             raise ValueError(f"packed vector has size {vector.size}, expected {self.size}")
         return {
-            key: vector[start:stop].reshape(self.shapes[key]).copy()
+            key: (vector[start:stop].reshape(self.shapes[key]).copy() if copy else
+                  vector[start:stop].reshape(self.shapes[key]))
             for key, (start, stop) in self.offsets.items()
         }
 

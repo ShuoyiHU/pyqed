@@ -63,3 +63,25 @@ def test_captured_ladder_null_direction_and_local_root():
     assert e==pytest.approx(-3.13657157753983,abs=2e-10)
     s.tensors[site]=c.embedding.unpack_source(c.expand(z))
     assert _energy(s,mpo,stable=True)==pytest.approx(e,abs=2e-10)
+
+
+@pytest.mark.parametrize('nelec', [(1,1),(2,1),(2,0)])
+def test_composed_images_match_factored_action(nelec):
+    h=np.diag([.1,.2,.3]);h[0,1]=h[1,0]=-.7
+    p=ElectronicProblem(h,np.zeros((3,)*4),nelec)
+    state=ReducedLatticeLETTA.random((1,3),symmetry=p.symmetry('su2'),
+        multiplets_per_sector=2,real=False,seed=67,
+        neighborhoods=((0,1,2),(1,2),(2,)))
+    frontier=ReducedFrontier.from_state(state)
+    c=ReducedLocalCoordinates(frontier.to_mps(state),frontier.site_embedding(state,1),1)
+    c.set_hamiltonian(p.su2_mpo().native_mpo(state.physical_basis));c.prepare(1e-12)
+    assert sum(a.nbytes for a in c.composed_images if a is not None)<=16*1024**2
+    rng=np.random.default_rng(9);z=rng.normal(size=c.rank)+1j*rng.normal(size=c.rank)
+    expanded=c.orthogonal_expand(z);action=c.apply(z)
+    arbitrary={k:rng.normal(size=a.shape)+1j*rng.normal(size=a.shape) for k,a in expanded.items()}
+    pulled=c.orthogonal_adjoint(arbitrary)
+    c.composed_images=[None]*len(c.images)
+    for k,a in c.orthogonal_expand(z).items():
+        np.testing.assert_allclose(a,expanded[k],atol=1e-12,rtol=1e-12)
+    np.testing.assert_allclose(c.orthogonal_adjoint(arbitrary),pulled,atol=1e-12,rtol=1e-12)
+    np.testing.assert_allclose(c.apply(z),action,atol=1e-12,rtol=1e-12)

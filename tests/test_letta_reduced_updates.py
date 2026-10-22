@@ -177,3 +177,27 @@ def test_ordinary_one_site_gain_is_preserved_when_pair_candidate_stalls(monkeypa
     assert update.energy == pytest.approx(ordinary.energy, abs=1e-12)
     assert update.energy < before-1e-5
     np.testing.assert_allclose(s.state_vector(), baseline.state_vector(), atol=1e-12)
+
+
+def test_local_update_checks_normalized_candidate_once():
+    state,h=case()
+    energies=[]
+    def evaluate(candidate):
+        e=_energy(candidate,h,stable=True)
+        energies.append(e)
+        return e
+    update=optimize_reduced_site(state,h,1,LETTADMROptions(),energy_cache=evaluate)
+    assert len(energies)==2
+    assert update.accepted
+    assert update.energy==pytest.approx(_energy(state,h,stable=True),abs=1e-12)
+    assert state.norm()==pytest.approx(1.,abs=1e-10)
+
+
+def test_normalized_candidate_energy_rejection_restores_state():
+    state,h=case();original=state.state_vector();calls=[]
+    def reject(candidate):
+        calls.append(1)
+        return 0. if len(calls)==1 else 1.
+    update=optimize_reduced_site(state,h,1,LETTADMROptions(),energy_cache=reject)
+    assert not update.accepted and not update.local_converged
+    np.testing.assert_array_equal(state.state_vector(),original)

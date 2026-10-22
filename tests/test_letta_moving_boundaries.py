@@ -5,7 +5,8 @@ from pyqed._letta_one_site_opt.reduced_frontier import ReducedFrontier
 from pyqed._letta_one_site_opt.frontier_contraction import CanonicalBoundaryCache,canonical_environment
 
 @pytest.mark.parametrize('complex_values',[False,True])
-def test_cache_matches_rebuild_after_inplace_changes(complex_values):
+@pytest.mark.parametrize('structured',[False,True])
+def test_cache_matches_rebuild_after_inplace_changes(complex_values,structured):
  state,ham,_=setup_pair(1.)
  if complex_values:
   for blocks in state.tensors:
@@ -13,8 +14,8 @@ def test_cache_matches_rebuild_after_inplace_changes(complex_values):
  mpo=ham.native_mpo(state.physical_basis);cache=CanonicalBoundaryCache()
  for step,center in enumerate(list(range(state.nsites))+list(reversed(range(state.nsites)))):
   sites=ReducedFrontier.from_state(state).to_mps(state,compact=True)
-  a,l,r,h=canonical_environment(sites,center,mpo,cache=cache)
-  ar,lr,rr,hr=canonical_environment(sites,center,mpo)
+  a,l,r,h=canonical_environment(sites,center,mpo,cache=cache,structured=structured)
+  ar,lr,rr,hr=canonical_environment(sites,center,mpo,structured=structured)
   for lhs,rhs in ((l,lr),(r,rr),(a[center].data,ar[center].data)):
    assert lhs.keys()==rhs.keys()
    for k in lhs:np.testing.assert_array_equal(lhs[k],rhs[k])
@@ -44,3 +45,11 @@ def test_energy_reuse_is_value_based(monkeypatch):
  key=next(iter(state.tensors[1]));state.tensors[1][key]*=1.01
  assert context.stable_energy()==original(state,ham,stable=True)
  assert len(calls)==2
+
+
+def test_boundary_cache_memory_budget(monkeypatch):
+ monkeypatch.delenv('PYQED_BOUNDARY_CACHE_MB',raising=False)
+ assert CanonicalBoundaryCache().max_bytes==2*1024**3
+ monkeypatch.setenv('PYQED_BOUNDARY_CACHE_MB','8192')
+ assert CanonicalBoundaryCache().max_bytes==8*1024**3
+ assert CanonicalBoundaryCache(max_bytes=0).max_bytes==0

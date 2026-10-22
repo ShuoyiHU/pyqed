@@ -1131,6 +1131,14 @@ def _schmidt_split_untied(problem, blocks, sites, state, bond_dim, direction, op
     chain = ReducedNormChain.build(sites)
     left = {q: _gram_roots(g, options.metric_tolerance) for q, g in chain.left[i].items()}
     right = {q: _gram_roots(g, options.metric_tolerance) for q, g in chain.right[i+2].items()}
+    # Sparse norm contraction omits sectors disconnected from the outer state.
+    # Their Gram matrix and pseudoinverse are exactly zero, not identity.
+    for roots, counts in ((left, Counter(sites[i].qns[0])),
+                          (right, Counter(sites[i+1].qns[2]))):
+        for q, size in counts.items():
+            if q not in roots:
+                zero = np.zeros((size, size))
+                roots[q] = (zero, zero)
     weighted = {key: np.sqrt(_sector_irrep(key[-1]).dim/_sector_irrep(key[2]).dim)
         *np.einsum('al,lpqr,br->apqb', left[key[0]][0], a, right[key[-1]][0], optimize=True)
         for key, a in blocks.items()}

@@ -130,5 +130,8 @@ def overlap_matrix(const scalar[:, ::1] left, const scalar[:, ::1] right,
             col,l,p,r=routes[i,0],routes[i,1],routes[i,2],routes[i,3]
             for a in range(left.shape[0]):
                 scaled=weight*left[a,l]
+                if scaled == 0:
+                    continue
                 for b in range(right.shape[0]):
-                    output[a,p,b,col]+=scaled*right[b,r]
+                    if right[b,r] != 0:
+                        output[a,p,b,col]+=scaled*right[b,r]

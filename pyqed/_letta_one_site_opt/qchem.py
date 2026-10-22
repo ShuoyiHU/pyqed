@@ -133,7 +133,8 @@ class ElectronicProblem:
     def su2_mpo(self, *, cutoff=0.):
         """Chemistry MPO for exact reduced-spin LETTA states.
 
-        Reuses SU(2) DMRG's chemistry builder and reduced AutoMPO. Its exact
+        Onsite Hubbard interactions use explicit sparse reduced channels.
+        General ERIs reuse SU(2) DMRG's chemistry builder and reduced AutoMPO. Its exact
         local magnetic-component factors supply an operator reference. Native
         sweeps compile these once into irreducible operator multiplets, then
         contract multiplicities only. ``factors=None`` avoids treating the
@@ -148,6 +149,26 @@ class ElectronicProblem:
 
         if not np.isfinite(cutoff) or cutoff < 0:
             raise ValueError('cutoff must be finite and nonnegative')
+        # Keep the physical operator channels sparse for the onsite Hubbard
+        # family. The general chemistry compiler remains available for arbitrary
+        # ERIs and for matched validation of the new representation.
+        import os
+        construction = os.environ.get('PYQED_HUBBARD_MPO', 'sparse')
+        if construction not in {'sparse', 'compiled'}:
+            raise ValueError('PYQED_HUBBARD_MPO must be sparse or compiled')
+        diagonal = np.arange(self.norb)
+        onsite = self.eri[diagonal,diagonal,diagonal,diagonal]
+        if construction == 'sparse' and np.count_nonzero(self.eri) == np.count_nonzero(onsite):
+            from .sparse_hubbard_mpo import sparse_hubbard_mpo, HubbardComponentReference
+            h = np.where(abs(self.h1) > cutoff, self.h1, 0.)
+            u = np.where(abs(onsite/2) > cutoff, onsite, 0.)
+            direct = sparse_hubbard_mpo(h, u, self.ecore)
+            # Local component factors are only a reference representation;
+            # the production contraction gets the direct reduced MPO below.
+            result = ReducedMPOHamiltonian(None, tuple(HubbardComponentReference(direct, i) for i in range(self.norb)),
+                                           name='Sparse SU(2) Hubbard Hamiltonian')
+            object.__setattr__(result, '_native_mpo_cache', {direct.physical_basis: direct})
+            return result
         leg = physical_leg_from_reduced_basis(ReducedPhysicalBasis.spatial_orbital(),
                                              fully_reduced=False)
         if self.norb == 1:

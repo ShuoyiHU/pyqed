@@ -169,12 +169,12 @@ def _validate_reduced_mpo(hamiltonian, state):
                         f"canonical MPO physical leg at site {site} does not "
                         "match the state's ordered magnetic-component basis"
                     )
-            dense = np.asarray(
-                core.as_dense() if hasattr(core, "as_dense") else core
-            )
-            if dense.ndim != 4:
+            shape = getattr(core, 'component_shape', None)
+            if shape is None:
+                shape = np.asarray(core.as_dense() if hasattr(core, "as_dense") else core).shape
+            if len(shape) != 4:
                 raise ValueError(f"canonical MPO factor {site} is not rank four")
-            if dense.shape[2:] != (
+            if shape[2:] != (
                 state.dense_physical_dim,
                 state.dense_physical_dim,
             ):
@@ -182,7 +182,7 @@ def _validate_reduced_mpo(hamiltonian, state):
                     f"canonical MPO physical dimensions at site {site} do not "
                     "match the state's magnetic-component basis"
                 )
-            canonical_shapes.append(dense.shape)
+            canonical_shapes.append(shape)
         for site, shape in enumerate(canonical_shapes):
             if site == 0 and shape[0] != 1:
                 raise ValueError("canonical MPO left boundary dimension must be one")
@@ -391,9 +391,9 @@ def _projected_canonical_local_problem(
 
 
 def _native_local_problem(state, hamiltonian, site, sites, embedding,
-                          matrix_free, dense_solver_threshold, boundary_cache=None):
+                          matrix_free, dense_solver_threshold, boundary_cache=None, structured=False):
     from .reduced_coordinates import ReducedLocalCoordinates
-    coordinates=ReducedLocalCoordinates(sites,embedding,site,mpo=hamiltonian.native_mpo(state.physical_basis),boundary_cache=boundary_cache,action_only=True)
+    coordinates=ReducedLocalCoordinates(sites,embedding,site,mpo=hamiltonian.native_mpo(state.physical_basis),boundary_cache=boundary_cache,action_only=True,structured=structured)
     coordinates.set_hamiltonian(hamiltonian.native_mpo(state.physical_basis))
     h_action=coordinates.source_hamiltonian
     n_action=coordinates.metric
@@ -420,11 +420,12 @@ class StableEnergyCache:
         from .frontier_contraction import EnergyBoundaryCache
         self.boundaries = EnergyBoundaryCache()
 
-    def __call__(self, state):
+    def __call__(self, state, *, center=None, canonical_boundaries=None):
         from .frontier_contraction import state_signature
         key = state_signature(state)
         if key != self.key:
-            value = _energy(state, self.hamiltonian, stable=True, energy_boundaries=self.boundaries)
+            value = _energy(state, self.hamiltonian, stable=True, energy_boundaries=self.boundaries,
+                            center=center, canonical_boundaries=canonical_boundaries)
             self.key, self.value = key, value
         return self.value
 
@@ -611,6 +612,14 @@ def _davidson_in_metric_coordinates(problem, options, initial_vector):
     The overlap operator may be positive semidefinite.  Null directions are
     removed during metric orthogonalization, so neither N nor a whitening
     matrix is ever materialized.
+
+    This residual-subspace variant retains full-support probes
+    and auxiliary-root exploration for an unchanged incumbent. An optional
+    preconditioner changes search directions only, with a raw-residual fallback.
+    The unpreconditioned algorithm remains the default. After a resolved
+    energy decrease it converges only the lowest Ritz root. Finite exploration
+    is a safeguard against a stationary excited start, not a proof of the global
+    lowest eigenvalue for every operator and initial vector.
     """
 
     initial_vector = np.asarray(initial_vector, dtype=complex).reshape(-1)
@@ -639,6 +648,7 @@ def _davidson_in_metric_coordinates(problem, options, initial_vector):
     basis = initial_vector[:, None]
     metric_basis = metric_initial[:, None]
     hamiltonian_basis = problem.apply_hamiltonian(initial_vector)[:, None]
+    initial_rayleigh = float(np.vdot(initial_vector, hamiltonian_basis[:, 0]).real)
     seed_cursor = 0
 
     def metric_orthogonalize(candidate, metric_candidate=None):
@@ -730,8 +740,12 @@ def _davidson_in_metric_coordinates(problem, options, initial_vector):
         # adding random vectors is insufficient: their initial Rayleigh values
         # may exceed an already stationary excited incumbent, whose residual
         # would then suppress all further Hamiltonian-driven exploration.
-        roots = [coefficients] + [projected_vectors[:, j]
-            for j in range(1, min(3, projected_vectors.shape[1]))]
+        # Keep the excited-incumbent guard until the lowest Ritz energy has
+        # decreased. Thereafter target only the requested ground-state root;
+        # converging auxiliary excited roots needlessly consumes matvecs.
+        explore = not (energy < initial_rayleigh - tolerance*max(1., abs(initial_rayleigh)))
+        roots = [coefficients] + ([projected_vectors[:, j]
+            for j in range(1, min(3, projected_vectors.shape[1]))] if explore else [])
         for root in roots:
             hamiltonian_vector = hamiltonian_basis @ root
             metric_vector = metric_basis @ root
@@ -743,7 +757,11 @@ def _davidson_in_metric_coordinates(problem, options, initial_vector):
             if np.linalg.norm(residual) <= tolerance * residual_scale:
                 continue
             converged = False
-            candidate, metric_candidate = metric_orthogonalize(-residual)
+            preconditioner=getattr(problem,'preconditioner',None)
+            direction=-residual if preconditioner is None else preconditioner(-residual,root_energy)
+            candidate, metric_candidate = metric_orthogonalize(direction)
+            if candidate is None and preconditioner is not None:
+                candidate, metric_candidate = metric_orthogonalize(-residual)
             if candidate is not None:
                 break
         if candidate is None and (not converged or basis.shape[1] < minimum_explored):
@@ -814,16 +832,21 @@ def _lowest_coordinate_root(problem, options, initial_vector):
     else:
         local=SimpleNamespace(local_dimension=coordinates.rank,apply_hamiltonian=coordinates.apply,
                               apply_metric=lambda z:z,metric_scale=1.)
+        import os
+        preconditioner=os.environ.get('PYQED_LOCAL_PRECONDITIONER','none')
+        if preconditioner not in ('none','blocks'):
+            raise ValueError('PYQED_LOCAL_PRECONDITIONER must be none or blocks')
+        if preconditioner=='blocks':local.preconditioner=coordinates.preconditioned_residual
         _,z,_=_davidson_in_metric_coordinates(local,local_options,initial)
     vector=coordinates.expand(z)
     norm=coordinates.norm(vector)
     if not np.isfinite(norm) or norm<=np.finfo(float).tiny:
         raise FloatingPointError('Null QR-coordinate local solution')
     vector/=np.sqrt(norm)
-    energy=coordinates.energy(vector)
-    from .reduced_updates import local_residual
-    residual,_=local_residual(problem,vector,metric_tolerance=options.metric_tolerance)
-    return energy,vector,coordinates.rank,residual
+    from .reduced_updates import local_residual_diagnostics
+    diagnostics=local_residual_diagnostics(problem,vector,metric_tolerance=options.metric_tolerance)
+    coordinates.solution_diagnostics=(vector.copy(),diagnostics)
+    return diagnostics['energy'],vector,coordinates.rank,diagnostics['residual_norm']
 
 
 def _solve_local_problem(problem, options, *, initial_vector):
@@ -868,9 +891,17 @@ def _mpo_expectation(state, factors, *, stable=False):
     return final.expectation()
 
 
-def _energy(state, hamiltonian, *, stable=False, energy_boundaries=None):
+def _energy(state, hamiltonian, *, stable=False, energy_boundaries=None, center=None, canonical_boundaries=None):
     if (isinstance(hamiltonian, ReducedMPOHamiltonian)
             and hamiltonian.contraction_backend == 'reduced'):
+        if stable and center is not None:
+            from .frontier_contraction import centered_energy
+            numerator,denominator=centered_energy(state,hamiltonian.native_mpo(state.physical_basis),
+                center,cache=canonical_boundaries)
+            return _checked_energy(numerator,denominator)
+        if stable:
+            from .dependency_environment import fixed_dependency_view
+            state,_=fixed_dependency_view(state)
         if stable and ReducedFrontier.from_state(state).requires_compact(state):
             from .frontier_contraction import frontier_energy
             numerator, denominator = frontier_energy(state, hamiltonian.native_mpo(state.physical_basis), cache=energy_boundaries)
@@ -911,11 +942,9 @@ def _checked_energy(numerator, denominator):
 
 
 def _optimize_reduced_site_impl(state, hamiltonian, site, options, *, context=None, energy_cache=None):
-    """Solve and accept one exact reduced local generalized eigenproblem."""
+    """Propose a normalized update; the caller checks energy and commits it."""
 
     from .solver import LETTASiteUpdate
-    evaluate = (context.stable_energy if context is not None else energy_cache
-                if energy_cache is not None else lambda s: _energy(s, hamiltonian, stable=True))
 
     problem = context.local_problem(site, options) if context is not None else reduced_local_problem(
         state,
@@ -930,48 +959,37 @@ def _optimize_reduced_site_impl(state, hamiltonian, site, options, *, context=No
         initial_vector=problem.embedding.pack_source(state.tensors[int(site)]),
     )
     from .reduced_updates import local_residual_diagnostics
-    diagnostics=local_residual_diagnostics(problem,vector,metric_tolerance=options.metric_tolerance)
+    saved=getattr(problem.coordinates,'solution_diagnostics',None)
+    diagnostics=(saved[1] if saved is not None and np.array_equal(saved[0],vector) else
+                 local_residual_diagnostics(problem,vector,metric_tolerance=options.metric_tolerance))
     residual=diagnostics['residual_norm']
     relative_residual=diagnostics['relative_residual']
-    old_blocks = {
-        key: block.copy() for key, block in state.tensors[int(site)].items()
-    }
-    # Cached local H/N contractions can lose accuracy near the metric nullspace.
-    # Decide acceptance with an independently QR-conditioned reduced contraction,
-    # also when the eigensolver uses moving environments. This does not expand
-    # a determinant vector or change the variational state.
-    old_energy = evaluate(state)
+    # Normalize the candidate before the transaction's independent energy
+    # check. Checking both unnormalized and normalized copies repeats an
+    # expensive contraction of the same physical state.
     state.tensors[int(site)] = problem.embedding.unpack_source(vector)
-    new_energy = evaluate(state)
-    accepted = new_energy <= old_energy + options.energy_increase_tolerance
-    if not accepted:
-        state.tensors[int(site)] = old_blocks
-        new_energy = old_energy
+    if context is None:
+        state.normalize(center=int(site), balance=options.gauge_mode != 'frontier')
     else:
-        # The invariant MPO metric sums target M, whereas state.norm uses one
-        # component. Restore the public convention without disturbing other
-        # sites' conditional gauges (also necessary for non-singlets).
-        if context is None:
-            state.normalize(center=int(site), balance=options.gauge_mode != 'frontier')
-        else:
-            norm = (problem.coordinates.norm(vector) if problem.coordinates is not None
-                    else float(np.real(np.vdot(vector, problem.apply_metric(vector)))))
-            state.tensors[int(site)] = problem.embedding.unpack_source(
-                vector*np.sqrt((state.target_two_j+1)/norm))
+        norm = diagnostics['norm_squared']
+        if not np.isfinite(norm) or norm <= np.finfo(float).tiny:
+            raise FloatingPointError('Null or nonfinite local candidate norm')
+        state.tensors[int(site)] = problem.embedding.unpack_source(
+            vector*np.sqrt((state.target_two_j+1)/norm))
     if context is not None:
         context.synchronize([site])
     return LETTASiteUpdate(
         site=int(site),
         local_energy=local_energy,
-        energy=new_energy,
+        energy=local_energy,
         metric_rank=metric_rank,
         local_dimension=problem.local_dimension,
         residual_norm=residual,
         relative_residual=relative_residual,
         raw_residual_norm=diagnostics['raw_residual_norm'],
         raw_relative_residual=diagnostics['raw_relative_residual'],
-        local_converged=accepted and relative_residual <= options.eigensolver_tolerance,
-        accepted=accepted,
+        local_converged=relative_residual <= options.eigensolver_tolerance,
+        accepted=True,
         full_local_dimension=problem.full_local_dimension,
     )
 
@@ -1016,14 +1034,24 @@ def reduced_letta_dmrg(hamiltonian, *, state, options):
     if options.cbe_enabled:
         if not isinstance(hamiltonian, ReducedMPOHamiltonian) or hamiltonian.contraction_backend != 'reduced':
             raise ValueError('reduced CBE requires a native ReducedMPOHamiltonian')
-        if options.cbe_selector != 'exact':
-            raise ValueError('reduced CBE currently supports the exact residual selector only')
+        if options.cbe_selector not in {'exact', 'mps-dd'}:
+            raise ValueError('reduced CBE supports exact (LETTA) or mps-dd (untied OBC MPS)')
+        if options.cbe_selector == 'mps-dd' and state.neighborhoods != tuple((i,) for i in range(state.nsites)):
+            raise ValueError('mps-dd CBE requires an untied open-boundary MPS')
         if options.cbe_baseline_guard_fraction != 0.:
             raise ValueError('reduced CBE requires the strict one-site baseline guard (fraction=0)')
         if options.cbe_preselection_dimension is not None:
             raise ValueError('reduced exact CBE does not use a preselection dimension')
         if not options.cbe_conditional_trim:
             raise ValueError('reduced CBE requires physical-metric pair trimming')
+    context_type=ReducedSweepContext
+    if options.simplify_fixed_ties:
+        if options.gauge_mode!='none' or options.cbe_enabled:
+            raise ValueError('simplify_fixed_ties requires gauge_mode="none" and one-site updates without CBE')
+        if not isinstance(hamiltonian,ReducedMPOHamiltonian) or hamiltonian.contraction_backend!='reduced':
+            raise ValueError('simplify_fixed_ties requires reduced MPO environments')
+        from .dependency_environment import DependencySweepContext
+        context_type=DependencySweepContext
     nominal_bond = max((len(bond) for bond in state.bond_sectors), default=1)
     state = state.copy()
     direction = str(options.start_direction).lower()
@@ -1038,9 +1066,10 @@ def reduced_letta_dmrg(hamiltonian, *, state, options):
     history = []
     converged = False
     message = "STOP: MAXIMUM SWEEPS REACHED"
-    context = (ReducedSweepContext(state, hamiltonian)
+    context = (context_type(state, hamiltonian)
         if isinstance(hamiltonian, ReducedMPOHamiltonian)
-        and hamiltonian.contraction_backend == 'reduced' and options.gauge_mode == 'frontier' else None)
+        and hamiltonian.contraction_backend == 'reduced'
+        and (options.gauge_mode == 'frontier' or options.simplify_fixed_ties) else None)
     end_energy = StableEnergyCache(hamiltonian)
     for sweep in range(1, int(options.max_sweeps) + 1):
         from .reduced_gauge import GaugeQRBoundary
@@ -1053,11 +1082,14 @@ def reduced_letta_dmrg(hamiltonian, *, state, options):
         updates = []
         for site in sites:
             if options.cbe_enabled:
-                from .reduced_cbe import reduced_cbe_site
+                if options.cbe_selector == 'mps-dd':
+                    from .reduced_mps_cbe import mps_cbe_site as reduced_cbe_site
+                else:
+                    from .reduced_cbe import reduced_cbe_site
                 updates.append(reduced_cbe_site(state, hamiltonian, site, direction, nominal_bond, options))
                 # A new multiplet allocation changes layouts as well as values.
                 if context is not None:
-                    context = ReducedSweepContext(state, hamiltonian)
+                    context = context_type(state, hamiltonian)
             else:
                 try:
                     update = optimize_reduced_site(state, hamiltonian, site, options, context=context)
@@ -1065,7 +1097,7 @@ def reduced_letta_dmrg(hamiltonian, *, state, options):
                     # The local transaction has restored the incumbent. Drop
                     # any partially refreshed environments before continuing.
                     if context is not None:
-                        context = ReducedSweepContext(state, hamiltonian)
+                        context = context_type(state, hamiltonian)
                     energy = _energy(state, hamiltonian, stable=True)
                     update = LETTASiteUpdate(site=site, local_energy=energy, energy=energy,
                         metric_rank=0, local_dimension=0, residual_norm=np.inf,
@@ -1085,7 +1117,7 @@ def reduced_letta_dmrg(hamiltonian, *, state, options):
                         updates[-1] = replace(updates[-1], local_converged=False,
                             recovery_reason=reason if prior is None else prior+'; '+reason)
                         if context is not None:
-                            context = ReducedSweepContext(state, hamiltonian)
+                            context = context_type(state, hamiltonian)
         updates = tuple(updates)
         energy = context.stable_energy() if context is not None else end_energy(state)
         change = abs(energy - previous_energy)

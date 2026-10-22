@@ -139,6 +139,30 @@ def frontier_energy(state, mpo, *, cache=None):
     return numerator, denominator
 
 
+def centered_energy(state, mpo, center, *, cache=None):
+    """Independent expectation using two-sided exact QR environments.
+
+    Adapts the moving-environment MPS contraction of Schollwoeck,
+    Ann. Phys. 326, 96 (2011), doi:10.1016/j.aop.2010.09.012,
+    to the exact LETTA frontier. It contracts the updated state, never a
+    solver eigenvalue; only exact structural zeros are removed. Cached
+    boundaries are invalidated by tensor values, topology and MPO identity.
+    """
+    from .dependency_environment import fixed_dependency_view
+    view,_=fixed_dependency_view(state,active=center)
+    frontier=ReducedFrontier.from_state(view)
+    sites=frontier.to_mps(view,compact=True)
+    canonical,left,right,chain=canonical_environment(sites,center,mpo,cache=cache,
+        structured=True,transform_active=False)
+    from .numpy_contractions import cached_einsum
+    blocks={key:cached_einsum('al,lpr,br->apb',left[key[0]],np.asarray(a),right[key[2]])
+            for key,a in canonical[center].data.items()}
+    acted=chain.prepare_local_action(center,shapes={k:a.shape for k,a in blocks.items()})(blocks)
+    numerator=sum(np.vdot(blocks[k],v) for k,v in acted.items())
+    denominator=sum(_sector_irrep(k[2]).dim*np.vdot(v,v).real for k,v in blocks.items())
+    return numerator,denominator
+
+
 class EnergyBoundaryCache:
     """Bounded prefixes of the independent streamed QR energy contraction.
 
@@ -247,6 +271,23 @@ def contract_block(block, left=None, right=None):
     return np.einsum('al,lpr,br->apb',left,block,right)
 
 
+def contract_boundary_block(block, *, left=None, right=None):
+    """BLAS boundary contraction, preserving compact empty-row allocation."""
+    if left is not None:
+        dense=np.asarray(block)
+        return (left@dense.reshape(dense.shape[0],-1)).reshape(left.shape[0],*dense.shape[1:])
+    if isinstance(block,ScatterBlock) and block.shape[-1]>0:
+        width=block.shape[-1];rows,inverse=np.unique(block.indices//width,return_inverse=True)
+        if 2*len(rows)<=block.shape[0]*block.shape[1]:
+            selected=np.zeros((len(rows),width),dtype=block.dtype)
+            selected[inverse,block.indices%width]=block.values
+            out=np.zeros((block.shape[0]*block.shape[1],right.shape[0]),dtype=np.result_type(block.dtype,right.dtype))
+            out[rows]=selected@right.T
+            return out.reshape(block.shape[:2]+(right.shape[0],))
+    dense=np.asarray(block)
+    return (dense.reshape(-1,dense.shape[-1])@right.T).reshape(*dense.shape[:2],right.shape[0])
+
+
 def shallow_site(site):
     """Own the tensor dictionary while sharing immutable input arrays."""
     result=NonabelianTensor({},site.qns,site.dirs,fusion_legs=site.fusion_legs,
@@ -295,10 +336,17 @@ class CanonicalBoundaryCache:
     Uses the same reduced QR contractions as the uncached reference (Trefethen
     and Bau, Numerical Linear Algebra, SIAM 1997, doi:10.1137/1.9780898719574).
     No rank cutoff or precision change; the bound evicts cached boundaries only.
+    The default is 2 GiB; PYQED_BOUNDARY_CACHE_MB sets a model/job-specific MiB
+    budget. An explicit max_bytes overrides the environment. This is a cache
+    budget, not a limit on total process or contraction workspace memory.
     This is an implementation adaptation, not a new variational approximation.
     """
-    def __init__(self, max_bytes=256*1024**2):
+    def __init__(self, max_bytes=None):
         from collections import OrderedDict
+        import os
+        if max_bytes is None:
+            max_bytes=int(os.environ.get('PYQED_BOUNDARY_CACHE_MB','2048'))*1024**2
+        if max_bytes < 0:raise ValueError('boundary cache budget must be nonnegative')
         self.entries=OrderedDict();self.max_bytes=max_bytes;self.nbytes=0
         self.hits=0;self.advances=0;self.mpo=None
 
@@ -328,12 +376,18 @@ class CanonicalBoundaryCache:
             key=self.key(direction,i,signatures)
             if key in self.entries:
                 self.entries.move_to_end(key);self.hits+=1
-                return i,self.entries[key][0]
+                factor,environment,scale=self.entries[key][0]
+                from .boundary_structure import unpack_boundary
+                return i,(unpack_boundary(factor),unpack_boundary(environment),scale)
         return None
 
     def store(self,direction,cut,signatures,factor,environment,scale):
         self.advances+=1
         size=sum(a.nbytes for a in factor.values())+sum(a.nbytes for a in environment.values())
+        if size>self.max_bytes and getattr(self,"structured",False):
+            from .boundary_structure import pack_boundary
+            factor,fs=pack_boundary(factor);environment,es=pack_boundary(environment)
+            size=fs+es
         if size>self.max_bytes:return
         key=self.key(direction,cut,signatures)
         if key in self.entries:self.nbytes-=self.entries.pop(key)[1]
@@ -342,7 +396,7 @@ class CanonicalBoundaryCache:
         self.entries[key]=((factor,environment,scale),size);self.nbytes+=size
 
 
-def canonical_environment(sites, center, mpo, *, last_center=None, cache=None, transform_active=True):
+def canonical_environment(sites, center, mpo, *, last_center=None, cache=None, transform_active=True, structured=False):
     """Consume canonical outer cores immediately into the active boundaries.
 
     No canonical outer chain is retained; each QR core is contracted once.
@@ -357,6 +411,8 @@ def canonical_environment(sites, center, mpo, *, last_center=None, cache=None, t
                 'rl':(_boundary(sites[-1],mpo.sites[-1],2),0.)}
     seeds=None;signatures=None
     if cache is not None:
+        if getattr(cache,"structured",None) != structured:
+            cache.entries.clear();cache.nbytes=0;cache.structured=structured
         signatures=cache.signatures(sites,mpo)
         from collections import Counter
         seeds=[(0,{q:np.eye(d) for q,d in Counter(sites[0].qns[0]).items()}),
@@ -371,10 +427,10 @@ def canonical_environment(sites, center, mpo, *, last_center=None, cache=None, t
     def consume(direction,i,site):
         environment,scale=boundaries[direction]
         advance=advance_left if direction=='lr' else advance_right
-        boundaries[direction]=_normalize(advance(environment,site,cached_transfers(mpo,i,site)),scale)
+        boundaries[direction]=_normalize(advance(environment,site,cached_transfers(mpo,i,site),structured=structured),scale)
     canonical,left,right=_canonical_sites(sites,center,last_center=last_center,
         consume=consume,keep_indices=set(range(center,last_center+1)),
-        boundary_seeds=seeds,boundary_callback=store,transform_active=transform_active)
+        boundary_seeds=seeds,boundary_callback=store,transform_active=transform_active,boundary_matmul=True,structured=structured)
     chain=ReducedEnvironmentChain.build(canonical,mpo,lazy=True)
     chain.left[center],chain.left_log_scales[center]=boundaries['lr']
     chain.right[last_center+1],chain.right_log_scales[last_center+1]=boundaries['rl']

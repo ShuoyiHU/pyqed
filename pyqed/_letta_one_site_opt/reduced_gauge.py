@@ -79,9 +79,10 @@ class GaugeQRBoundary:
 
     Adaptation of sector QR (Trefethen and Bau, Numerical Linear Algebra,
     SIAM 1997, doi:10.1137/1.9780898719574). Only the requested side is
-    contracted. After a gauge changes its last site, that site is refactored
-    from the unchanged incoming boundary, preserving the full-rebuild order.
-    No rank cutoff or approximation is added. Only R is retained; no Q is
+    contracted. After a gauge changes its last site, the known transformation
+    is applied directly to the retained factor. Boundary contractions use BLAS
+    matrix multiplication. No rank cutoff or approximation is added; rounding
+    and the boundary row basis can differ from a full rebuild. Only R is retained; no Q is
     needed for the marginal gauge factors. This does not remove the dense
     QR cost of an individual wide frontier.
     """
@@ -113,7 +114,7 @@ class GaugeQRBoundary:
 
     def _advance(self, site, incoming):
         from collections import defaultdict
-        from .frontier_contraction import scatter_blocks, contract_block
+        from .frontier_contraction import scatter_blocks
         from .reduced_symmetry import _sector_irrep
         embedding=self.frontier.site_embedding(self.state,site)
         blocks=scatter_blocks(embedding,self.state.tensors[site])
@@ -121,10 +122,25 @@ class GaugeQRBoundary:
         lr=self.direction=='lr'
         for key,a in blocks.items():
             if lr:
-                b=contract_block(a,left=incoming[key[0]])
+                dense=np.asarray(a)
+                b=(incoming[key[0]]@dense.reshape(dense.shape[0],-1)).reshape(
+                    incoming[key[0]].shape[0],dense.shape[1],dense.shape[2])
                 groups[key[2]].append(b.reshape(-1,b.shape[2]))
             else:
-                b=contract_block(a,right=incoming[key[2]])
+                width=a.shape[2]
+                rows,inverse=np.unique(a.indices//width,return_inverse=True)
+                factor=incoming[key[2]]
+                if 2*len(rows)<=a.shape[0]*a.shape[1]:
+                    selected=np.zeros((len(rows),width),dtype=a.dtype)
+                    selected[inverse,a.indices%width]=a.values
+                    b=np.zeros((a.shape[0]*a.shape[1],factor.shape[0]),
+                               dtype=np.result_type(a.dtype,factor.dtype))
+                    b[rows]=selected@factor.T
+                    b=b.reshape(a.shape[:2]+(factor.shape[0],))
+                else:
+                    dense=np.asarray(a)
+                    b=(dense.reshape(-1,width)@factor.T).reshape(
+                        dense.shape[0],dense.shape[1],factor.shape[0])
                 weight=np.sqrt(_sector_irrep(key[2]).dim/_sector_irrep(key[0]).dim)
                 groups[key[0]].append(weight*b.transpose(2,1,0).reshape(-1,b.shape[0]))
         sectors=(self.state.right_virtual_sectors(site) if lr else self.state.left_virtual_sectors(site))
@@ -147,9 +163,25 @@ class GaugeQRBoundary:
         self.signature=self._signature()
         return self.boundary
 
-    def refresh(self):
-        """Called only after a successful gauge changes the last processed site."""
-        if self.last_site is not None:self.boundary=self._advance(self.last_site,self.incoming)
+    def refresh(self, variables, matrices):
+        """Apply the known conditional gauge to the existing square-root factor.
+
+        If the contracted side is Q R and the gauge is G, Q (R G) represents
+        the new side exactly. R G need not be triangular: subsequent contractions
+        and marginal QR only require its Gram matrix. No rank truncation occurs.
+        """
+        labels=(self.frontier.right_variables(self.last_site) if self.direction=='lr'
+                else self.frontier.left_variables(self.last_site))
+        multiplicities=Counter(self.state.bond_sectors[self.cut-1])
+        updated={q:np.empty_like(a,dtype=np.result_type(a,*matrices.values()))
+                 for q,a in self.boundary.items()}
+        for memory,configuration in enumerate(self.frontier._assignments(labels)):
+            assignment=dict(zip(labels,configuration))
+            shared=tuple(assignment[v] for v in variables)
+            for q,d in multiplicities.items():
+                section=slice(memory*d,(memory+1)*d)
+                updated[q][:,section]=self.boundary[q][:,section]@matrices[(shared,q)]
+        self.boundary=updated
         self.signature=self._signature()
 
 
@@ -239,7 +271,7 @@ def shift_reduced_frontier_gauge(state, cut, direction, *, tolerance=1e-12, envi
                                {key: a.T for key, a in transforms.items()})
             _apply_conditional(state, cut-1, 2, variables,
                                {key: a.T for key, a in inverses.items()})
-        if qr_boundary is not None:qr_boundary.refresh()
+        if qr_boundary is not None:qr_boundary.refresh(variables, transforms)
     except Exception:
         state.tensors[cut-1], state.tensors[cut] = original
         if qr_boundary is not None:qr_boundary.reset()

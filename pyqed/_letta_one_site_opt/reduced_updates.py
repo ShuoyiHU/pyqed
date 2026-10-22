@@ -26,12 +26,16 @@ def local_residual_diagnostics(problem, vector, *, metric_tolerance=1e-12):
     Problems without QR coordinates retain the raw-coordinate convention.
     """
     vector=np.asarray(vector)
-    h,n=problem.apply_hamiltonian(vector),problem.apply_metric(vector)
     coordinates=getattr(problem,'coordinates',None)
-    norm=(coordinates.norm(vector) if coordinates is not None else float(np.vdot(vector,n).real))
+    if coordinates is not None:
+        h,energy,norm=coordinates.source_action_data(vector)
+        n=problem.apply_metric(vector)
+    else:
+        h,n=problem.apply_hamiltonian(vector),problem.apply_metric(vector)
+        norm=float(np.vdot(vector,n).real)
+        energy=float(np.vdot(vector,h).real/norm) if norm>0 else np.nan
     if not np.isfinite(norm) or norm<=np.finfo(float).tiny:
         raise FloatingPointError('Null or nonfinite state in local residual check')
-    energy=coordinates.energy(vector) if coordinates is not None else float(np.vdot(vector,h).real/norm)
     raw=float(np.linalg.norm(h-energy*n))
     raw_scale=max(float(np.linalg.norm(h)),abs(energy)*float(np.linalg.norm(n)),np.finfo(float).tiny)
     if coordinates is not None:
@@ -41,7 +45,7 @@ def local_residual_diagnostics(problem, vector, *, metric_tolerance=1e-12):
     scale=max(float(np.linalg.norm(h)),abs(energy)*float(np.linalg.norm(n)),np.finfo(float).tiny)
     if not np.isfinite(energy) or not np.isfinite(absolute) or not np.isfinite(raw):
         raise FloatingPointError('Nonfinite reduced local residual')
-    return dict(residual_norm=absolute,relative_residual=absolute/scale,
+    return dict(energy=energy,norm_squared=norm,residual_norm=absolute,relative_residual=absolute/scale,
                 raw_residual_norm=raw,raw_relative_residual=raw/raw_scale)
 
 
@@ -54,10 +58,15 @@ def local_residual(problem, vector, *, metric_tolerance=1e-12):
 def reduced_stationarity(state, hamiltonian, sites, options):
     """Rebuild local actions at the final state, after all neighboring changes."""
     from .reduced_solver import reduced_local_problem
+    context = None
+    if getattr(options, 'simplify_fixed_ties', False):
+        from .dependency_environment import DependencySweepContext
+        context = DependencySweepContext(state, hamiltonian)
     reports = []
     for site in sites:
-        problem = reduced_local_problem(state, hamiltonian, site,
-            matrix_free=options.matrix_free, dense_solver_threshold=options.dense_solver_threshold)
+        problem = (context.local_problem(site, options) if context is not None else
+            reduced_local_problem(state, hamiltonian, site,
+                matrix_free=options.matrix_free, dense_solver_threshold=options.dense_solver_threshold))
         vector = problem.embedding.pack_source(state.tensors[site])
         absolute, relative = local_residual(problem, vector, metric_tolerance=options.metric_tolerance)
         reports.append(dict(site=site, residual_norm=absolute, relative_residual=relative))

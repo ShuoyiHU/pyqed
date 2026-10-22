@@ -72,3 +72,17 @@ def test_adaptive_untied_solver_uses_native_schmidt_split(monkeypatch):
     assert fci.spin_op.spin_square(ci, 3, p.nelec)[0] == pytest.approx(.75, abs=1e-10)
     assert result.energy == pytest.approx(exact, abs=2e-9)
     assert all(u.truncation_iterations == 0 for x in result.history for u in x.updates)
+@pytest.mark.parametrize('side',['left','right'])
+def test_schmidt_handles_structurally_disconnected_outer_sector(side):
+    p=ElectronicProblem(*integrals(4),(2,2))
+    s=ReducedLatticeLETTA.random((1,4),symmetry=p.symmetry('su2'),
+        neighborhoods=tuple((i,) for i in range(4)),multiplets_per_sector=2,
+        real=False,seed=301)
+    index,axis=(0,2) if side=='left' else (3,0)
+    q=next(iter(s.tensors[index]))[axis]
+    s.tensors[index]={k:v for k,v in s.tensors[index].items() if k[axis]!=q}
+    before=s.state_vector()
+    assert np.linalg.norm(before)>0
+    result,loss=split_state(s,p.su2_mpo(),100)
+    np.testing.assert_allclose(result.state_vector(),before,atol=2e-11)
+    assert loss==pytest.approx(0,abs=2e-11)

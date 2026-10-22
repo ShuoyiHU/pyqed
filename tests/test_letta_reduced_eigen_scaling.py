@@ -115,3 +115,18 @@ def test_exploration_preserves_incumbent_inside_degenerate_ground_space():
                                                initial_vector=initial)
     assert energy == pytest.approx(0., abs=1e-12)
     np.testing.assert_allclose(actual, initial, atol=2e-12)
+
+
+def test_ground_root_does_not_require_converged_excited_roots():
+    from pyqed._letta_one_site_opt.reduced_solver import _davidson_in_metric_coordinates
+    rng=np.random.default_rng(1919);dimension=80
+    q,_=np.linalg.qr(rng.normal(size=(dimension,dimension)))
+    h=(q*np.r_[-3.,np.linspace(1.,2.,dimension-1)])@q.T
+    calls=[]
+    def action(x):calls.append(1);return h@x
+    problem=SimpleNamespace(local_dimension=dimension,apply_hamiltonian=action,
+        apply_metric=lambda x:x,metric_scale=1.)
+    e,v,_=_davidson_in_metric_coordinates(problem,LETTADMROptions(),rng.normal(size=dimension))
+    assert abs(e+3.)<1e-11
+    assert np.linalg.norm(h@v-e*v)<1e-9
+    assert len(calls)<40

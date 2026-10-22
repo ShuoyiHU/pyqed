@@ -45,6 +45,7 @@ from .reduced_symmetry import (
     ReducedSymmetry,
 )
 from .reduced_state import ReducedLatticeLETTA
+from .spin_fusion import coupled_pair_basis, fuse_su2_pairs
 from .reduced_gauge import (
     canonicalize_reduced_frontier, reduced_frontier_grams, shift_reduced_frontier_gauge,
 )
@@ -99,6 +100,8 @@ __all__ = [
     "FrontierSiteEmbedding",
     "ReducedFrontier",
     "ReducedLatticeLETTA",
+    "coupled_pair_basis",
+    "fuse_su2_pairs",
     "ReducedLocalProblem",
     "ReducedMPOHamiltonian",
     "ReducedPhysicalBasis",

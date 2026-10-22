@@ -80,3 +80,52 @@ def test_reused_first_products_preserve_route_order(complex_values,dims):
         expected=action(blocks)
         for key in shapes:
             np.testing.assert_array_equal(actual[key],expected[key])
+
+
+@pytest.mark.parametrize('complex_values',[False,True])
+def test_fixed_channel_sums_match_original_for_multiple_vectors(complex_values):
+    from pyqed._letta_two_site_opt.sector_operator import combine_fixed_channels
+    rng=np.random.default_rng(19019)
+    def draw(shape):
+        a=rng.normal(size=shape)
+        return a+1j*rng.normal(size=shape) if complex_values else a
+    shapes={0:(3,2,4),1:(5,3,2)}
+    left,right=draw((4,5,3)),draw((5,2,4))
+    old=SectorOperator(shapes,[(1,0,left,draw((4,5,3,2)),right)])
+    new=combine_fixed_channels(old)
+    assert len(new.routes)<len(old.routes)
+    assert combine_fixed_channels(old,max_bytes=1) is old
+    for _ in range(3):
+        blocks={k:draw(shape) for k,shape in shapes.items()}
+        for k,v in old(blocks).items():
+            np.testing.assert_allclose(new(blocks)[k],v,atol=2e-12,rtol=2e-12)
+
+
+@pytest.mark.parametrize('complex_factors', [False, True])
+@pytest.mark.parametrize('reuse', [False, True])
+def test_sector_workers_match_serial_repeated_vectors(monkeypatch, complex_factors, reuse):
+    rng = np.random.default_rng(19106)
+    def draw(shape):
+        x = rng.normal(size=shape)
+        return x+1j*rng.normal(size=shape) if complex_factors else x
+    shapes = {0:(3,3,5), 1:(4,2,2), 2:(0,1,2)}
+    terms = []
+    for bra, ket in [(0,1),(1,0),(0,0),(1,1),(0,1),(2,0)]:
+        a,no,b = shapes[bra];l,np_,r = shapes[ket]
+        terms.append((bra,ket,draw((2,a,l)),draw((2,3,no,np_)),draw((3,b,r))))
+    op = SectorOperator(shapes,terms,scale=.7)
+    if not reuse: op.reuse_count = 0
+    for complex_vector in [False,True,False]:
+        blocks={k:rng.normal(size=s) for k,s in shapes.items()}
+        if complex_vector:blocks={k:x+1j*rng.normal(size=x.shape) for k,x in blocks.items()}
+        monkeypatch.setenv('PYQED_SECTOR_THREADS','1');expected=op(blocks)
+        for workers in [2,4]:
+            monkeypatch.setenv('PYQED_SECTOR_THREADS',str(workers));actual=op(blocks)
+            for k in shapes:np.testing.assert_array_equal(actual[k],expected[k])
+    assert len(op._schedules(4)) == 4
+
+
+def test_sector_workers_empty_operator(monkeypatch):
+    monkeypatch.setenv('PYQED_SECTOR_THREADS','4')
+    action=SectorOperator({0:(2,1,2)},[])
+    np.testing.assert_array_equal(action({0:np.ones((2,1,2))})[0],0)

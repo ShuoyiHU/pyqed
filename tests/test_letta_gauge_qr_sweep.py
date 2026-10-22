@@ -26,10 +26,11 @@ def test_moving_qr_matches_full_rebuild_and_preserves_state(spin,direction):
                                       transform_active=False)
         expected=left if direction=='lr' else right
         actual=sweep.at(cut)
-        for q,a in expected.items():np.testing.assert_array_equal(actual[q],a)
+        for q,a in expected.items():
+            np.testing.assert_allclose(actual[q].conj().T@actual[q],a.conj().T@a,rtol=2e-9,atol=2e-10)
         gauge.shift_reduced_frontier_gauge(state,cut,direction,qr_boundary=sweep)
     np.testing.assert_allclose(state.state_vector(),before,rtol=2e-10,atol=2e-10)
-    assert sweep.site_contractions==2*(state.nsites-1)
+    assert sweep.site_contractions==(state.nsites-1)
 
 @pytest.mark.parametrize('direction',['lr','rl'])
 def test_moving_qr_invalidates_in_place_changes(direction):
@@ -51,14 +52,14 @@ def test_initial_conditioning_has_linear_site_work(center,monkeypatch):
         return advance(self,site,incoming)
     monkeypatch.setattr(gauge.GaugeQRBoundary,'_advance',counted)
     gauge.canonicalize_reduced_frontier(state,center)
-    assert len(calls)==2*(state.nsites-1)
+    assert len(calls)==(state.nsites-1)
     np.testing.assert_allclose(state.state_vector(),before,rtol=2e-10,atol=2e-10)
 
 
 def test_refresh_failure_restores_gauge_transaction(monkeypatch):
     _,state=setup(1,True)
     original=state.copy();cache=gauge.GaugeQRBoundary(state,'lr')
-    def fail():raise FloatingPointError('injected QR failure')
+    def fail(*args):raise FloatingPointError('injected QR failure')
     monkeypatch.setattr(cache,'refresh',fail)
     with pytest.raises(FloatingPointError,match='injected QR failure'):
         gauge.shift_reduced_frontier_gauge(state,1,'lr',qr_boundary=cache)

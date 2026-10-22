@@ -33,6 +33,7 @@ class LETTADMROptions:
     start_direction: str = "lr"
     alternate: bool = True
     gauge_mode: str = "frontier"  # "frontier" whitens admissible complete environments.
+    simplify_fixed_ties: bool = False  # Reduced one-site local QR; gauge_mode="none".
     environment_granularity: str = "site"
     use_sparse_mpo: bool = True
     matrix_free: bool = True
@@ -1246,8 +1247,8 @@ def letta_dmrg(
         raise ValueError("bond_expansion_noise must be nonnegative.")
     if options.cbe_expansion_dimension <= 0:
         raise ValueError("cbe_expansion_dimension must be positive.")
-    if options.cbe_selector not in {"exact", "shrewd"}:
-        raise ValueError("cbe_selector must be 'exact' or 'shrewd'.")
+    if options.cbe_selector not in {"exact", "shrewd", "mps-dd"}:
+        raise ValueError("cbe_selector must be 'exact', 'shrewd', or 'mps-dd'.")
     if (
         options.cbe_preselection_dimension is not None
         and options.cbe_preselection_dimension <= 0
@@ -1299,6 +1300,8 @@ def letta_dmrg(
         raise ValueError("LETTA-CBE requires exact boundary environments.")
     from .reduced_ring_state import ReducedRingLETTA
     if isinstance(state, ReducedRingLETTA):
+        if options.cbe_enabled and options.cbe_selector == "mps-dd":
+            raise ValueError("mps-dd CBE requires an untied open-boundary MPS")
         from .reduced_ring_solver import ring_dmrg
         if symmetry is not None and state.symmetry != symmetry:
             raise ValueError("supplied ring state and symmetry do not match")
@@ -1309,8 +1312,8 @@ def letta_dmrg(
     if isinstance(state, ReducedLatticeLETTA) or isinstance(symmetry, ReducedSymmetry):
         from .reduced_solver import reduced_letta_dmrg
 
-        if options.cbe_enabled and options.cbe_selector != 'exact':
-            raise ValueError("reduced CBE currently supports the exact residual selector only")
+        if options.cbe_enabled and options.cbe_selector not in {'exact', 'mps-dd'}:
+            raise ValueError("reduced CBE supports exact (LETTA) or mps-dd (untied OBC MPS)")
         if state is None:
             if lattice_shape is None:
                 raise ValueError("lattice_shape is required when reduced state is omitted.")
@@ -1331,6 +1334,8 @@ def letta_dmrg(
         if options.bond_dimension_schedule is not None:
             raise ValueError("reduced SU(2) bond schedules are not implemented yet.")
         return reduced_letta_dmrg(hamiltonian, state=state, options=options)
+    if options.simplify_fixed_ties:
+        raise ValueError("simplify_fixed_ties requires reduced SU(2) one-site LETTA")
     schedule = _validated_bond_schedule(options, bond_dim, state)
     if schedule is not None:
         return _letta_dmrg_with_bond_schedule(
