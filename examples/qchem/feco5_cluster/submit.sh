@@ -15,6 +15,7 @@ case "$mode" in
  worker)
     stage=${2:?};basis=${3:-0};space=${4:-0}
     if [[ "$stage" == build ]]; then
+        "$LETTA_PYTHON" "$FECO_ROOT/restore_runtime.py"
         "$LETTA_PYTHON" "$FECO_ROOT/campaign.py" preflight
         "$LETTA_PYTHON" -c 'import Cython, setuptools; print("Compiler dependencies available")'
         "$LETTA_PYTHON" -m pyqed.mps.nonabelian.sweep_engine

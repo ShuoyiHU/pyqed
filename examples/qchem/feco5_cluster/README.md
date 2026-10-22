@@ -69,3 +69,16 @@ Balabanov & Peterson, JCP 123, 064107 (2005), https://doi.org/10.1063/1.1998907.
 The def2 choices provide an independent triple/quadruple-zeta family; increasing
 CAS to 16/18 expands correlated occupied and virtual spaces, not an automatic
 claim of a chemically complete active space.
+
+## Exact-case Linux deployment
+
+Runtime files are shipped in `runtime.tar.gz` directly from Git object paths,
+not copied through a macOS directory tree. This preserves distinct `HEOM/heom`
+and `DFT/dft` directories. The build job checks the archive hash, validates every
+member, extracts it on Linux, and checks actual directory-entry capitalization
+before installing source/vendor. Existing runtime directories are retained in
+a timestamped backup. The normal source verification remains enabled.
+
+For the original failed deployment, `bash recover.sh` cancels only the 46 IDs
+in `results/submitted.tsv`, retains its logs, and submits the repaired graph into
+a new `results_retry_DATE_TIME` directory. It must be run on the cluster.
