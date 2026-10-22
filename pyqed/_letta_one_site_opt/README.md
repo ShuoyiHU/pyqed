@@ -541,3 +541,9 @@ inputs retain the existing contraction. This reduces temporary input storage,
 not the output or QR workspace. Regression tests check exact equality and
 forbid materializing the full input block. Full-solver performance remains
 workload dependent; isolated contraction timings are not sweep speedups.
+
+## Quantum chemistry workflow
+
+See [the QC example and checkpoint guide](../../examples/qchem/README_letta_qc.md)
+for singlet CAS two-site MPS preparation, mutual-information ties, and one-site
+LETTA with U(1) + SU(2). The reusable driver is `qchem_workflow.QCLETTA`.

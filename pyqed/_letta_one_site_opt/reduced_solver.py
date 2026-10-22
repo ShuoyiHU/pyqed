@@ -1017,8 +1017,13 @@ def optimize_reduced_site(state, hamiltonian, site, options, *, context=None, en
         raise
 
 
-def reduced_letta_dmrg(hamiltonian, *, state, options):
-    """Alternate exact one-site sweeps in reduced LETTA parameter spaces."""
+def reduced_letta_dmrg(hamiltonian, *, state, options, sweep_callback=None):
+    """Alternate exact one-site sweeps in reduced LETTA parameter spaces.
+
+    Optional ``sweep_callback(state, sweep)`` observes each completed sweep,
+    before the convergence audit. It must not mutate the live state; copy or
+    serialize it to retain a checkpoint. Callback exceptions propagate.
+    """
 
     from .solver import LETTADMRGResult, LETTASiteUpdate, LETTASweep
     from .reduced_updates import NUMERICAL_ERRORS
@@ -1133,6 +1138,8 @@ def reduced_letta_dmrg(hamiltonian, *, state, options):
                 updates=updates,
             )
         )
+        if sweep_callback is not None:
+            sweep_callback(state, history[-1])
         if options.verbosity:
             print(
                 f"reduced SU(2) LETTA sweep {sweep:3d}  direction={direction}  "
