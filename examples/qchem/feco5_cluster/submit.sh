@@ -50,8 +50,22 @@ dispatch() {
         printf '%q ' sbatch "${opts[@]}" "$FECO_ROOT/submit.sh" worker "$stage" "$basis" "$space"; printf '\n'
         job_id="${stage}_${basis}_${space}_ID"
     else
-        local reply
-        reply=$(sbatch "${opts[@]}" "$FECO_ROOT/submit.sh" worker "$stage" "$basis" "$space")
+        local reply status=0
+        reply=$(sbatch "${opts[@]}" "$FECO_ROOT/submit.sh" worker "$stage" "$basis" "$space") || status=$?
+        if (( status != 0 )); then
+            job_id=${reply%%;*}
+            if [[ "$job_id" =~ ^[0-9]+$ ]]; then
+                printf '%s\t%s\t%s\t%s\t%s\n' "$stage" "$basis" "$space" "$job_id" "$dep" >> "$OUTPUT_ROOT/submitted.tsv"
+            fi
+            echo "Submission/build failed: stage=$stage job=${job_id:-unknown} status=$status" >&2
+            echo "Logs: $OUTPUT_ROOT/logs" >&2
+            if [[ "$job_id" =~ ^[0-9]+$ ]]; then
+                for log in "$OUTPUT_ROOT/logs/${stage}_${basis}_${space}_${job_id}_"*.err; do
+                    [[ ! -f "$log" ]] || tail -n 35 "$log" >&2
+                done
+            fi
+            return "$status"
+        fi
         job_id=${reply%%;*};[[ "$job_id" =~ ^[0-9]+$ ]] || { echo "Invalid sbatch reply: $reply" >&2; exit 1; }
         printf '%s\t%s\t%s\t%s\t%s\n' "$stage" "$basis" "$space" "$job_id" "$dep" >> "$OUTPUT_ROOT/submitted.tsv"
         echo "Submitted $stage basis=$basis CAS=$space job=$job_id dependency=$dep"

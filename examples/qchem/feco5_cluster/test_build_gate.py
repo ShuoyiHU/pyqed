@@ -12,13 +12,15 @@ def executable(path,text):
 @pytest.mark.parametrize('failure',[True,False])
 def test_build_gate_precedes_all_chemistry_jobs(tmp_path,failure):
     tools=tmp_path/'bin';tools.mkdir();log=tmp_path/'calls'
-    executable(tools/'sbatch', 'echo "$*" >> "$CALL_LOG"\n'+('exit 1\n' if failure else 'echo "$(wc -l < "$CALL_LOG" | tr -d " ")"\n'))
+    executable(tools/'sbatch', 'echo "$*" >> "$CALL_LOG"\n'+('echo 12345; exit 1\n' if failure else 'echo "$(wc -l < "$CALL_LOG" | tr -d " ")"\n'))
     env=dict(os.environ,PATH=str(tools)+os.pathsep+os.environ['PATH'],CALL_LOG=str(log),OUTPUT_ROOT=str(tmp_path/'out'))
     run=subprocess.run(['bash',str(HERE/'submit.sh'),'verify-and-submit'],env=env,text=True,capture_output=True)
     lines=log.read_text().splitlines()
     assert '--wait' in lines[0]
     if failure:
         assert run.returncode!=0 and len(lines)==1
+        assert 'job=12345 status=1' in run.stderr
+        assert '12345' in (tmp_path/'out/submitted.tsv').read_text()
     else:
         assert run.returncode==0,run.stderr
         assert len(lines)==46 and all('--wait' not in x for x in lines[1:])
