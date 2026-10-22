@@ -79,6 +79,17 @@ member, extracts it on Linux, and checks actual directory-entry capitalization
 before installing source/vendor. Existing runtime directories are retained in
 a timestamped backup. The normal source verification remains enabled.
 
-For the original failed deployment, `bash recover.sh` cancels only the 46 IDs
-in `results/submitted.tsv`, retains its logs, and submits the repaired graph into
-a new `results_retry_DATE_TIME` directory. It must be run on the cluster.
+Run `bash recover.sh` on the cluster after repairing the selected environment.
+It cancels only live jobs recorded in this campaign's `results*/submitted.tsv`,
+retains all logs, and uses a new `results_retry_DATE_TIME` directory.
+Recovery waits for the build and tiny H2 validation to succeed before submitting
+chemistry jobs, so a setup failure does not create another blocked job graph.
+
+The earlier Hubbard campaign uses `pyqed_letta_su2`; this QC campaign uses
+`block2-pyscf`. Install compiler dependencies into the selected QC environment:
+
+```bash
+/share/home/gubingLab/hushuoyi/miniconda3/envs/block2-pyscf/bin/python -m pip install 'Cython>=3,<4' setuptools
+```
+
+No separate Python package directory or environment is needed.

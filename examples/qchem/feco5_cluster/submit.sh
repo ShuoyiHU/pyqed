@@ -28,11 +28,11 @@ case "$mode" in
     ;;
  preflight) exec "$LETTA_PYTHON" "$FECO_ROOT/campaign.py" preflight ;;
  collect) exec "$LETTA_PYTHON" "$FECO_ROOT/campaign.py" collect ;;
- dry-run|submit) ;;
- *) echo 'Usage: bash submit.sh [dry-run|preflight|submit|collect]' >&2; exit 2 ;;
+ dry-run|submit|verify-and-submit) ;;
+ *) echo 'Usage: bash submit.sh [dry-run|preflight|submit|verify-and-submit|collect]' >&2; exit 2 ;;
 esac
 # Refuse duplicate submission; dry-run never creates a submission record.
-if [[ "$mode" == submit ]]; then
+if [[ "$mode" == submit || "$mode" == verify-and-submit ]]; then
     mkdir -p "$OUTPUT_ROOT/logs"
     (set -o noclobber; printf 'stage\tbasis\tspace\tjob_id\tdependency\n' > "$OUTPUT_ROOT/submitted.tsv") || {
         echo 'Submission record exists; use targeted resubmission, not a duplicate campaign.' >&2; exit 1;
@@ -43,6 +43,7 @@ dispatch() {
     local stage=$1 basis=$2 space=$3 dep=$4 array=$5 cpus=$6 memory=$7
     local opts=("${common[@]}" --job-name="qc_${stage}_${basis}_${space}" --cpus-per-task="$cpus" --mem="$memory"
         --output="$OUTPUT_ROOT/logs/${stage}_${basis}_${space}_%A_%a.out" --error="$OUTPUT_ROOT/logs/${stage}_${basis}_${space}_%A_%a.err")
+    if [[ "$mode" == verify-and-submit && "$stage" == build ]]; then opts+=(--wait); fi
     [[ "$dep" == - ]] || opts+=(--dependency="$dep")
     [[ "$array" == - ]] || opts+=(--array="$array")
     if [[ "$mode" == dry-run ]]; then

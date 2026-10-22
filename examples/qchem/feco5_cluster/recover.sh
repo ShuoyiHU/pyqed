@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-record="$ROOT/results/submitted.tsv"
-[[ -f "$record" ]] || { echo "Missing original campaign submission record: $record" >&2; exit 1; }
-mapfile -t ids < <(awk -F '\t' 'NR>1 {print $4}' "$record")
-[[ ${#ids[@]} == 46 ]] || { echo 'Unexpected job count; inspect the submission record.' >&2; exit 1; }
-for id in "${ids[@]}"; do [[ "$id" =~ ^[0-9]+$ ]] || exit 1; done
-# These are only this campaign's old jobs, including their array tasks.
-job_list=$(IFS=,; printf '%s' "${ids[*]}")
-live=$(squeue --noheader --jobs="$job_list" --format='%F' | sort -u)
-if [[ -n "$live" ]]; then
-    mapfile -t live_ids <<< "$live"
-    scancel "${live_ids[@]}"
+records=("$ROOT"/results*/submitted.tsv)
+[[ -f "${records[0]}" ]] || { echo 'No campaign submission records found.' >&2; exit 1; }
+recorded=$(awk -F '\t' 'FNR>1 {if ($4 !~ /^[0-9]+$/) exit 1; print $4}' "${records[@]}" | sort -u)
+# Query current jobs once; expired IDs in older records need not exist in Slurm.
+live=$(squeue --noheader --user="$(id -un)" --format='%F' | sort -u)
+to_cancel=$(comm -12 <(printf '%s\n' "$recorded" | sort -u) <(printf '%s\n' "$live" | sort -u))
+if [[ -n "$to_cancel" ]]; then
+    ids=()
+    while IFS= read -r job; do ids+=("$job"); done <<< "$to_cancel"
+    scancel "${ids[@]}"
 fi
 export OUTPUT_ROOT="$ROOT/results_retry_$(date +%Y%m%d_%H%M%S)"
-printf 'New output directory: %s\n' "$OUTPUT_ROOT"
-bash "$ROOT/submit.sh" submit
+printf 'New output directory: %s\nWaiting for the build/smoke job before submitting chemistry jobs.\n' "$OUTPUT_ROOT"
+bash "$ROOT/submit.sh" verify-and-submit
