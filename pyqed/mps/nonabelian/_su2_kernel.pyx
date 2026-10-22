@@ -2291,6 +2291,7 @@ cdef class SU2MovingEnvironment:
         self._h1_values = np.asarray(h1_arr).copy()
         self._eri_values = np.asarray(eri_arr).copy()
         self._engine = new CppMovingEnvironment(self._system)
+        self._engine.set_factorization_functions(&_factor_svd, &_factor_qr, &_factor_q)
 
     def __dealloc__(self):
         if self._engine != NULL:

@@ -111,3 +111,28 @@ def test_restart_can_continue_with_right_to_left_pass():
     uninterrupted=ReducedDMRG(p,sites,max_bond=3).run(max_sweeps=2)
     assert resumed.history[0]['direction']=='rl'
     assert resumed.energy==pytest.approx(uninterrupted.energy,abs=2e-10)
+
+
+def test_owned_svd_provider_survives_workspace_release():
+    """Exercise owned SVD directly, including Linux's explicit LAPACK provider."""
+    from pyqed.mps.nonabelian.sweep_engine import load_engine
+    from pyqed.mps.nonabelian.reduced_dmrg import _export_sites
+    from pyqed._letta_one_site_opt.reduced_solver import _energy
+    p,sites=setup(4)
+    owner=load_engine().SU2MovingEnvironment(p.h1,p.eri,4,two_s=0,ecore=p.ecore,cutoff=0.)
+    owner.install_mps(right_canonicalize_sites(sites))
+    energies=[]
+    for direction in ['lr','rl']:
+        owner.release_workspaces()
+        owner.begin_half_sweep(direction,4)
+        owner.prepare_owned_half_sweep()
+        records=owner.execute_owned_half_sweep(max_bond=30,max_bond_mode='reduced',
+            cutoff=0.,davidson_tolerance=1e-10,max_iterations=300,max_space=96,
+            accept_unconverged=False)
+        owner.finish_half_sweep()
+        assert all(r['solve']['converged'] for r in records)
+        energies.append(float(_energy(state(p,_export_sites(owner)),p.su2_mpo(),stable=True)))
+    configurations=np.array(list(np.ndindex(4,4,4,4)))
+    allowed=np.flatnonzero(np.all(OCCUPATIONS[configurations].sum(axis=1)==p.nelec,axis=1))
+    exact=np.linalg.eigvalsh(determinant_hamiltonian(p)[np.ix_(allowed,allowed)])[0]
+    np.testing.assert_allclose(energies,exact,atol=2e-10,rtol=0.)

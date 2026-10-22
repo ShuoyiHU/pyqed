@@ -40711,7 +40711,10 @@ void MovingEnvironment::release_workspaces() {
         pyqed::linalg::GeneralizedDavidsonWorkspace{};
     real_generalized_davidson_workspace_ =
         pyqed::linalg::RealGeneralizedDavidsonWorkspace{};
+    // Release scratch storage without losing the registered LAPACK provider.
+    const auto svd_lapack = block_svd_workspace_.lapack;
     block_svd_workspace_ = pyqed::linalg::ComplexThinSVDWorkspace{};
+    block_svd_workspace_.lapack = svd_lapack;
     std::vector<double>().swap(boundary_update_temporary_);
     std::vector<double>().swap(boundary_update_product_);
     std::vector<std::vector<double>>().swap(boundary_update_thread_temporary_);
