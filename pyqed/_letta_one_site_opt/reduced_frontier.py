@@ -66,12 +66,19 @@ class FrontierSiteEmbedding:
     target_indices: np.ndarray
     left_variables: tuple[int, ...]
     right_variables: tuple[int, ...]
+    supported_source_indices: np.ndarray | None = None
 
     @cached_property
     def coordinate_routes(self):
         """Immutable index geometry reused across changing ALS factor values."""
         routes=[]
+        inverse = None
+        if self.supported_source_indices is not None:
+            inverse = np.full(self.source_layout.size, -1, dtype=int)
+            inverse[self.supported_source_indices] = np.arange(self.source_size)
         for key in self.source_layout.keys:
+            if key not in self.target_layout.shapes:
+                continue
             lo,hi=self.source_layout.offsets[key]
             tlo,thi=self.target_layout.offsets[key]
             source_shape=self.source_layout.shapes[key]
@@ -79,6 +86,11 @@ class FrontierSiteEmbedding:
             shape=self.target_layout.shapes[key]
             for physical in np.ndindex(source_shape[1:-1]):
                 indices=source_grid[(slice(None),)+physical+(slice(None),)].ravel()
+                if inverse is not None:
+                    indices = inverse[indices]
+                    indices = indices[indices >= 0]
+                    if not len(indices):
+                        continue
                 mask=np.isin(self.source_indices,indices)
                 source=np.searchsorted(indices,self.source_indices[mask])
                 target=self.target_indices[mask]-tlo
@@ -93,7 +105,8 @@ class FrontierSiteEmbedding:
 
     @property
     def source_size(self):
-        return self.source_layout.size
+        return (self.source_layout.size if self.supported_source_indices is None
+                else len(self.supported_source_indices))
 
     @property
     def target_size(self):
@@ -116,9 +129,17 @@ class FrontierSiteEmbedding:
         return source
 
     def pack_source(self, blocks):
-        return self.source_layout.pack(blocks)
+        vector = self.source_layout.pack(blocks)
+        return vector if self.supported_source_indices is None else vector[self.supported_source_indices]
 
     def unpack_source(self, vector):
+        vector = np.asarray(vector).reshape(-1)
+        if vector.size != self.source_size:
+            raise ValueError('source vector has incompatible size')
+        if self.supported_source_indices is not None:
+            full = np.zeros(self.source_layout.size, dtype=vector.dtype)
+            full[self.supported_source_indices] = vector
+            vector = full
         return self.source_layout.unpack(vector)
 
     def pack_target(self, blocks):
@@ -137,9 +158,18 @@ class FrontierSiteEmbedding:
 
 
 class ReducedFrontier:
-    """Physical-variable frontier for exact sequential LETTA contraction."""
+    """Physical-variable frontier for exact sequential LETTA contraction.
 
-    def __init__(self, neighborhoods, reduced_dim):
+    ``from_state`` removes structurally forbidden paths for open boundaries.
+    This is Boolean reachability with the currently retained sectors, not a
+    numerical truncation. ``prune=False`` retains the Cartesian reference and
+    is used by conditional-gauge layouts. Free-pair problems use the separate
+    ``ReducedPairFrontier`` support, which preserves their wider pair space.
+    """
+
+    def __init__(self, neighborhoods, reduced_dim, *, prune=False):
+        self.prune = bool(prune)
+        self._support_graph = None
         self.neighborhoods = tuple(tuple(int(value) for value in item) for item in neighborhoods)
         self.nsites = len(self.neighborhoods)
         self.reduced_dim = int(reduced_dim)
@@ -166,11 +196,75 @@ class ReducedFrontier:
         )
 
     @classmethod
-    def from_state(cls, state):
+    def from_state(cls, state, *, prune=True):
         from .reduced_ring_state import ReducedRingLETTA
         if not isinstance(state, (ReducedLatticeLETTA, ReducedRingLETTA)):
             raise TypeError("ReducedFrontier requires a reduced LETTA state")
-        return cls(state._neighborhoods, state.physical_dim)
+        return cls(state._neighborhoods, state.physical_dim,
+                   prune=prune and isinstance(state, ReducedLatticeLETTA))
+
+    def support(self, state):
+        """Value-independent allowed paths for the current open-chain layout."""
+        if not self.prune:
+            return None
+        if self.neighborhoods != state.neighborhoods:
+            raise ValueError('frontier topology changed; rebuild the frontier')
+        from .frontier_support import get_frontier_support
+        support = get_frontier_support(state, self.cuts, previous=self._support_graph)
+        if support is not self._support_graph:
+            # Every compact cut basis can change after a distant layout edit.
+            self._embedding_cache.clear()
+            self._embedding_cache_bytes = 0
+        self._support_graph = support
+        return support
+
+    def boundary_sectors(self, state, cut):
+        from collections import Counter
+        sectors = (state.left_virtual_sectors(0) if cut == 0 else
+                   state.right_virtual_sectors(cut-1))
+        support = self.support(state)
+        if support is None:
+            width = 0 if cut in (0, state.nsites) else len(self.cuts[cut-1])
+            return list(sectors)*self.reduced_dim**width
+        counts = Counter(sectors)
+        return [q for q, assignments in support.bases[cut].items()
+                for _ in assignments for _ in range(counts[q])]
+
+    def _supported_embedding(self, state, site, support):
+        source_shapes = {key: a.shape for key, a in state.tensors[site].items()}
+        source_layout = _BlockVectorLayout(source_shapes)
+        left = {q: {a: i for i, a in enumerate(assignments)}
+                for q, assignments in support.bases[site].items()}
+        right = {q: {a: i for i, a in enumerate(assignments)}
+                 for q, assignments in support.bases[site+1].items()}
+        keys = {edge[:3] for edge in support.edges[site]}
+        target_shapes = {key: (source_shapes[key][0]*len(left[key[0]]),
+                              source_shapes[key][1],
+                              source_shapes[key][-1]*len(right[key[2]]))
+                         for key in keys}
+        target_layout = _BlockVectorLayout(target_shapes)
+        source_parts, target_parts = [], []
+        for ql, qp, qr, physical, la, ra, labels in support.edges[site]:
+            key = (ql, qp, qr)
+            shape = source_shapes[key]
+            a = np.arange(shape[0], dtype=np.int64)[:, None]
+            b = np.arange(shape[-1], dtype=np.int64)[None, :]
+            source = a*shape[1] + physical
+            for dim, label in zip(shape[2:-1], labels[1:]):
+                source = source*dim + label
+            source = source*shape[-1] + b
+            target = ((left[ql][la]*shape[0]+a)*shape[1]+physical)*target_shapes[key][-1]
+            target = target + right[qr][ra]*shape[-1] + b
+            source_parts.append(source.ravel()+source_layout.offsets[key][0])
+            target_parts.append(target.ravel()+target_layout.offsets[key][0])
+        source = np.concatenate(source_parts) if source_parts else np.empty(0, dtype=np.int64)
+        target = np.concatenate(target_parts) if target_parts else np.empty(0, dtype=np.int64)
+        supported = np.unique(source)
+        if len(target) != len(np.unique(target)):
+            raise RuntimeError('allowed paths assigned one MPS entry more than once')
+        return FrontierSiteEmbedding(source_layout, target_layout,
+            np.searchsorted(supported, source), target,
+            self.left_variables(site), self.right_variables(site), supported)
 
     def left_variables(self, site):
         return () if int(site) == 0 else self.cuts[int(site) - 1]
@@ -192,6 +286,25 @@ class ReducedFrontier:
             raise IndexError("site index out of range")
         if state.nsites != self.nsites or state.physical_dim != self.reduced_dim:
             raise ValueError("frontier and reduced LETTA state are incompatible")
+
+        support = self.support(state)
+        if support is not None:
+            cached = self._embedding_cache.get(site)
+            if cached is not None and cached[0] is support:
+                self._embedding_cache.move_to_end(site)
+                return cached[1]
+            embedding = self._supported_embedding(state, site, support)
+            size = 12*embedding.source_indices.nbytes+8*embedding.source_layout.size
+            prior = self._embedding_cache.pop(site, None)
+            if prior is not None:
+                self._embedding_cache_bytes -= prior[2]
+            while self._embedding_cache and self._embedding_cache_bytes+size > self._embedding_cache_budget:
+                _, old = self._embedding_cache.popitem(last=False)
+                self._embedding_cache_bytes -= old[2]
+            if size <= self._embedding_cache_budget:
+                self._embedding_cache[site] = (support, embedding, size)
+                self._embedding_cache_bytes += size
+            return embedding
 
         left_variables = self.left_variables(site)
         right_variables = self.right_variables(site)
@@ -258,6 +371,17 @@ class ReducedFrontier:
 
     def dense_bytes(self, state):
         """Dense auxiliary-chain payload, excluding copies and workspaces."""
+        support = self.support(state)
+        if support is not None:
+            total = 0
+            for i, blocks in enumerate(state.tensors):
+                keys = {edge[:3] for edge in support.edges[i]}
+                for key in keys:
+                    a = blocks[key]
+                    total += (a.shape[0]*a.shape[1]*a.shape[-1]
+                        *np.dtype(np.result_type(a, float)).itemsize
+                        *len(support.bases[i][key[0]])*len(support.bases[i+1][key[2]]))
+            return total
         return sum(sum(a.shape[0]*a.shape[1]*a.shape[-1]*np.dtype(np.result_type(a,float)).itemsize
                        for a in state.tensors[i].values())
                    *self.reduced_dim**(len(self.left_variables(i))+len(self.right_variables(i)))
@@ -267,6 +391,7 @@ class ReducedFrontier:
         return self.dense_bytes(state)>64*1024**2
 
     def to_mps(self, state, *, compact=False):
+        support = self.support(state)
         sites = []
         for site in range(self.nsites):
             embedding = self.site_embedding(state, site)
@@ -275,18 +400,8 @@ class ReducedFrontier:
                 blocks = scatter_blocks(embedding,state.tensors[site])
             else:
                 blocks = embedding.expand_blocks(state.tensors[site])
-            left_memory = self.reduced_dim ** len(self.left_variables(site))
-            right_memory = self.reduced_dim ** len(self.right_variables(site))
-            left_qns = [
-                sector
-                for _memory in range(left_memory)
-                for sector in state.left_virtual_sectors(site)
-            ]
-            right_qns = [
-                sector
-                for _memory in range(right_memory)
-                for sector in state.right_virtual_sectors(site)
-            ]
+            left_qns = self.boundary_sectors(state, site)
+            right_qns = self.boundary_sectors(state, site+1)
             physical_qns = [
                 sector
                 for sector, multiplicity in zip(
@@ -302,6 +417,7 @@ class ReducedFrontier:
                     dirs=[-1, 1, 1],
                     metadata={
                         "physical_basis": "fully_reduced_su2",
+                        "letta_frontier_support": None if support is None else support.fingerprint,
                         "letta_frontier_left": self.left_variables(site),
                         "letta_frontier_right": self.right_variables(site),
                     },

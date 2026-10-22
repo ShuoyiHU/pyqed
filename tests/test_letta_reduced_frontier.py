@@ -51,7 +51,7 @@ def test_frontier_embedding_reconstructs_identical_dense_state():
 
 def test_frontier_memory_only_multiplies_multiplicity_not_irrep_content():
     state = _spatial_state()
-    frontier = ReducedFrontier.from_state(state)
+    frontier = ReducedFrontier.from_state(state, prune=False)
     mps = frontier.to_mps(state)
 
     for site, tensor in enumerate(mps):

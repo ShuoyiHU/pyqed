@@ -21,7 +21,7 @@ def test_moving_qr_matches_full_rebuild_and_preserves_state(spin,direction):
     sweep=gauge.GaugeQRBoundary(state,direction)
     cuts=range(1,state.nsites) if direction=='lr' else range(state.nsites-1,0,-1)
     for cut in cuts:
-        frontier=ReducedFrontier.from_state(state)
+        frontier=ReducedFrontier.from_state(state, prune=False)
         _,left,right=_canonical_sites(frontier.to_mps(state),cut if direction=='lr' else cut-1,
                                       transform_active=False)
         expected=left if direction=='lr' else right

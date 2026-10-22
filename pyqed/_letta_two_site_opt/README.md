@@ -192,15 +192,25 @@ result = letta_two_site_dmrg(
 The pair problem restores only local Clebsch--Gordan component spaces. Its SVD
 is performed independently in each intermediate-irrep block, retains or drops
 whole multiplets, and weights discarded norm by the irrep dimension $2j+1$.
-The reduced path currently requires `split_method="conditional-svd"`; it
-rejects `metric-als`, `metric-als-energy`, and `energy-refined` rather than
-silently treating those dense-LETTA algorithms as irrep-aware.
-The current splitter uses the bond sectors allocated when the state is built:
-it can reduce retained multiplicities within those capacities, but does not yet
-discover a previously absent intermediate irrep during a sweep.
-Use enough initial capacity (three copies per reachable sector is the benchmark
-default) before comparing energies. A larger `bond_dim` cannot create copies
-that were absent from `state.bond_sectors`.
+The reduced path uses a physical-metric factor fit for tied tensors; the
+energy-refined modes additionally relax the factors under an energy guard.
+Untied MPS use whole-multiplet Schmidt truncation. Setting
+`reduced_sector_growth=True` builds candidate intermediate fusion sectors before
+the pair solve; the final split enforces the requested multiplet budget. With
+that option disabled, the existing sector capacities remain the limits.
+
+Open-boundary pair problems now use exact structural path support by default.
+`pair_frontier.py` retains all nonzero directions of the free merged-pair
+problem using forward prefix and backward suffix reachability, connected by
+allowed pair fusion channels. The pair can temporarily violate copy equalities
+that the two separate LETTA factors must obey; therefore its support is wider
+than ordinary one-site support. Compression and reduced CBE use the complete
+legal-path support for their factor parameters on the expanded scaffold.
+This preserves charge and SU(2) fusion sectors, including singlets, doublets,
+and newly introduced intermediate sectors, without a coefficient threshold.
+`reduced_pair_problem(..., prune=False)` supplies the unpruned reference.
+See the exact-support section of `../_letta_one_site_opt/README.md` and
+`tests/test_letta_pair_support.py` for the algorithm and validation scope.
 
 Run the reproducible with/without-symmetry comparison with
 

@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from pyqed._letta_one_site_opt import ReducedLatticeLETTA, ReducedFrontier
+from pyqed._letta_one_site_opt import ReducedLatticeLETTA
 from pyqed._letta_one_site_opt.qchem import ElectronicProblem
 from pyqed._letta_two_site_opt import LETTATwoSiteOptions, letta_two_site_dmrg
 from pyqed._letta_two_site_opt.reduced_solver import reduced_pair_problem, _schmidt_split_untied
@@ -11,7 +11,7 @@ from test_letta_qchem import integrals
 
 def split_state(state, h, cap):
     problem = reduced_pair_problem(state, h, 1, matrix_free=True, dense_solver_threshold=0)
-    sites = ReducedFrontier.from_state(state).to_mps(state)
+    sites = problem.frontier.to_mps(state)
     split = _schmidt_split_untied(problem, problem.layout.unpack(problem.old_vector),
         sites, state, cap, 'lr', LETTATwoSiteOptions(metric_tolerance=1e-12))
     result = state.copy()

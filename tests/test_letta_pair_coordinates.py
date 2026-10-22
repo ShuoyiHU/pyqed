@@ -87,7 +87,7 @@ def test_frontier_embedding_cache_tracks_layout_and_current_values():
     changed.tensors[1][key]=np.repeat(changed.tensors[1][key],2,axis=-1)
     second=frontier.site_embedding(changed,1)
     assert second is not first
-    fresh=type(frontier).from_state(changed).site_embedding(changed,1)
+    fresh=type(frontier).from_state(changed,pair.left_site).site_embedding(changed,1)
     np.testing.assert_array_equal(second.source_indices,fresh.source_indices)
     np.testing.assert_array_equal(second.target_indices,fresh.target_indices)
     assert len(frontier._embedding_cache)<=state.nsites
@@ -104,6 +104,6 @@ def test_frontier_cache_eviction_preserves_exact_embedding():
     actual=frontier.site_embedding(changed,1)
     assert not frontier._embedding_cache
     assert frontier._embedding_cache_bytes==0
-    fresh=type(frontier).from_state(changed).site_embedding(changed,1)
+    fresh=type(frontier).from_state(changed,pair.left_site).site_embedding(changed,1)
     np.testing.assert_array_equal(actual.source_indices,fresh.source_indices)
     np.testing.assert_array_equal(actual.target_indices,fresh.target_indices)

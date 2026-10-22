@@ -1,0 +1,10 @@
+{
+  "revision": "f0a36f8612909c5d1063effdb23ba00dd4ff371a",
+  "files": {
+    "pyqed/mps/nonabelian/_su2_kernel.pyx": "9cf4c4c5fb73f9d6a1d0e9ff5edbee0c9c56c034bc214b1b16ebdd0c04e6b123",
+    "pyqed/mps/nonabelian/su2_dmrg_engine.cpp": "1d57fee2b78b7683b0ae8e46f07203b068973cdc02385d6e48369bdc4e57bf35",
+    "pyqed/mps/nonabelian/su2_dmrg_engine.hpp": "d4798705ca59270652dc82cdbc22f343b21620c4520dc11a8a7d67510568ac0c",
+    "pyqed/mps/nonabelian/su2_coupling_core.hpp": "4d5a9c9a70f8c293037c0a4d24e5f841ec8155ba0dfeac11e377b1453ea91076",
+    "pyqed/linalg/davidson.hpp": "485b04be0d946ae1c54b1285601a8c7ccc765e4d987e222d1a55f4404c69146a"
+  }
+}

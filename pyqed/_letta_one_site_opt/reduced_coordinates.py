@@ -340,6 +340,9 @@ class ReducedLocalCoordinates:
         self.hamiltonian_action=self.hamiltonian.prepare_local_action(self.site)
 
     def norm(self,vector):
+        vector = np.asarray(vector).reshape(-1)
+        if vector.size != self.dimension:
+            raise ValueError('source vector has incompatible size')
         return float(sum(np.linalg.norm(F.apply(vector[sl]))**2 for sl,F in self.blocks))
 
     def source_blocks(self,vector):

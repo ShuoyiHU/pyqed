@@ -48,7 +48,7 @@ def reduced_frontier_grams(state, cut, direction, *, environment=None, strict=Fa
     descriptor = _validate_cut(state, cut, direction, strict=strict)
     variables = reduced_gauge_variables(state, cut)
     if environment is None:
-        frontier = ReducedFrontier.from_state(state)
+        frontier = ReducedFrontier.from_state(state, prune=False)
         chain = ReducedNormChain.build(frontier.to_mps(state))
     else:
         chain, frontier = environment
@@ -92,7 +92,7 @@ class GaugeQRBoundary:
         self.reset()
 
     def reset(self):
-        self.frontier=ReducedFrontier.from_state(self.state)
+        self.frontier=ReducedFrontier.from_state(self.state, prune=False)
         self.cut=0 if self.direction=='lr' else self.state.nsites
         sectors=(self.state.left_virtual_sectors(0) if self.direction=='lr'
                  else self.state.right_virtual_sectors(self.state.nsites-1))

@@ -431,14 +431,17 @@ class StableEnergyCache:
 
 
 class ReducedSweepContext:
-    """Cache expanded cores and norm boundaries for frontier gauge updates."""
+    """Cache supported one-site coordinates independently of the gauge layout.
 
-    def __init__(self, state, hamiltonian):
+    Conditional gauges retain their own Cartesian QR boundary. This context
+    contracts the resulting tensors on exact symmetry support and rebuilds all
+    frontier coordinates when any structural layout changes.
+    """
+
+    def __init__(self, state, hamiltonian, *, prune=True):
         self.state, self.hamiltonian = state, hamiltonian
-        self.frontier = ReducedFrontier.from_state(state)
-        self.embeddings = tuple(self.frontier.site_embedding(state, i) for i in range(state.nsites))
-        self.sites = list(self.frontier.to_mps(state, compact=True))
-        self.n_chain = ReducedNormChain.build(self.sites, lazy=True)
+        self.prune = bool(prune)
+        self._rebuild_layout()
         from .frontier_contraction import CanonicalBoundaryCache
         self.boundary_cache = CanonicalBoundaryCache()
         self._energy_key = None
@@ -460,7 +463,27 @@ class ReducedSweepContext:
             self._energy_key,self._energy_value=key,value
         return self._energy_value
 
+    def _layout_signature(self):
+        state = self.state
+        physical = tuple((q.sector, q.copy) for q in state.physical_basis.reduced_states)
+        blocks = tuple(tuple((key, a.shape) for key, a in sorted(tensor.items()))
+                       for tensor in state.tensors)
+        return (state.neighborhoods, state.bond_sectors, state.symmetry.identity,
+                state.symmetry.sector, physical, blocks)
+
+    def _rebuild_layout(self):
+        self.frontier = ReducedFrontier.from_state(self.state, prune=self.prune)
+        self.embeddings = tuple(self.frontier.site_embedding(self.state, i)
+                                for i in range(self.state.nsites))
+        self.sites = list(self.frontier.to_mps(self.state, compact=True))
+        self.n_chain = ReducedNormChain.build(self.sites, lazy=True)
+        self._structure = self._layout_signature()
+        self._energy_key = None
+
     def synchronize(self, indices):
+        if self._layout_signature() != self._structure:
+            self._rebuild_layout()
+            return
         changes = {}
         for i in indices:
             from .frontier_contraction import shallow_site, scatter_blocks

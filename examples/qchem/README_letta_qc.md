@@ -178,3 +178,5 @@ Run the focused regression suite with:
 ```sh
 python -m pytest tests/test_letta_qc_workflow.py tests/test_letta_qchem_symmetry.py -q
 ```
+
+Larger-basis Fe(CO)5 cluster campaign: see [feco5_cluster/README.md](feco5_cluster/README.md), with an explicit compiled two-site MPS source and dependent one-site LETTA jobs.

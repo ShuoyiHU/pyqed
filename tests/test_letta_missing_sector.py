@@ -1,16 +1,13 @@
-import copy
-from types import SimpleNamespace
 import numpy as np
 import pytest
 from pyqed.mps.su2 import SpinChargeSector,SU2Irrep
 from pyqed._letta_one_site_opt.reduced_coordinates import _canonical_sites
-class Tensor(SimpleNamespace):
- def copy(self):return copy.deepcopy(self)
+from pyqed.mps.nonabelian.tensor import NonabelianTensor
 @pytest.mark.parametrize('missing',['left','right','both'])
 @pytest.mark.parametrize('center',[0,1,2])
 def test_unreachable_declared_sector_has_zero_factor(center,missing):
  q=SpinChargeSector(0,SU2Irrep(0));p=SpinChargeSector(2,SU2Irrep(0))
- def t(data,left,right):return Tensor(data={k:np.array([[[v]]],float) for k,v in data.items()},qns=[left,[q,p],right])
+ def t(data,left,right):return NonabelianTensor(data={k:np.array([[[v]]],float) for k,v in data.items()},qns=[left,[q,p],right],dirs=[-1,1,1])
  sites=[t({(q,q,q):2},[q],[q,p]),t({(q,q,q):3,(p,q,p):7},[q,p],[q,p]),t({(q,p,p):5,(p,q,p):11},[q,p],[p])]
  if missing=='right':sites[0].data[q,p,p]=np.array([[[13.]]])
  if missing in ('right','both'):del sites[2].data[p,q,p]

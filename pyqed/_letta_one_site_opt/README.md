@@ -402,19 +402,90 @@ the existing overlap map, not a new approximation or a different variational
 space. The reference contraction and its adjoint are checked in
 `tests/test_letta_overlap_factor.py`.
 
-Frontier embeddings retain one index map per site, keyed by ordered block
-shapes, physical labels, and the neighborhood. Tensor values are never cached.
-A layout change replaces that site's map. Each embedding also retains its
-physical-configuration route geometry; state-dependent QR/SVD factors remain
-fresh. Both caches are owned by the current frontier/embedding objects rather
-than a global table. Tests cover changed values, changed layouts, and agreement
-between cached and freshly constructed metric factors.
+### Exact symmetry support for physical ties
 
-The frontier-owned cache has an estimated 64 MiB budget (including an allowance
-for coordinate-route arrays). Least-recently-used maps are evicted; an oversized
-map is used without retaining it in the cache. Eviction only triggers exact
-recomputation and never truncation. Active coordinate objects may still own
-maps, so this is a cache bound, not a bound on total process memory.
+`ReducedFrontier.from_state(state)` now compiles allowed paths for an
+open-boundary reduced LETTA state before allocating frontier blocks. A cut node
+contains the backbone symmetry sector and the assignments of physical labels
+still needed across that cut. Local tensor block keys supply the permitted
+sector transitions. A forward pass finds reachable nodes; a backward pass
+keeps only routes ending in the requested target sector. The same graph defines
+both the environment basis and the active one-site parameters.
+
+For example, with three orbitals and three electrons, a tensor tied to the
+other two orbitals has no supported parameter for both ties being doubly
+occupied. Retained intermediate bond sectors can rule out further assignments.
+In the three-site regression example the per-site parameter counts change from
+27, 24, 4 to 7, 8, 4. All multiplicity copies of a supported sector/assignment
+remain. No tensor coefficient, numerical cutoff, or singular value is used to
+decide structural support; an allowed entry whose current value is zero stays
+optimizable. The usual numerical norm-factor treatment remains separate.
+
+For each sector, frontier storage contains only its supported assignments.
+Local vectors gather the supported source indices; unpacking restores the
+original tensor-block shapes with zero in the structurally null positions.
+Thus the serialized LETTA representation is unchanged. No determinant-space
+projection is used. `prune=False` selects the Cartesian reference for controlled
+comparisons. This is an exact reachability implementation for this ansatz,
+not an approximate contraction or a new variational ansatz.
+
+Construction enumerates the physical labels newly entering each cut once per
+reachable sector/assignment and permitted transition. It never enumerates the
+full Cartesian product of the left and right frontiers. Final graph storage scales
+with its retained nodes and edges; compilation also holds forward-reachable
+routes that the backward pass may later remove. If most assignments are allowed, the benefit
+can be small; exact contraction can still grow exponentially with frontier
+width. Compact bases do not make dense QR workspaces or H environments free.
+
+The support signature includes all block keys/shapes, bond sectors, target,
+physical basis, and tie topology. Changing any of these rebuilds support.
+Changing only tensor values reuses support but invalidates affected numerical
+boundaries. Every emitted frontier site carries the global support fingerprint,
+so a distant structural change cannot silently reuse a relabeled boundary.
+A shared graph cache retains at most eight graphs within an estimated 64 MiB;
+a frontier also retains its current graph even if that graph exceeds this cache
+budget. The one-site sweep contexts retain the current frontier while its tie
+topology is unchanged. Separate short-lived contractions can still rebuild a
+graph too large for the shared cache. This budget is not a bound on total
+process memory.
+
+Frontier embeddings retain index maps and coordinate-route geometry in a
+separate estimated 64 MiB cache. They contain geometry only, not QR/SVD factors
+or tensor values. Oversized maps are used without retaining them in that cache.
+Structural pruning is integrated into open-chain one-site local problems,
+norm/energy environments, two-site pair problems, and reduced CBE. The Hubbard
+implementation carries U(1) particle number and SU(2) spin: allowed block keys
+enforce both charge addition and angular-momentum fusion. Singlet and doublet
+targets use the same algorithm; no magnetic component is removed independently.
+
+`ReducedPairFrontier` distinguishes the free merged pair from its legal LETTA
+factors. The exterior bases retain identity-reachable prefix assignments and
+target-reachable suffix assignments connected by a permitted pair fusion
+channel. Across the active pair they do not impose the two factors' copied-label
+constraints: imposing those constraints would incorrectly reduce the existing
+free-pair variational space. Factor-source vectors used in compression and CBE
+instead keep complete legal paths through the current scaffold. All multiplicity
+copies remain. Two-site sector growth (when enabled) and CBE expansion construct
+the enlarged scaffold **before** building support, so missing charge/spin sectors
+can enter. Original tensor shapes are restored when compact factors are unpacked.
+`reduced_pair_problem(..., prune=False)` is the Cartesian reference.
+
+CBE random factor starts draw the same original-coordinate random stream and
+gather retained entries, so exact pruning does not change those starting values.
+Conditional-gauge construction and rings keep their existing layouts. No solver
+tolerance, iteration limit, sector-allocation policy, or compression objective
+is changed by path pruning.
+
+`tests/test_letta_frontier_support.py` compares against exhaustive small-system
+sector paths, dense wavefunctions and local H/N actions, and a complete
+four-site left/right update cycle. It also checks reverse ties, complex values,
+zero-but-allowed entries, and cache invalidation. These checks establish exact
+support and small-system numerical equivalence. Pair-specific tests in
+`tests/test_letta_pair_support.py` compare full free-pair H/N matrices with
+Cartesian and independent dense references, including all removed directions.
+They also test compact factor adjoints/gauges, missing charge/spin-sector growth,
+and CBE energy/residual agreement. These checks do not establish a larger-lattice
+CBE or two-site speedup.
 
 
 ### Compact frontier storage and streamed environments

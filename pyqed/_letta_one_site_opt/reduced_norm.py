@@ -207,32 +207,32 @@ class ReducedNormChain(MovingReducedEnvironments):
         if np.any(counts != 1):
             return None
         self.ensure(site, site+1)
-        targets = np.empty(embedding.source_size, dtype=int)
-        targets[embedding.source_indices] = embedding.target_indices
         plan = []
-        for key in embedding.source_layout.keys:
-            shape = embedding.source_layout.shapes[key]
+        for key, indices, source, ul, lmap, up, _pmap, ur, rmap, _ in embedding.coordinate_routes:
             ql, _qp, qr = key
-            # Missing boundary blocks are exactly null, just as in local_action.
+            # Each retained physical tuple keeps its full multiplicity matrix.
+            if (len(up) != 1 or len(indices) != len(ul)*len(ur)
+                    or len(source) != len(indices)
+                    or len(np.unique(lmap*len(ur)+rmap)) != len(indices)):
+                return None
             if ql not in self.left[site] or qr not in self.right[site+1]:
                 continue
-            source_start = embedding.source_layout.offsets[key][0]
-            target_start = embedding.target_layout.offsets[key][0]
-            for physical in np.ndindex(shape[1:-1]):
-                flat = source_start+np.ravel_multi_index((0,)+physical+(0,), shape)
-                l, _p, r = np.unravel_index(targets[flat]-target_start,
-                                           embedding.target_layout.shapes[key])
-                left = self.left[site][ql][l:l+shape[0], l:l+shape[0]]
-                right = self.right[site+1][qr][r:r+shape[-1], r:r+shape[-1]]
-                plan.append((key, physical, _support_projector(left, tolerance, equilibrated=equilibrated),
-                             _support_projector(right, tolerance, equilibrated=equilibrated)))
+            left = self.left[site][ql][np.ix_(ul, ul)]
+            right = self.right[site+1][qr][np.ix_(ur, ur)]
+            plan.append((indices[source], lmap, rmap,
+                         _support_projector(left, tolerance, equilibrated=equilibrated),
+                         _support_projector(right, tolerance, equilibrated=equilibrated)))
         def project(vector):
-            source = embedding.unpack_source(vector)
-            out = {k: np.zeros(a.shape, dtype=np.result_type(a, complex)) for k, a in source.items()}
-            for key, physical, left, right in plan:
-                section = (slice(None),)+physical+(slice(None),)
-                out[key][section] = left@source[key][section]@right.T
-            return embedding.pack_source(out)
+            vector = np.asarray(vector).reshape(-1)
+            if vector.size != embedding.source_size:
+                raise ValueError('source vector has incompatible size')
+            out = np.zeros(vector.size, dtype=np.result_type(vector, complex))
+            for indices, lmap, rmap, left, right in plan:
+                matrix = np.empty((left.shape[0], right.shape[0]), dtype=vector.dtype)
+                matrix[lmap, rmap] = vector[indices]
+                projected = left@matrix@right.T
+                out[indices] = projected[lmap, rmap]
+            return out
         return project
 
     def pair_projector(self, site, layout, tolerance, *, equilibrated=False):

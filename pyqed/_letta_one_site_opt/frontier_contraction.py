@@ -178,7 +178,10 @@ class EnergyBoundaryCache:
 
     def signatures(self,state,mpo):
         import hashlib
-        structure=repr((state.neighborhoods,state.bond_sectors,state.physical_basis,state.target_two_j))
+        layouts=tuple(tuple((key,a.shape) for key,a in sorted(blocks.items()))
+                      for blocks in state.tensors)
+        structure=repr((state.neighborhoods,state.bond_sectors,state.physical_basis,
+                        state.target_two_j,layouts))
         if self.mpo is not mpo or self.structure!=structure:
             self.entries.clear();self.nbytes=0;self.mpo=mpo;self.structure=structure
         signatures=[]
@@ -357,7 +360,8 @@ class CanonicalBoundaryCache:
         signatures=[]
         for site in sites:
             h=hashlib.blake2b()
-            h.update(repr((site.qns,site.dirs)).encode())
+            h.update(repr((site.qns,site.dirs,
+                           site.metadata.get('letta_frontier_support'))).encode())
             for key,a in site.data.items():
                 h.update(repr((key,a.shape,a.dtype.str)).encode())
                 if isinstance(a,ScatterBlock):

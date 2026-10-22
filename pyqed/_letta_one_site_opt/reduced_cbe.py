@@ -101,6 +101,36 @@ def select_reduced_cbe(state, hamiltonian, left_site, options):
         allocation_bounds=lambda target, allocations: _sector_loss_bounds(root, target, allocations))
 
 
+def _source_normal(rng, embedding, dtype):
+    """Gather the same random source entries before and after exact pruning.
+
+    Consume the original stream, including omitted null entries, in bounded
+    chunks. Changing support therefore cannot change the remaining random
+    starts or require a full raw-source temporary vector.
+    """
+    support = getattr(embedding, 'supported_source_indices', None)
+    if support is None:
+        return rng.normal(size=embedding.source_layout.size).astype(dtype)
+    result = np.empty(len(support), dtype=dtype)
+    for start in range(0, embedding.source_layout.size, 65536):
+        stop = min(start + 65536, embedding.source_layout.size)
+        lo, hi = np.searchsorted(support, (start, stop))
+        values = rng.normal(size=stop - start)
+        result[lo:hi] = values[support[lo:hi] - start]
+    return result
+
+
+def _source_seeds(embeddings, seed, *, complex_data, dtype=complex):
+    rng = np.random.default_rng(seed)
+    le, re = embeddings
+    seeds = [(_source_normal(rng, le, dtype), _source_normal(rng, re, dtype))
+             for _ in range(2)]
+    if complex_data:
+        seeds = [(a + 1j * _source_normal(rng, le, dtype),
+                  b + 1j * _source_normal(rng, re, dtype)) for a, b in seeds]
+    return seeds
+
+
 def _fit_residual_pair(state, problem, target, capacities, embeddings, options):
     """Cache orthogonal-sector rank fits instead of refitting full allocations.
 
@@ -112,12 +142,8 @@ def _fit_residual_pair(state, problem, target, capacities, embeddings, options):
     """
     from .._letta_two_site_opt.reduced_solver import _active_source_indices
     le, re = embeddings
-    rng = np.random.default_rng(2817+problem.left_site)
-    seeds = [(rng.normal(size=le.source_size).astype(complex),
-              rng.normal(size=re.source_size).astype(complex)) for _ in range(2)]
-    if any(np.iscomplexobj(v) for tensor in state.tensors for v in tensor.values()):
-        seeds = [(a+1j*rng.normal(size=a.size), b+1j*rng.normal(size=b.size))
-                 for a,b in seeds]
+    seeds = _source_seeds(embeddings, 2817+problem.left_site,
+        complex_data=any(np.iscomplexobj(v) for tensor in state.tensors for v in tensor.values()))
     root = ReducedPairMetricRoot(problem,state,options.metric_tolerance)
     weights = Counter()
     for key, block in root.physical_layout.unpack(root.physical_apply(target)).items():
@@ -389,13 +415,8 @@ def select_metric_cbe(scaffold, problem, root, old, capacities, embeddings, fact
             factor_fit_attempts=attempts)
     retained, best, reports = {}, None, []
     best_loss = 1.
-    rng = np.random.default_rng(seed)
-    # Legal source-coordinate starts include every tie label. Projecting a
-    # frontier SVD alone can erase those labels and trap ALS at zero factors.
-    seeds = [(rng.normal(size=a.size).astype(dtype), rng.normal(size=b.size).astype(dtype))
-             for _ in range(2)]
-    if complex_data:
-        seeds = [(u+1j*rng.normal(size=u.size), v+1j*rng.normal(size=v.size)) for u, v in seeds]
+    # Preserve the same starts on every legal source coordinate after pruning.
+    seeds = _source_seeds(embeddings, seed, complex_data=complex_data, dtype=dtype)
     attempts, pruned = 0, 0
     for _ in range(budget):
         trials = []

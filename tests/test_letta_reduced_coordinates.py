@@ -33,15 +33,20 @@ def test_coordinates_preserve_norm_energy_and_adjoint(nelec):
         np.testing.assert_allclose(c.apply(z),c.adjoint(c.source_hamiltonian(c.expand(z))),atol=2e-10,rtol=2e-10)
 
 
-def test_captured_ladder_null_direction_and_local_root():
+@pytest.mark.parametrize('prune', [False, True])
+def test_captured_ladder_null_direction_and_local_root(prune):
     # Trusted regression fixture: bg-compatible seed-4 2x4 Hubbard ladder,
     # D=20, first forward sweep before site 4, original revision 48f1584.
     # Includes only the reduced state and one false Gram-eigenvector (~65 KiB).
     with (Path(__file__).parent/'data/letta_overlap_2x4_d20.pkl').open('rb') as stream:
         fixture=pickle.load(stream)
     s=fixture['state'];site=fixture['site'];ghost=fixture['ghost']
-    f=ReducedFrontier.from_state(s)
+    f=ReducedFrontier.from_state(s, prune=prune)
     c=ReducedLocalCoordinates(f.to_mps(s),f.site_embedding(s,site),site)
+    if prune:
+        with pytest.raises(ValueError, match='source vector'):
+            c.norm(ghost)
+        ghost=ghost[c.embedding.supported_source_indices]
     c.prepare(1e-12)
     assert c.rank==318
     assert c.norm(ghost)<1e-11  # The old Gram calculation reported norm ~= 1.

@@ -4489,8 +4489,8 @@ def make_contractions(basis_dict, atoms, coords, coord_types):
             if coeffs.ndim == 1:
                 coeffs = coeffs[:, None]
             exps_tuple = tuple(float(x) for x in np.asarray(exps, dtype=float))
-            for shell in _shell(angmom):
-                for icontr in range(coeffs.shape[1]):
+            for icontr in range(coeffs.shape[1]):
+                for shell in _shell(angmom):
                     coefs_tuple = tuple(float(x) for x in coeffs[:, icontr])
                     tpl_exps, tpl_coefs, tpl_norm, tpl_prim_weights = (
                         _normalized_contracted_gaussian_template(
@@ -4535,9 +4535,9 @@ def _make_contraction_signatures(basis_dict, atoms, coords, coord_types="c"):
             if coeffs.ndim == 1:
                 coeffs = coeffs[:, None]
             exps_tuple = tuple(float(x) for x in np.asarray(exps, dtype=float))
-            for shell in _shell(int(angmom)):
-                shell_tuple = tuple(int(x) for x in shell)
-                for icontr in range(coeffs.shape[1]):
+            for icontr in range(coeffs.shape[1]):
+                for shell in _shell(int(angmom)):
+                    shell_tuple = tuple(int(x) for x in shell)
                     coefs_tuple = tuple(float(x) for x in coeffs[:, icontr])
                     tpl_exps, _tpl_coefs, _tpl_norm, tpl_prim_weights = (
                         _normalized_contracted_gaussian_template(

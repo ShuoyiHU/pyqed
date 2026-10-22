@@ -13,6 +13,90 @@ from .decompose import svd_two_site
 from .tensor import NonabelianTensor
 
 
+def left_qr_sites(sites):
+    """Exactly left-orthogonalize fully reduced sites without bond growth.
+
+    Sectorwise single-site QR and absorption, with no singular-value
+    truncation. Operates on copies, including their sector multiplicities.
+    """
+    current = [site.copy() for site in sites]
+    for i in range(len(current)-1):
+        left, right = current[i:i+2]
+        if left.metadata.get('physical_basis') != 'fully_reduced_su2':
+            raise ValueError('left_qr_sites requires fully reduced SU2 tensors')
+        ld, rd = dict(left.data), dict(right.data)
+        qns = []
+        for sector in dict.fromkeys(left.qns[2]):
+            keys = [key for key in ld if key[2] == sector]
+            if not keys:
+                continue
+            width = ld[keys[0]].shape[2]
+            matrix = np.concatenate([ld[key].reshape(-1,width) for key in keys])
+            q, r = np.linalg.qr(matrix,mode='reduced')
+            rank = q.shape[1]
+            qns.extend([sector]*rank)
+            offset = 0
+            for key in keys:
+                shape = ld[key].shape
+                rows = shape[0]*shape[1]
+                ld[key] = q[offset:offset+rows].reshape(shape[0],shape[1],rank)
+                offset += rows
+            for key in rd:
+                if key[0] == sector:
+                    rd[key] = np.einsum('ab,bpr->apr',r,rd[key],optimize=True)
+        current[i] = NonabelianTensor(data=ld,qns=[left.qns[0],left.qns[1],qns],
+                                 dirs=left.dirs,metadata=dict(left.metadata))
+        current[i+1] = NonabelianTensor(data=rd,qns=[qns,right.qns[1],right.qns[2]],
+                                   dirs=right.dirs,metadata=dict(right.metadata))
+    return current
+
+
+def right_qr_sites(sites):
+    """Exactly right-orthogonalize reduced SU(2) sites without bond growth.
+
+    The QR uses the spin-dimension weights of the right canonical metric.
+    Absorbing its triangular factor into the preceding site preserves the
+    complete state, including complex phases and Abelian spatial sectors.
+    """
+    current = [site.copy() for site in sites]
+    for i in range(len(current)-1, 0, -1):
+        left, right = current[i-1:i+1]
+        if right.metadata.get('physical_basis') != 'fully_reduced_su2':
+            raise ValueError('right_qr_sites requires fully reduced SU2 tensors')
+        ld, rd = dict(left.data), dict(right.data)
+        qns = []
+        for sector in dict.fromkeys(right.qns[0]):
+            keys = [key for key in rd if key[0] == sector]
+            if not keys:
+                continue
+            weights = [np.sqrt(_irrep_dim(key[2]) / _irrep_dim(sector)) for key in keys]
+            matrix = np.concatenate([weight*rd[key].reshape(rd[key].shape[0], -1)
+                                     for key, weight in zip(keys, weights)], axis=1)
+            q, r = np.linalg.qr(matrix.conj().T, mode='reduced')
+            rank = q.shape[1]
+            qns.extend([sector]*rank)
+            offset = 0
+            for key, weight in zip(keys, weights):
+                shape = rd[key].shape
+                cols = shape[1]*shape[2]
+                rd[key] = (q[offset:offset+cols].conj().T/weight).reshape(rank,shape[1],shape[2])
+                offset += cols
+            for key in ld:
+                if key[2] == sector:
+                    ld[key] = np.einsum('lpa,ab->lpb',ld[key],r.conj().T,optimize=True)
+        current[i-1] = NonabelianTensor(data=ld,qns=[left.qns[0],left.qns[1],qns],
+                                    dirs=left.dirs,metadata=dict(left.metadata))
+        current[i] = NonabelianTensor(data=rd,qns=[qns,right.qns[1],right.qns[2]],
+                                  dirs=right.dirs,metadata=dict(right.metadata))
+    return current
+
+
+def _exact_reduced_gauge(sites, cutoff, max_bond):
+    return (max_bond is None and cutoff == 0
+            and all(site.metadata.get('physical_basis') == 'fully_reduced_su2'
+                    and all(block.shape[1] == 1 for block in site.data.values()) for site in sites))
+
+
 def _site_dense_matrix(site, *, mode):
     if not isinstance(site, NonabelianTensor) or site.rank != 3:
         raise ValueError("_site_dense_matrix expects a rank-3 NonabelianTensor site tensor.")
@@ -206,6 +290,8 @@ def left_canonicalize_sites(
     """
     if len(sites) < 2:
         return [site.copy() for site in sites]
+    if _exact_reduced_gauge(sites, cutoff, max_bond):
+        return left_qr_sites(sites)
     current = [site.copy() for site in sites]
     for i in range(len(current) - 1):
         merged = merge_mps_sites(current[i], current[i + 1])
@@ -236,6 +322,8 @@ def right_canonicalize_sites(
     """
     if len(sites) < 2:
         return [site.copy() for site in sites]
+    if _exact_reduced_gauge(sites, cutoff, max_bond):
+        return right_qr_sites(sites)
     current = [site.copy() for site in sites]
     for i in range(len(current) - 1, 0, -1):
         merged = merge_mps_sites(current[i - 1], current[i])
@@ -267,6 +355,10 @@ def mixed_canonicalize_sites(
     """
     if not 0 <= int(center) < len(sites):
         raise IndexError(f"Center {center} out of range for chain length {len(sites)}.")
+    if _exact_reduced_gauge(sites, cutoff, max_bond):
+        current = left_qr_sites(sites[:int(center)+1]) + [s.copy() for s in sites[int(center)+1:]]
+        current[int(center):] = right_qr_sites(current[int(center):])
+        return current
     current = [site.copy() for site in sites]
     for i in range(int(center)):
         merged = merge_mps_sites(current[i], current[i + 1])

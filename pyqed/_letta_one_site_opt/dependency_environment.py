@@ -44,6 +44,7 @@ class DependencySweepContext:
         self.boundary_cache=CanonicalBoundaryCache()
         self.energy_cache=StableEnergyCache(hamiltonian)
         self.dependency_stats={};self.energy_center=None
+        self.frontier=None
 
     def stable_energy(self,state=None):
         return self.energy_cache(self.state if state is None else state,
@@ -57,12 +58,16 @@ class DependencySweepContext:
         self.energy_center=int(site)
         from .reduced_solver import _native_local_problem
         view,removed=fixed_dependency_view(self.state,active=site)
-        frontier=ReducedFrontier.from_state(view)
+        if (self.frontier is None or self.frontier.neighborhoods != view.neighborhoods
+                or self.frontier.reduced_dim != view.physical_dim):
+            self.frontier=ReducedFrontier.from_state(view)
+        frontier=self.frontier
         embedding=frontier.site_embedding(view,site)
         sites=frontier.to_mps(view,compact=True)
         self.dependency_stats=dict(active_site=int(site),removed_dependencies=removed,
             max_pending_labels=max(map(len,frontier.cuts),default=0),
-            max_frontier_multiplets=max((len(b)*view.physical_dim**len(c)
-                for b,c in zip(view.bond_sectors,frontier.cuts)),default=1))
+            max_frontier_multiplets=max((len(a.qns[2]) for a in sites[:-1]),default=1),
+            source_parameters=embedding.source_size,
+            full_source_parameters=embedding.source_layout.size)
         return _native_local_problem(view,self.hamiltonian,site,sites,embedding,
             options.matrix_free,options.dense_solver_threshold,self.boundary_cache,structured=self.structured)

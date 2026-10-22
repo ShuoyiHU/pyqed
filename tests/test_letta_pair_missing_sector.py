@@ -5,9 +5,10 @@ from pyqed._letta_one_site_opt.qchem import ElectronicProblem
 from pyqed._letta_two_site_opt.reduced_solver import reduced_pair_problem
 from pyqed._letta_two_site_opt.reduced_compression import ReducedPairMetricRoot
 
+@pytest.mark.parametrize('prune',[False,True])
 @pytest.mark.parametrize('side',['left','right','both'])
 @pytest.mark.parametrize('nelec',[(2,2),(2,1)])
-def test_pair_root_missing_boundary_sector_is_exact_null(side,nelec):
+def test_pair_root_missing_boundary_sector_is_exact_null(side,nelec,prune):
  h=np.eye(4);g=np.zeros((4,)*4)
  p=ElectronicProblem(h,g,nelec)
  s=ReducedLatticeLETTA.random((1,4),symmetry=p.symmetry('su2'),multiplets_per_sector=2,real=False,seed=29)
@@ -17,7 +18,7 @@ def test_pair_root_missing_boundary_sector_is_exact_null(side,nelec):
  if side in ('right','both'):
   q=list(s.tensors[-1])[0][0]
   s.tensors[-1]={k:v for k,v in s.tensors[-1].items() if k[0]!=q}
- pair=reduced_pair_problem(s,p.su2_mpo(),1,matrix_free=True,dense_solver_threshold=0)
+ pair=reduced_pair_problem(s,p.su2_mpo(),1,matrix_free=True,dense_solver_threshold=0,prune=prune)
  root=ReducedPairMetricRoot(pair,s,1e-12)
  projector=pair.equilibrated_projector_factory(1e-12)
  projected=projector(pair.old_vector)
@@ -28,7 +29,7 @@ def test_pair_root_missing_boundary_sector_is_exact_null(side,nelec):
  np.testing.assert_allclose(pair.apply_metric(root.inverse_action(nx)),nx,atol=1e-10,rtol=1e-11)
  y=rng.normal(size=root.size)+1j*rng.normal(size=root.size)
  np.testing.assert_allclose(root.apply(root.unwhiten(y)),y,atol=1e-10,rtol=1e-11)
- assert any(0 in shape for shape in root.output_layout.shapes.values())
+ assert any(0 in shape for shape in root.output_layout.shapes.values()) == (not prune)
  physical=s.state_vector();expected=(s.target_two_j+1)*np.vdot(physical,physical).real
  assert np.linalg.norm(root.apply(pair.old_vector))**2==pytest.approx(expected,rel=2e-11,abs=1e-12)
 

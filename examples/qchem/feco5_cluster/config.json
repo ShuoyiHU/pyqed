@@ -1,0 +1,18 @@
+{
+  "bases": ["cc-pvdz", "cc-pvtz", "cc-pvqz", "def2-tzvp", "def2-qzvp"],
+  "spaces": [[12,12], [14,14], [16,16], [18,18]],
+  "mps_caps": [30,50,70,90],
+  "letta_source_cap": 30,
+  "seed": 71,
+  "mps_max_sweeps": 200,
+  "letta_max_sweeps": 1000,
+  "energy_tolerance": 1e-11,
+  "residual_tolerance": 1e-11,
+  "degeneracy_tolerance_Eh": 0.0001,
+  "selection": "whole near-degenerate canonical energy groups, closest frontier subset of requested size",
+  "tie_selection": "S(i|j)<0 OR S(j|i)<0; all qualifying forward pairs",
+  "integrals": "PySCF exact, nonrelativistic, all-electron; no density fitting",
+  "mps_engine": "pyqed compiled plain two-site SU2 DMRG",
+  "letta_engine": "pyqed reduced one-site LETTA, inherited source sectors",
+  "point_group_symmetry": false
+}

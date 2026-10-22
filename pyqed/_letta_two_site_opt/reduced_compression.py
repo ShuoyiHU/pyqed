@@ -163,6 +163,10 @@ def reduced_factor_blocks(state, site, left_embedding, right_embedding, retained
     groups = []
     for side, embedding in enumerate((left_embedding, right_embedding)):
         current = {}
+        inverse = None
+        if embedding.supported_source_indices is not None:
+            inverse = np.full(embedding.source_layout.size, -1, dtype=int)
+            inverse[embedding.supported_source_indices] = np.arange(embedding.source_size)
         neighborhood = state.site_neighborhood(site+side)
         for key, shape in embedding.source_layout.shapes.items():
             middle = key[2] if side == 0 else key[0]
@@ -171,13 +175,20 @@ def reduced_factor_blocks(state, site, left_embedding, right_embedding, retained
                 continue
             offset = embedding.source_layout.offsets[key][0]
             indices = offset+np.arange(np.prod(shape)).reshape(shape)
+            if inverse is not None:
+                indices = inverse[indices]
             for physical in np.ndindex(shape[1:-1]):
                 values = (labels[(key[1], physical[0])],)+physical[1:]
                 assignment = dict(zip(neighborhood, values))
                 group = (middle, tuple(assignment[x] for x in shared))
                 section = ((slice(None),)+physical+(slice(0, rank),) if side == 0
                            else (slice(0, rank),)+physical+(slice(None),))
-                current.setdefault(group, []).append(indices[section])
+                selected = indices[section]
+                if np.all(selected < 0):
+                    continue
+                if np.any(selected < 0):
+                    raise ValueError('factor support must retain complete virtual-copy axes')
+                current.setdefault(group, []).append(selected)
         groups.append(current)
     # A scalar tie assignment may be forbidden by the partner's owned
     # physical irrep. Such unmatched source entries represent the zero state;

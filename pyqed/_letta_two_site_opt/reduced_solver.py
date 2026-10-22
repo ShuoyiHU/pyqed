@@ -278,8 +278,14 @@ def reduced_pair_problem(
     *,
     matrix_free=False,
     dense_solver_threshold=64,
+    prune=True,
 ):
-    """Build an exact polynomial-size reduced two-site generalized problem."""
+    """Build the reduced two-site generalized problem with exact path support.
+
+    Exterior support preserves the full free-pair space. Legal factor sources
+    use complete paths through the current (possibly expanded) sector scaffold.
+    Set ``prune=False`` only for Cartesian reference comparisons.
+    """
 
     if not isinstance(state, ReducedLatticeLETTA):
         raise TypeError("state must be ReducedLatticeLETTA")
@@ -292,7 +298,8 @@ def reduced_pair_problem(
     left_site = int(left_site)
     if not 0 <= left_site < state.nsites - 1:
         raise IndexError("left_site is not an internal pair start")
-    frontier = ReducedFrontier.from_state(state)
+    from .pair_frontier import ReducedPairFrontier
+    frontier = ReducedPairFrontier.from_state(state, left_site, prune=prune)
     sites = tuple(frontier.to_mps(state, compact=hamiltonian.contraction_backend == 'reduced' and frontier.requires_compact(state)))
     layout = _pair_layout(sites[left_site], sites[left_site + 1])
     old_vector = _merge_pair_vector(layout,sites[left_site],sites[left_site + 1])
@@ -677,6 +684,8 @@ def _active_source_indices(embedding, retained, side):
         offset = embedding.source_layout.offsets[key][0]
         indices.extend(offset + np.flatnonzero(mask.reshape(-1)))
     result = np.asarray(indices, dtype=int)
+    if embedding.supported_source_indices is not None:
+        result = np.flatnonzero(np.isin(embedding.supported_source_indices, result))
     if not result.size:
         raise ValueError(f"retained multiplets leave no active {side} parameters")
     return result
