@@ -23,7 +23,7 @@ const workflows = [
     slug: "nonadiabatic-dynamics",
     index: "02",
     title: "Nonadiabatic dynamics",
-    status: "Experimental",
+    status: "",
     duration: "Starter model",
     task: "Propagate a two-state avoided crossing with LDRFG.",
     description:
@@ -37,23 +37,38 @@ const workflows = [
   {
     slug: "open-systems",
     index: "03",
-    title: "Open systems & spectroscopy",
-    status: "Experimental",
+    title: "Open quantum systems",
+    status: "",
     duration: "Starter model",
-    task: "Propagate a spin–boson HEOM model and inspect spectra.",
+    task: "Follow dissipation and environmental memory in a spin–boson HEOM model.",
     description:
-      "Use hierarchy and master-equation methods for dissipative dynamics, correlation functions, and nonlinear optical response.",
+      "Use Lindblad, Redfield, and hierarchy methods to evolve reduced density matrices and study relaxation and decoherence.",
     prerequisites: "Core install · model parameters",
-    expected: "Population dynamics and response functions",
+    expected: "Time-dependent populations and coherences",
     exampleHref: links.heomSource,
     exampleLabel: "Run the HEOM example",
-    docsHref: links.heom,
+    docsHref: links.openDynamicsGuide,
+  },
+  {
+    slug: "nonlinear-spectroscopy",
+    index: "04",
+    title: "Nonlinear molecular spectroscopy",
+    status: "",
+    duration: "Response functions",
+    task: "Explore two-photon absorption and multidimensional optical signals.",
+    description:
+      "Build nonlinear response from molecular energies and transition dipoles using sum-of-states and correlation-function approaches.",
+    prerequisites: "Core install · energies, dipoles, and linewidths",
+    expected: "Frequency-resolved nonlinear molecular response",
+    exampleHref: links.nonlinearResponseSource,
+    exampleLabel: "Explore response functions",
+    docsHref: links.spectroscopyGuide,
   },
   {
     slug: "tensor-networks",
-    index: "04",
+    index: "05",
     title: "MPS & DMRG",
-    status: "Experimental",
+    status: "",
     duration: "Starter MPO",
     task: "Construct a fermionic MPO with automatic Jordan–Wigner strings.",
     description:
@@ -125,6 +140,8 @@ const studies = [
   },
 ] as const;
 
+const installCommand = "pip install pyqed";
+
 const quickstart = `from pyqed.qchem import Molecule
 
 mol = Molecule(
@@ -132,7 +149,7 @@ mol = Molecule(
     unit="angstrom",
     basis="sto-3g",
 )
-mol.build(driver="builtin", eri="auto")
+mol.build(eri="auto")
 
 mf = mol.RHF().run()
 print(f"RHF energy: {mf.e_tot:.8f} Ha")`;
@@ -152,7 +169,7 @@ const validationCards = [
     metric: `Python ${release.python}`,
     title: "One installable research release",
     description:
-      "The universal wheel and source archive are published on PyPI. Optional scientific backends are documented separately from the native core path.",
+      "Platform wheels and a source archive are published on PyPI. Optional scientific backends are documented separately from the native core path.",
     href: links.installation,
     action: "Review installation options",
   },
@@ -167,38 +184,13 @@ const validationCards = [
   },
 ] as const;
 
-const projectPaths = [
-  {
-    label: "Release",
-    title: "Installable artifacts, traceable source.",
-    description:
-      "Use the tagged release for reproducible work and record the exact package version with your calculation.",
-    href: links.release,
-    action: `Open release ${release.version}`,
-  },
-  {
-    label: "Cite",
-    title: paper.title,
-    description: `${paper.authors.join(", ")} · ${paper.journal} (${paper.year}). Cite the article for the project and the Zenodo archive for the exact software release.`,
-    href: paper.url,
-    action: `Open DOI ${paper.doi}`,
-  },
-  {
-    label: "Benchmarks",
-    title: "Read claims at their stated scope.",
-    description:
-      "Reviewed and candidate records are labeled separately, with runnable inputs and explicit claim boundaries.",
-    href: links.benchmarkCatalog,
-    action: "Review the benchmark catalog",
-  },
-  {
-    label: "Contribute",
-    title: "Improve PyQED in the open.",
-    description:
-      "Follow the contribution guide for development setup, focused tests, review expectations, and responsible changes.",
-    href: links.contributing,
-    action: "Read the contribution guide",
-  },
+const projectLinks = [
+  { label: `Release v${release.version}`, href: links.release },
+  { label: "Benchmark records", href: links.benchmarkCatalog },
+  { label: "Contribute", href: links.contributing },
+  { label: "Discussions", href: links.discussions },
+  { label: "Contributors", href: links.contributors },
+  { label: "Software archive", href: softwareArchive.conceptUrl },
 ] as const;
 
 const softwareJsonLd = {
@@ -220,9 +212,9 @@ const softwareJsonLd = {
   license: links.license,
   identifier: {
     "@type": "PropertyValue",
-    propertyID: "DOI",
-    value: softwareArchive.versionDoi,
-    url: softwareArchive.versionUrl,
+    propertyID: "GitHub release",
+    value: `v${release.version}`,
+    url: links.release,
   },
   isPartOf: {
     "@type": "CreativeWorkSeries",
@@ -258,13 +250,10 @@ const softwareJsonLd = {
 };
 
 const navigation = [
-  ["Workflows", "#workflows"],
-  ["Viewer", "/viewer"],
-  ["Quickstart", "#quickstart"],
+  ["Quickstart", links.quickstart],
+  ["User Guide", links.userGuide],
   ["Examples", "/examples"],
-  ["Evidence", "#evidence"],
-  ["Research", "#research"],
-  ["Project", "#project"],
+  ["Viewer", "/viewer"],
 ] as const;
 
 export default function Home() {
@@ -279,7 +268,7 @@ export default function Home() {
         dangerouslySetInnerHTML={{ __html: JSON.stringify(softwareJsonLd) }}
       />
 
-      <header className="site-header">
+      <header className="site-header home-header">
         <nav className="site-nav shell" aria-label="Primary navigation">
           <Link className="wordmark" href="/" aria-label="PyQED home">
             <span className="wordmark-mark">P</span>
@@ -295,7 +284,6 @@ export default function Home() {
           </div>
 
           <div className="nav-actions">
-            <a href={links.userGuide}>User Guide</a>
             <a className="nav-github" href={links.github}>
               GitHub <span aria-hidden="true">↗</span>
             </a>
@@ -307,7 +295,6 @@ export default function Home() {
                     {label}
                   </a>
                 ))}
-                <a href={links.userGuide}>User Guide</a>
                 <a href={links.docs}>Stable documentation</a>
               </nav>
             </details>
@@ -315,7 +302,7 @@ export default function Home() {
         </nav>
       </header>
 
-      <main id="main-content">
+      <main className="home" id="main-content">
         <section className="hero" id="top">
           <div className="hero-grid" aria-hidden="true" />
 
@@ -325,28 +312,25 @@ export default function Home() {
                 <span /> Research software for chemical physics
               </p>
               <h1>
-                Electronic structure and
-                <br />
+                Electronic structure and{" "}
                 <em>quantum dynamics in Python.</em>
               </h1>
               <p className="hero-lede">
-                PyQED connects molecular electronic structure, nonadiabatic
-                motion, open-system dynamics, spectroscopy, and tensor
-                networks in one inspectable Python codebase.
+                Build molecular models, follow quantum dynamics, and explore
+                spectra with an open Python framework for chemical physics.
               </p>
 
               <ul className="release-chips" aria-label="Current release status">
                 <li>PyQED {release.version}</li>
                 <li>Python {release.python}</li>
                 <li>MIT</li>
-                <li>Research APIs evolving</li>
               </ul>
 
               <div className="hero-install" aria-label="Install PyQED">
-                <code>{release.installCommand}</code>
+                <code>{installCommand}</code>
                 <CopyButton
                   analyticsEvent="install_copy"
-                  text={release.installCommand}
+                  text={installCommand}
                 />
               </div>
 
@@ -360,136 +344,7 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="orbital-stage" aria-hidden="true">
-              <div className="orbital-glow" />
-              <div className="orbit orbit-one">
-                <span className="particle particle-one" />
-              </div>
-              <div className="orbit orbit-two">
-                <span className="particle particle-two" />
-              </div>
-              <div className="orbit orbit-three">
-                <span className="particle particle-three" />
-              </div>
-              <div className="orbital-core">
-                <span>iℏ</span>
-                <small>∂ₜ|ψ⟩ = Ĥ|ψ⟩</small>
-              </div>
-              <p className="orbit-note orbit-note-one">electrons</p>
-              <p className="orbit-note orbit-note-two">nuclei</p>
-              <p className="orbit-note orbit-note-three">photons</p>
-            </div>
-          </div>
-
-          <div className="hero-foot shell">
-            <p>For computational chemists and chemical physicists</p>
-            <div className="hero-metrics" aria-label="Project scope">
-              <span>Native core path</span>
-              <span>Scoped validation</span>
-              <span>Open methods</span>
-            </div>
-          </div>
-        </section>
-
-        <section
-          className="capabilities"
-          id="workflows"
-          aria-labelledby="workflows-heading"
-        >
-          <div className="section-heading shell">
-            <div>
-              <p className="kicker">Choose a starting point</p>
-              <h2 id="workflows-heading">Four paths into the code.</h2>
-            </div>
-            <p>
-              Begin with a small, inspectable calculation. Each path states
-              what it needs, what it produces, and where to go deeper.
-            </p>
-          </div>
-
-          <div className="capability-grid shell">
-            {workflows.map((workflow) => (
-              <article
-                className="capability-card"
-                data-workflow={workflow.slug}
-                key={workflow.slug}
-              >
-                <div className="capability-topline">
-                  <span>{workflow.index}</span>
-                  <span>{workflow.status}</span>
-                </div>
-                <p className="workflow-duration">{workflow.duration}</p>
-                <h3>{workflow.title}</h3>
-                <p className="workflow-task">{workflow.task}</p>
-                <p>{workflow.description}</p>
-                <dl className="workflow-details">
-                  <div>
-                    <dt>Prerequisites</dt>
-                    <dd>{workflow.prerequisites}</dd>
-                  </div>
-                  <div>
-                    <dt>Expected result</dt>
-                    <dd>{workflow.expected}</dd>
-                  </div>
-                </dl>
-                <div className="card-actions">
-                  <a className="capability-link" href={workflow.exampleHref}>
-                    {workflow.exampleLabel} <span aria-hidden="true">↗</span>
-                  </a>
-                  <a className="secondary-link" href={workflow.docsHref}>
-                    Read the guide
-                  </a>
-                </div>
-              </article>
-            ))}
-          </div>
-
-          <div className="scope-note shell">
-            <strong>Know the scope.</strong>
-            <p>
-              PyQED is research software: interfaces and method coverage are
-              evolving. Treat benchmark claims as workload-specific, and read
-              each example&apos;s prerequisites before scaling it up.
-            </p>
-            <a href={links.benchmarkCatalog}>Read benchmark status definitions →</a>
-          </div>
-        </section>
-
-        <section className="quickstart" id="quickstart">
-          <div className="quickstart-inner shell">
-            <div className="quickstart-copy">
-              <p className="kicker">Five-minute quickstart</p>
-              <h2>From geometry to a checked energy.</h2>
-              <p>
-                Install the current release, construct H₂, and run a native
-                restricted Hartree–Fock calculation. The built-in driver keeps
-                the first example independent of optional PySCF integrations.
-              </p>
-              <div className="install-command" aria-label="Install command">
-                <code>{release.installCommand}</code>
-                <CopyButton
-                  analyticsEvent="install_copy"
-                  text={release.installCommand}
-                />
-              </div>
-              <p className="quickstart-note">
-                Expected on the documented 0.74 Å geometry: −1.11675931 Ha.
-                Automatic integral storage selects a native representation.
-              </p>
-              <div className="quickstart-links">
-                <a className="text-link" href={links.quickstart}>
-                  Follow the stable guide <span aria-hidden="true">→</span>
-                </a>
-                <a className="secondary-link secondary-link-dark" href={links.installation}>
-                  Installation and optional backends
-                </a>
-                <Link className="secondary-link secondary-link-dark" href="/examples">
-                  Browse runnable examples
-                </Link>
-              </div>
-            </div>
-
-            <div className="code-window" aria-label="Python quickstart example">
+            <div className="code-window" id="quickstart" aria-label="Python quickstart example">
               <div className="code-titlebar">
                 <span className="window-dots" aria-hidden="true">
                   <i />
@@ -510,50 +365,87 @@ export default function Home() {
           </div>
         </section>
 
-        <section className="evidence" id="evidence">
+        <section
+          className="capabilities"
+          id="workflows"
+          aria-labelledby="workflows-heading"
+        >
           <div className="section-heading shell">
             <div>
-              <p className="kicker">Validated and maintained</p>
-              <h2>Evidence before adjectives.</h2>
+              <p className="kicker">Choose a starting point</p>
+              <h2 id="workflows-heading">What you can do with PyQED</h2>
             </div>
             <p>
-              PyQED publishes scoped numerical records and release provenance
-              so that a claim can be traced back to its workload and artifacts.
+              Choose a field and start with a small, runnable example.
             </p>
           </div>
 
-          <div className="validation-grid shell">
-            {validationCards.map((card) => (
-              <article className="validation-card" key={card.label}>
-                <p>{card.label}</p>
-                <strong>{card.metric}</strong>
-                <h3>{card.title}</h3>
-                <p>{card.description}</p>
-                <a href={card.href}>
-                  {card.action} <span aria-hidden="true">↗</span>
-                </a>
+          <div className="capability-grid shell">
+            {workflows.map((workflow) => (
+              <article
+                className="capability-card"
+                data-workflow={workflow.slug}
+                key={workflow.slug}
+              >
+                <div className="capability-topline">
+                  <span>{workflow.index}</span>
+                  {workflow.status && <span>{workflow.status}</span>}
+                </div>
+                <h3>{workflow.title}</h3>
+                <p className="workflow-task">{workflow.task}</p>
+                <details className="workflow-more">
+                  <summary>Requirements and details</summary>
+                  <p>{workflow.description}</p>
+                  <p className="workflow-duration">{workflow.duration}</p>
+                  <dl className="workflow-details">
+                    <div>
+                      <dt>Prerequisites</dt>
+                      <dd>{workflow.prerequisites}</dd>
+                    </div>
+                    <div>
+                      <dt>Expected result</dt>
+                      <dd>{workflow.expected}</dd>
+                    </div>
+                  </dl>
+                </details>
+                <div className="card-actions">
+                  <a className="capability-link" href={workflow.exampleHref}>
+                    {workflow.exampleLabel} <span aria-hidden="true">↗</span>
+                  </a>
+                  <a className="secondary-link" href={workflow.docsHref}>
+                    Read the guide
+                  </a>
+                </div>
               </article>
             ))}
           </div>
+
+          <p className="scope-note shell">
+            Research APIs and method coverage are evolving.
+            <a href={links.benchmarkCatalog}>Review method and benchmark scope →</a>
+          </p>
         </section>
 
         <section className="research" id="research">
           <div className="section-heading section-heading-light shell">
             <div>
-              <p className="kicker">Computed with PyQED</p>
-              <h2>Methods with provenance.</h2>
+              <p className="kicker">Selected research</p>
+              <h2>Computed with PyQED.</h2>
             </div>
             <p>
-              These studies expose their public calculation sources and method
-              guides. Where an exact output archive is missing, the limitation
-              is stated instead of implying full reproduction.
+              Explore the calculations, source code, and methods behind
+              these research figures.
             </p>
           </div>
 
           <div className="study-grid shell">
             {studies.map((study) => (
               <figure className={`study-card ${study.className}`} key={study.title}>
-                <div className="study-image-wrap">
+                <a
+                  className="study-image-wrap"
+                  href={study.src}
+                  aria-label={`View full-size figure: ${study.title}`}
+                >
                   <Image
                     src={study.src}
                     alt={study.alt}
@@ -563,21 +455,24 @@ export default function Home() {
                     sizes={study.sizes}
                     unoptimized
                   />
-                </div>
+                </a>
                 <figcaption>
                   <p className="study-label">{study.label}</p>
                   <h3>{study.title}</h3>
                   <p>{study.description}</p>
-                  <dl className="study-provenance">
-                    <div>
-                      <dt>Parameters</dt>
-                      <dd>{study.provenance}</dd>
-                    </div>
-                    <div>
-                      <dt>Availability</dt>
-                      <dd>{study.availability}</dd>
-                    </div>
-                  </dl>
+                  <details className="research-details">
+                    <summary>Calculation details</summary>
+                    <dl className="study-provenance">
+                      <div>
+                        <dt>Parameters</dt>
+                        <dd>{study.provenance}</dd>
+                      </div>
+                      <div>
+                        <dt>Availability</dt>
+                        <dd>{study.availability}</dd>
+                      </div>
+                    </dl>
+                  </details>
                   <div className="study-actions">
                     <a data-research-source href={study.sourceHref}>
                       {study.sourceLabel} <span aria-hidden="true">↗</span>
@@ -594,72 +489,41 @@ export default function Home() {
         </section>
 
         <section className="project" id="project">
-          <div className="section-heading section-heading-light shell">
-            <div>
-              <p className="kicker">The public record</p>
-              <h2>Release, cite, inspect, contribute.</h2>
-            </div>
-            <p>
-              Scientific software is more than source code. Follow the records
-              for releases, evidence, attribution, and project stewardship.
-            </p>
-          </div>
-
-          <div className="project-grid shell">
-            {projectPaths.map((path) => (
-              <article className="project-card" key={path.label}>
-                <p>{path.label}</p>
-                <h3>{path.title}</h3>
-                <p>{path.description}</p>
-                <a href={path.href}>
-                  {path.action} <span aria-hidden="true">↗</span>
-                </a>
-              </article>
-            ))}
-          </div>
-        </section>
-
-        <section className="community" id="community">
-          <div className="community-inner shell">
-            <div className="community-copy">
-              <p className="kicker">People and stewardship</p>
-              <h2>Built in the open, credited precisely.</h2>
-              <p>
-                PyQED&apos;s citation metadata names Bing Gu as the software
-                author. The repository records the broader history of
-                contributions, discussion, and review.
+          <div className="project-overview shell">
+            <div className="project-citation">
+              <p className="kicker">About the project</p>
+              <h2>Open source for chemical physics.</h2>
+              <p className="project-maintainer">
+                Maintained by <a href={links.maintainer}>Bing Gu</a> · MIT license
               </p>
-              <div className="source-actions">
-                <a className="button button-ink" href={links.contributors}>
-                  View contributors <span aria-hidden="true">↗</span>
-                </a>
-                <a className="button button-outline-ink" href={links.discussions}>
-                  Join discussions
-                </a>
+              <div className="citation-note">
+                <h3>Cite PyQED</h3>
+                <p>
+                  <a href={paper.url}>{paper.title}</a>
+                  <br />
+                  {paper.authors.join(", ")} · <em>{paper.journal}</em> ({paper.year})
+                </p>
+                <a className="text-link" href={paper.url}>DOI: {paper.doi} ↗</a>
               </div>
             </div>
-
-            <div className="team-grid" aria-label="Cited software author">
-              <article className="team-card">
-                <p>Maintainer · cited author</p>
-                <h3>Bing Gu</h3>
-                <a href={links.maintainer}>GitHub profile ↗</a>
-              </article>
-              <div className="community-note">
-                <strong>Using PyQED in published work?</strong>
-                <p>
-                  Cite the <a href={paper.url}>PyQED project paper</a> for the
-                  framework and the <a href={softwareArchive.versionUrl}>
-                    archived v{release.version} release (DOI {softwareArchive.versionDoi})
-                  </a>{" "}
-                  for the software used. The all-versions DOI{" "}
-                  <a href={softwareArchive.conceptUrl}>
-                    {softwareArchive.conceptDoi}
-                  </a>{" "}
-                  resolves all archived versions; also record the exact commit
-                  and cite the algorithms used.
-                </p>
-              </div>
+            <div className="project-resources">
+              <nav aria-label="Project resources">
+                {projectLinks.map((link) => (
+                  <a href={link.href} key={link.href}>
+                    {link.label} <span aria-hidden="true">↗</span>
+                  </a>
+                ))}
+              </nav>
+              <details className="release-details" id="evidence">
+                <summary>Validation and release information</summary>
+                {validationCards.map((card) => (
+                  <article key={card.label}>
+                    <h3>{card.title}</h3>
+                    <p><strong>{card.metric}</strong> · {card.description}</p>
+                    <a href={card.href}>{card.action} ↗</a>
+                  </article>
+                ))}
+              </details>
             </div>
           </div>
         </section>

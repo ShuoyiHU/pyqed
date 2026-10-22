@@ -52,7 +52,7 @@ test("exports the research-first PyQED homepage", async () => {
     html,
     /<h1[^>]*>[\s\S]*Electronic structure and[\s\S]*quantum dynamics in Python\./i,
   );
-  assert.match(html, /python -m pip install pyqed==0\.2\.0/i);
+  assert.match(html, /<code>pip install pyqed<\/code>/i);
   assert.match(html, /Open the User Guide/i);
   assert.match(
     html,
@@ -69,11 +69,12 @@ test("exports the research-first PyQED homepage", async () => {
   );
 
   const workflows = section(html, "workflows");
-  assert.equal((workflows.match(/data-workflow=/gi) ?? []).length, 4);
+  assert.equal((workflows.match(/data-workflow=/gi) ?? []).length, 5);
   for (const slug of [
     "electronic-structure",
     "nonadiabatic-dynamics",
     "open-systems",
+    "nonlinear-spectroscopy",
     "tensor-networks",
   ]) {
     assert.match(workflows, new RegExp(`data-workflow="${slug}"`, "i"));
@@ -90,7 +91,6 @@ test("exports the research-first PyQED homepage", async () => {
   assert.match(html, /RHF energy: -1\.11675931 Ha/i);
   assert.match(html, /10\.1063\/1674-0068\/cjcp2510161/i);
   assert.match(html, /10\.5281\/zenodo\.21316543/i);
-  assert.match(html, /10\.5281\/zenodo\.21316544/i);
   assert.doesNotMatch(html, /chatgpt\.site|codex-preview|Your site is taking shape/i);
 
   const jsonLdMatch = html.match(
@@ -98,9 +98,11 @@ test("exports the research-first PyQED homepage", async () => {
   );
   assert.ok(jsonLdMatch, "software JSON-LD should be rendered");
   const jsonLd = JSON.parse(jsonLdMatch[1]);
-  assert.equal(jsonLd.softwareVersion, "0.2.0");
+  assert.equal(jsonLd.softwareVersion, "0.3.0");
+  assert.equal(jsonLd.downloadUrl, "https://pypi.org/project/pyqed/0.3.0/");
+  assert.equal(jsonLd.releaseNotes, "https://github.com/binggu56/pyqed/releases/tag/v0.3.0");
   assert.equal(jsonLd.maintainer.name, "Bing Gu");
-  assert.equal(jsonLd.identifier.value, "10.5281/zenodo.21316544");
+  assert.equal(jsonLd.identifier.value, "v0.3.0");
   assert.equal(jsonLd.isPartOf.identifier.value, "10.5281/zenodo.21316543");
 });
 
@@ -132,6 +134,8 @@ test("exports the release-pinned examples library", async () => {
   assert.match(html, /Copy code/i);
   assert.match(html, /Copy run command/i);
   assert.match(html, /Full source · v0\.2\.0/i);
+  assert.match(html, /Full source · v0\.3\.0/i);
+  assert.match(html, /blob\/v0\.3\.0\/examples\/quickstart\.py/i);
   assert.doesNotMatch(html, /chatgpt\.site/i);
 });
 
@@ -622,7 +626,7 @@ test("uses a static, repository-owned deployment", async () => {
   assert.match(nextConfig, /trailingSlash:\s*true/);
   assert.match(nextConfig, /unoptimized:\s*true/);
   assert.match(packageJson.scripts.build, /^next build$/);
-  assert.equal(packageJson.dependencies.next, "16.3.4");
+  assert.equal(packageJson.dependencies.next, "16.3.8");
   assert.equal(packageJson.dependencies["3dmol"], "2.5.5");
   assert.doesNotMatch(packageText, /vinext|wrangler|drizzle|cloudflare/i);
   assert.doesNotMatch(layout, /Analytics/);

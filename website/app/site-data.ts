@@ -1,4 +1,10 @@
 export const release = {
+  version: "0.3.0",
+  python: "3.10–3.13",
+  installCommand: "pip install pyqed",
+} as const;
+
+export const exampleRelease = {
   version: "0.2.0",
   python: "3.10–3.13",
   installCommand: "python -m pip install pyqed==0.2.0",
@@ -24,7 +30,7 @@ export const links = {
   docs: "https://docs.pyqed.org/en/stable/",
   userGuide: "https://docs.pyqed.org/en/latest/guide/guide.html",
   installation: "https://docs.pyqed.org/en/stable/installation.html",
-  quickstart: "https://docs.pyqed.org/en/stable/quickstart.html",
+  quickstart: "https://docs.pyqed.org/en/latest/quickstart.html",
   qchem: "https://docs.pyqed.org/en/stable/qchem.html",
   namd: "https://docs.pyqed.org/en/stable/pyqed.namd.html",
   heom: "https://docs.pyqed.org/en/stable/heom.html",
@@ -32,9 +38,9 @@ export const links = {
   geometricDynamics:
     "https://docs.pyqed.org/en/stable/geometric_quantum_dynamics.html",
   openDynamicsGuide:
-    "https://docs.pyqed.org/en/stable/guide/guide_open_dynamics.html",
+    "https://docs.pyqed.org/en/latest/guide/guide_open_dynamics.html",
   spectroscopyGuide:
-    "https://docs.pyqed.org/en/stable/guide/guide_spectroscopy.html",
+    "https://docs.pyqed.org/en/latest/guide/guide_spectroscopy.html",
   developmentDocs: "https://docs.pyqed.org/en/latest/",
   benchmarks: "https://github.com/binggu56/pyqed/tree/main/benchmarks",
   benchmarkCatalog:
@@ -48,7 +54,7 @@ export const links = {
   quickstartSource:
     "https://github.com/binggu56/pyqed/blob/main/examples/quickstart.py",
   quickstartReleaseSource:
-    "https://github.com/binggu56/pyqed/blob/v0.2.0/examples/quickstart.py",
+    "https://github.com/binggu56/pyqed/blob/v0.3.0/examples/quickstart.py",
   sineDvrReleaseSource:
     "https://github.com/binggu56/pyqed/blob/v0.2.0/examples/dvr/fedvr_vs_sine_quartic.py",
   heomReleaseSource:
@@ -61,6 +67,8 @@ export const links = {
     "https://github.com/binggu56/pyqed/blob/main/examples/namd/ldrfg_avoided_crossing.py",
   heomSource:
     "https://github.com/binggu56/pyqed/blob/main/examples/heom.py",
+  nonlinearResponseSource:
+    "https://github.com/binggu56/pyqed/blob/main/pyqed/signal/sos.py",
   absorptionSource:
     "https://github.com/binggu56/pyqed/blob/main/examples/signals/absorption.py",
   autompoSource:
@@ -75,9 +83,9 @@ export const links = {
     "https://github.com/binggu56/pyqed/blob/main/examples/namd/so2_3d_sine_legendre_linked_ldr.py",
   pyrazine24Source:
     "https://github.com/binggu56/pyqed/blob/main/examples/namd/pyrazine_24mode_ldrfg.py",
-  pypi: "https://pypi.org/project/pyqed/0.2.0/",
-  release: "https://github.com/binggu56/pyqed/releases/tag/v0.2.0",
-  citation: "https://github.com/binggu56/pyqed/blob/main/CITATION.cff",
+  pypi: "https://pypi.org/project/pyqed/0.3.0/",
+  release: "https://github.com/binggu56/pyqed/releases/tag/v0.3.0",
+  citation: paper.url,
   contributing:
     "https://github.com/binggu56/pyqed/blob/main/CONTRIBUTING.md",
   contributors: "https://github.com/binggu56/pyqed/graphs/contributors",
