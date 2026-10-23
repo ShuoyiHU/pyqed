@@ -33,3 +33,16 @@ def test_rejects_changed_integrals_before_creating_retry(tmp_path):
     root,old,src=fixture(tmp_path);(src/'integrals.npz').write_bytes(b'changed');dst=tmp_path/'retry'
     with pytest.raises(ValueError,match='Integral hash mismatch'):stage(root,old,dst,[12])
     assert not dst.exists()
+
+
+@pytest.mark.parametrize('status',[0,7])
+def test_memory_wrapper_without_external_time(tmp_path,status):
+    import subprocess,sys,os
+    helper=Path(__file__).with_name('measure_worker.py')
+    run=subprocess.run([sys.executable,str(helper),sys.executable,'-c',
+        f'import sys; print("worker started"); sys.exit({status})'],
+        env=dict(os.environ,PATH=str(tmp_path)),text=True,capture_output=True)
+    assert run.returncode==status
+    assert 'worker started' in run.stdout
+    record=json.loads(run.stderr.strip())
+    assert record['returncode']==status and record['child_peak_rss_bytes']>0

@@ -56,14 +56,15 @@ def main():
         verify_source();load_engine()
         # Remove only this source campaign's already-blocked LETTA jobs.
         selected={str(config['spaces'].index([space,space])) for space in spaces}
-        records=(old/'submitted.tsv').read_text().splitlines()[1:]
+        records=[row for record in root.glob('results*/submitted.tsv')
+            for row in record.read_text().splitlines()[1:] if row.strip()]
         blocked_candidates={row.split('\t')[3] for row in records
             if row.split('\t')[0]=='letta' and row.split('\t')[2] in selected}
         queue=subprocess.check_output(['squeue','--noheader','--user',os.environ['USER'],
             '--format=%i|%T|%R'],text=True)
         cancel=[fields[0] for row in queue.splitlines()
             if len(fields:=row.strip().split('|'))==3 and fields[0] in blocked_candidates
-            and fields[1]=='PENDING' and fields[2]=='DependencyNeverSatisfied']
+            and fields[1]=='PENDING' and fields[2].strip('()')=='DependencyNeverSatisfied']
         if cancel:subprocess.run(['scancel',*cancel],check=True)
 
     env=dict(os.environ,FECO_ROOT=str(root),OUTPUT_ROOT=str(out))

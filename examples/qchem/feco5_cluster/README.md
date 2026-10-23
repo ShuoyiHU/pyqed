@@ -108,7 +108,8 @@ copied into a fresh output directory; no SCF or integral transformation repeats.
 The migration verifies that the old input signature differs only by the explicitly
 requested energy tolerance. Old checkpoints and results are retained unchanged.
 Only old selected LETTA jobs whose queue reason is DependencyNeverSatisfied are
-cancelled. Every new worker records `/usr/bin/time -v` peak RSS and timing.
+cancelled. Every new worker records peak child RSS and timing through Python resource accounting;
+no external `time` executable is required.
 
 MPS memory requests: CAS12 48G, CAS14 128G, CAS16 320G, CAS18 768G. CAS12 LETTA
 retains 64G because tied-state peak memory is not measured; other LETTA jobs use
