@@ -35,8 +35,8 @@ before resubmission: `"$LETTA_PYTHON" -m pip install 'Cython>=3,<4' setuptools`.
 No block2 engine or block2-specific LD_PRELOAD is used.
 
 MPS is the new pyqed compiled **plain two-site** solver, not the previous solver
-that also tested a one-site competitor per bond. Absolute local residual and
-energy-plateau tolerances are 1e-11; cap 200 directional sweeps, requiring two
+that also tested a one-site competitor per bond. The absolute local residual tolerance is 1e-11 and the MPS
+energy-plateau tolerance is 1e-6 Ha; cap 200 directional sweeps, requiring two
 successive small energy changes. LETTA uses the existing reduced one-site
 solver's convergence checks, with cap 1000. Caps are not convergence claims.
 Unconverged capped jobs exit nonzero and preserve checkpoints; they must be
