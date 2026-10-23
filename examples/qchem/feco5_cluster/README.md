@@ -97,3 +97,36 @@ Check dependencies in this environment before recovery:
 
 Install only missing dependencies in this environment. No separate Python
 package directory or environment is needed.
+
+
+## October 23 memory-sized retry
+
+Use `bash retry_cases.sh --source results_retry_20261023_002723 --spaces 12 --submit`
+for fresh CAS(12,12) MPS runs at 1e-6 Ha, followed by their D30-dependent LETTA jobs.
+Use `--spaces 12,14,16,18` to retry all cases. Saved integrals are hash-checked and
+copied into a fresh output directory; no SCF or integral transformation repeats.
+The migration verifies that the old input signature differs only by the explicitly
+requested energy tolerance. Old checkpoints and results are retained unchanged.
+Only old selected LETTA jobs whose queue reason is DependencyNeverSatisfied are
+cancelled. Every new worker records `/usr/bin/time -v` peak RSS and timing.
+
+MPS memory requests: CAS12 48G, CAS14 128G, CAS16 320G, CAS18 768G. CAS12 LETTA
+retains 64G because tied-state peak memory is not measured; other LETTA jobs use
+the corresponding MPS request, provisionally. Override with `--memory` if needed.
+Default partitions are gubing,test,testf,test-intel. CAS18 needs an eligible node
+with at least 768G allocatable memory; partition capacity has not been verified.
+
+Basis for sizing: the 20 CAS12 jobs used 30.00–30.11G MaxRSS, almost independent
+of Dmul. CAS14 jobs were killed at 64G. A topology-only ERI AutoMPO probe on saved
+cc-pVDZ integrals found 55,804,306 adjacent-channel pairs at n=12 and 151,051,878
+at n=14 (2.707x), before dense allocation. Peak channel counts were 5,128 and
+7,820. This is the current dense channel representation's overhead, not an
+inherent memory requirement of DMRG. The physical integral array costs O(n^4)
+and is below 1 MiB through n=18; MPS coefficients scale approximately as
+O(n d Dmul^2), with d the local physical dimension and symmetry reducing storage.
+The current builder's approximately cubic channel growth gives a dense storage
+estimate approaching O(n^7). Calibrating against CAS12 gives an estimated
+82–89G for CAS14, 193–226G for CAS16, and 413–515G for CAS18; only CAS12 has
+measured completed-job peak memory. These ranges are extrapolations, not bounds.
+The requests add roughly 40–60% headroom to the conservative estimates. No
+operator terms, sectors, bond dimensions, or local solver tolerances are removed.
