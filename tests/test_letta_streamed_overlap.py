@@ -37,3 +37,34 @@ def test_coordinate_streaming_preserves_physical_actions(monkeypatch):
     x=np.random.default_rng(123).normal(size=old.dimension)
     np.testing.assert_allclose(new.metric(x),old.metric(x),atol=1e-12)
     np.testing.assert_allclose(new.expand(new.coordinates(x)),old.expand(old.coordinates(x)),atol=1e-11)
+
+
+def test_streamed_cutoff_omits_only_rejected_vectors():
+    rng=np.random.default_rng(33)
+    a=rng.normal(size=(501,7))+1j*rng.normal(size=(501,7))
+    a[:,4:]=a[:,:3]
+    full=streamed_svd(a.shape,lambda i,j:a[i:j],workspace_mb=.05)
+    cut=streamed_svd(a.shape,lambda i,j:a[i:j],workspace_mb=.05,relative_cutoff=1e-7)
+    keep=full[2]>1e-7*full[2].max()
+    assert cut[1].shape==(501,4)
+    np.testing.assert_array_equal(cut[0],full[0])
+    np.testing.assert_array_equal(cut[2],full[2][keep])
+    np.testing.assert_allclose(cut[1],full[1][:,keep],atol=2e-15)
+    np.testing.assert_array_equal(cut[3],full[3][keep])
+
+
+def test_local_cutoff_preserves_global_coordinate_support(monkeypatch):
+    from pyqed._letta_one_site_opt import streamed_overlap as so
+    from test_letta_compact_hamiltonian import coordinates
+    monkeypatch.setenv('PYQED_OVERLAP_STREAM_MB','0')
+    updated=coordinates()
+    original=so.streamed_svd
+    def full(*a,**kw):
+        kw.pop('relative_cutoff',None)
+        return original(*a,**kw)
+    monkeypatch.setattr(so,'streamed_svd',full)
+    reference=coordinates()
+    assert updated.rank==reference.rank
+    x=np.random.default_rng(99).normal(size=reference.dimension)
+    np.testing.assert_allclose(updated.expand(updated.coordinates(x)),
+        reference.expand(reference.coordinates(x)),atol=1e-11)

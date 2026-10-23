@@ -236,7 +236,7 @@ def _factor_coordinates(state, problem, root, le, re, left, right, retained, sid
         current[index].data=scatter_blocks(embedding,embedding.unpack_source(vector))
     embedding = le if side == 0 else re
     coordinates = ReducedLocalCoordinates(current, embedding, site+side, retain_outer=False,
-        boundary_seeds=root.boundary_seeds)
+        boundary_seeds=root.boundary_seeds,factor_only=True)
     coordinates.restrict(_active_source_indices(embedding, retained, 'left' if side == 0 else 'right'))
     coordinates.prepare(0., singular_tolerance=options.pinv_tolerance,
                         max_workspace_mb=options.max_workspace_mb)
@@ -246,25 +246,29 @@ def _factor_coordinates(state, problem, root, le, re, left, right, retained, sid
 
 def _physical_factor_map(coordinates,root,site,side):
     partner = coordinates.sites[site+1 if side == 0 else site].data
+    shapes={key:(left.shape[0],nphysical,right.shape[0])
+            for key,up,left,right,nphysical in coordinates.images}
 
     def apply(vector):
         center = coordinates.orthogonal_expand(vector)
-        blocks = {}
+        result=np.zeros(root.physical_layout.size,dtype=complex)
         for key, shape in root.physical_layout.shapes.items():
             left_key, right_key = key[:3], key[2:]
             active_key = left_key if side == 0 else right_key
             if active_key not in center:
-                blocks[key] = np.zeros(shape, dtype=complex)
-            elif side == 0:
+                continue
+            if side == 0:
                 weight = np.sqrt(_sector_irrep(key[-1]).dim/_sector_irrep(key[2]).dim)
-                blocks[key] = weight*np.einsum('lpm,mqr->lpqr', center[left_key], partner[right_key])
+                block=weight*np.einsum('lpm,mqr->lpqr', center[left_key], partner[right_key])
             else:
-                blocks[key] = np.einsum('lpm,mqr->lpqr', partner[left_key], center[right_key])
-        return root.physical_layout.pack(blocks)
+                block=np.einsum('lpm,mqr->lpqr', partner[left_key], center[right_key])
+            start,stop=root.physical_layout.offsets[key]
+            result[start:stop]=block.ravel()
+        return result
 
     def adjoint(vector):
         blocks = root.physical_layout.unpack(vector)
-        center = coordinates.orthogonal_expand(np.zeros(coordinates.rank))
+        center = {key:np.zeros(shape,dtype=complex) for key,shape in shapes.items()}
         for key, block in blocks.items():
             left_key, right_key = key[:3], key[2:]
             active_key = left_key if side == 0 else right_key
@@ -278,6 +282,64 @@ def _physical_factor_map(coordinates,root,site,side):
         return coordinates.orthogonal_adjoint(center)
 
     return apply, adjoint
+
+
+def _supported_factor_map(coordinates,root,site,side):
+    """Compose the existing tangent map with pair support, before pair expansion.
+
+    This equals project_physical(physical_factor_map(z)); its adjoint equals
+    physical_factor_map.adjoint(embed_physical(w)). Only the already selected
+    pair support is used. Full QR pair vectors are never materialized.
+    """
+    partner=coordinates.sites[site+1 if side==0 else site].data
+    shapes={key:(left.shape[0],nphysical,right.shape[0])
+            for key,up,left,right,nphysical in coordinates.images}
+    routes=[];fixed={}
+    for key,shape in root.output_layout.shapes.items():
+        active=key[:3] if side==0 else key[2:]
+        if active not in shapes:continue
+        left,right=root.support_factors[key]
+        partner_key=key[2:] if side==0 else key[:3]
+        # The same projected partner serves all physical channels on the other factor.
+        cache_key=(partner_key,key[-1] if side==0 else key[0])
+        if cache_key not in fixed:
+            block=partner[partner_key]
+            fixed[cache_key]=(block.reshape(-1,block.shape[-1])@right.conj()).reshape(
+                block.shape[:2]+(right.shape[1],)) if side==0 else (
+                left.conj().T@block.reshape(block.shape[0],-1)).reshape(
+                (left.shape[1],)+block.shape[1:])
+        weight=np.sqrt(_sector_irrep(key[-1]).dim/_sector_irrep(key[2]).dim) if side==0 else 1.
+        routes.append((active,shape,root.output_layout.offsets[key],
+                       left if side==0 else right,fixed[cache_key],weight))
+
+    def apply(vector):
+        center=coordinates.orthogonal_expand(vector)
+        result=np.zeros(root.size,dtype=complex)
+        for key,shape,(start,stop),outer,other,weight in routes:
+            block=center[key]
+            if side==0:
+                projected=(outer.conj().T@block.reshape(block.shape[0],-1)).reshape(
+                    (outer.shape[1],)+block.shape[1:])
+                product=projected.reshape(-1,projected.shape[-1])@other.reshape(other.shape[0],-1)
+            else:
+                projected=(block.reshape(-1,block.shape[-1])@outer.conj()).reshape(
+                    block.shape[:2]+(outer.shape[1],))
+                product=other.reshape(-1,other.shape[-1])@projected.reshape(projected.shape[0],-1)
+            result[start:stop]=weight*product.ravel()
+        return result
+
+    def adjoint(vector):
+        center={key:np.zeros(shape,dtype=complex) for key,shape in shapes.items()}
+        for key,shape,(start,stop),outer,other,weight in routes:
+            block=np.asarray(vector)[start:stop].reshape(shape[0]*shape[1],-1)
+            if side==0:
+                projected=block@other.reshape(other.shape[0],-1).conj().T
+                center[key]+=weight*(outer@projected.reshape(shape[0],-1)).reshape(shapes[key])
+            else:
+                projected=other.reshape(-1,other.shape[-1]).conj().T@block
+                center[key]+=(projected.reshape(-1,shape[-1])@outer.T).reshape(shapes[key])
+        return coordinates.orthogonal_adjoint(center)
+    return apply,adjoint
 
 
 def compress_reduced_pair(target, problem, state, left, right, retained, *, options,

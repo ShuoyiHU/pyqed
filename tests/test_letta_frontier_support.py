@@ -301,7 +301,7 @@ def test_energy_prefix_cache_invalidates_distant_structural_support_change():
                                frontier_energy(changed, mpo), atol=1e-13)
 
 
-def test_canonical_boundary_cache_includes_support_fingerprint():
+def test_canonical_boundary_cache_uses_contraction_inputs_not_graph_name():
     from pyqed._letta_one_site_opt.frontier_contraction import CanonicalBoundaryCache, canonical_environment
     s = state()
     frontier = ReducedFrontier.from_state(s, prune=True)
@@ -318,14 +318,20 @@ def test_canonical_boundary_cache_includes_support_fingerprint():
     changed.tensors[-1].pop(next(iter(changed.tensors[-1])))
     new_fingerprint = ReducedFrontier.from_state(changed, prune=True).support(changed).fingerprint
     assert new_fingerprint != fingerprint
-    # Hold every numerical tensor and leg fixed: metadata alone must invalidate.
-    changed_sites = [tensor.copy() for tensor in sites]
+    # Metadata alone cannot change QR or the contraction. Actual pruned MPO
+    # kernels are included by canonical_environment's boundary signatures.
+    from pyqed._letta_one_site_opt.frontier_contraction import shallow_site
+    changed_sites = [shallow_site(tensor) for tensor in sites]
     for tensor in changed_sites:
         tensor.metadata = dict(tensor.metadata, letta_frontier_support=new_fingerprint)
     after = cache.signatures(changed_sites, mpo)
-    assert all(old != new for old, new in zip(before, after))
-    assert cache.nearest('lr', 1, after) is None
-    assert cache.nearest('rl', 2, after) is None
+    assert after==before
+    _,_,_,cached=canonical_environment(changed_sites,1,mpo,cache=cache,structured=True)
+    _,_,_,fresh=canonical_environment(changed_sites,1,mpo,structured=True)
+    for side in ('left','right'):
+        index=1 if side=='left' else 2
+        for key,value in getattr(fresh,side)[index].items():
+            np.testing.assert_allclose(getattr(cached,side)[index][key],value,atol=1e-13)
 
 
 @pytest.mark.parametrize('equilibrated', [False, True])

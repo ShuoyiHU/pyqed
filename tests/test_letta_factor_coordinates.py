@@ -45,6 +45,11 @@ def test_factor_projection_matches_full_physical_least_squares(ties,scale,side,m
  np.testing.assert_allclose(matrix@z,root.project_physical(apply(z)),atol=1e-10)
  w=rng.normal(size=root.size)+1j*rng.normal(size=root.size)
  np.testing.assert_allclose(matrix.conj().T@w,adjoint(root.embed_physical(w)),atol=1e-10)
+ from pyqed._letta_two_site_opt.reduced_compression import _supported_factor_map
+ supported,supported_adjoint=_supported_factor_map(c,root,p.left_site,side)
+ np.testing.assert_allclose(supported(z),root.project_physical(apply(z)),atol=1e-10)
+ np.testing.assert_allclose(supported_adjoint(w),adjoint(root.embed_physical(w)),atol=1e-10)
+ np.testing.assert_allclose(np.vdot(supported(z),w),np.vdot(z,supported_adjoint(w)),atol=1e-10)
  rhs=rng.normal(size=root.physical_layout.size)+1j*rng.normal(size=root.physical_layout.size)
  assert abs(np.vdot(apply(z),rhs)-np.vdot(z,adjoint(rhs)))<1e-10
  indices=_active_source_indices(le if side==0 else re,retained,'left' if side==0 else 'right')

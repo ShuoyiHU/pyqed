@@ -60,16 +60,33 @@ class PairMetricMap:
 
     Preparation validates layouts once; repeated actions use a packed route
     table and two BLAS products per nonzero sector, without Python block
-    dictionaries or einsum path planning. Workspaces belong to each call.
+    dictionaries or einsum path planning. Identical fixed matrices share one
+    packed copy across routes. Workspaces belong to each call.
     """
     def __init__(self, source_layout, target_layout, factors):
         if set(source_layout.keys) != set(target_layout.keys) or set(factors) != set(source_layout.keys):
             raise ValueError('metric map sectors must agree')
         self.input_size, self.output_size = source_layout.size, target_layout.size
         routes, scales, left, right = [], [], [], []
-        lo = ro = workspace = 0
+        workspace = 0
         dtype = np.result_type(float, *[np.result_type(l,r) for l,r,s in factors.values()])
         self.dtype = np.dtype(np.complex128 if np.issubdtype(dtype,np.complexfloating) else np.float64)
+        parts=[left,right];sizes=[0,0];by_id=[{},{}];by_value=[{},{}]
+        self.unshared_factor_bytes=0
+        def matrix_offset(side,array):
+            self.unshared_factor_bytes+=array.size*self.dtype.itemsize
+            if id(array) in by_id[side]:return by_id[side][id(array)]
+            matrix=np.ascontiguousarray(array,dtype=self.dtype)
+            signature=(matrix.shape,hashlib.blake2b(matrix.view(np.uint8)).digest())
+            flat=matrix.ravel()
+            bucket=by_value[side].setdefault(signature,[])
+            for offset,previous in bucket:
+                if np.array_equal(flat,previous):break
+            else:
+                offset=sizes[side];sizes[side]+=flat.size
+                parts[side].append(flat);bucket.append((offset,flat))
+            by_id[side][id(array)]=offset
+            return offset
         for key in source_layout.keys:
             shape, out = source_layout.shapes[key], target_layout.shapes[key]
             lmat, rmat, scale = factors[key]
@@ -89,17 +106,16 @@ class PairMetricMap:
             left_first=path[1]==(0,2)
             if path[1]==(0,1):
                 left_first=a*l*m*r+a*m*r*b <= l*m*r*b+a*l*m*b
+            lo,ro=matrix_offset(0,lmat),matrix_offset(1,rmat)
             routes.append((lo,ro,source_layout.offsets[key][0],target_layout.offsets[key][0],l,r,a,b,m,int(left_first)))
             scales.append(float(scale))
-            left.append(np.asarray(lmat,dtype=self.dtype).ravel())
-            right.append(np.asarray(rmat,dtype=self.dtype).ravel())
-            lo+=a*l; ro+=b*r
             count = a*m*r if left_first else l*m*b
             workspace=max(workspace,count)
         self.routes=np.asarray(routes,dtype=np.int64).reshape(-1,10)
         self.scales=np.asarray(scales,dtype=np.float64)
         self.left=np.concatenate(left) if left else np.empty(0,dtype=self.dtype)
         self.right=np.concatenate(right) if right else np.empty(0,dtype=self.dtype)
+        self.factor_bytes=self.left.nbytes+self.right.nbytes
         self.workspace_size=workspace
         self._complex_factors=None
 

@@ -94,11 +94,13 @@ class ReducedEnergyRefinement:
 
 
 def refine_reduced_pair_energy(state, hamiltonian, left_site, options, *,
-                               max_iterations, tolerance, direction='lr'):
+                               max_iterations, tolerance, direction='lr', context=None,
+                               reuse_local_energy=True):
     """Alternate exact one-site energy minimizations with a fixed bond layout.
 
-    Work on a copy. Each local update performs a fresh physical energy check
-    and is transactional. Flat energy alone is not called convergence.
+    Work on a copy. Inner checks can reuse the source Rayleigh quotient already
+    contracted for their physical residual; the final state is independently
+    contracted again. Flat energy alone is not called convergence.
     """
     from .reduced_solver import StableEnergyCache, optimize_reduced_site
     limit = index(max_iterations)
@@ -111,14 +113,16 @@ def refine_reduced_pair_energy(state, hamiltonian, left_site, options, *,
     sites = (left_site, left_site+1) if direction == 'lr' else (left_site+1, left_site)
     energy_cache = StableEnergyCache(hamiltonian)
     import os
-    context=None
     use_context=(getattr(hamiltonian,'contraction_backend',None)=='reduced' and
                  os.environ.get('PYQED_PAIR_CONTEXT','1')=='1')
-    if local_options.simplify_fixed_ties or use_context:
+    if context is not None:
+        context=context.for_state(candidate,center=sites[0])
+    elif local_options.simplify_fixed_ties or use_context:
         from .dependency_environment import DependencySweepContext
         context=DependencySweepContext(candidate,hamiltonian,structured=local_options.simplify_fixed_ties)
     if context is not None:
         context.energy_center=sites[0]
+        context.source_energy_checks=bool(reuse_local_energy)
         evaluate=context.stable_energy
     else:
         evaluate=energy_cache
@@ -147,6 +151,12 @@ def refine_reduced_pair_energy(state, hamiltonian, left_site, options, *,
     if not stationary or status != 'converged':
         check_options=replace(local_options,simplify_fixed_ties=True) if context is not None else local_options
         stationary = reduced_stationarity(candidate, hamiltonian, sites, check_options,context=context)
+    if context is not None and hasattr(context.energy_cache,'key'):
+        context.energy_cache.key=None
+    final=evaluate(candidate)
+    guard=max(tolerance,100*np.finfo(float).eps*max(1.,abs(final)))
+    if not np.isfinite(final) or abs(final-energies[-1])>guard:
+        raise FloatingPointError('Independent pair energy disagrees with source certificate')
     return ReducedEnergyRefinement(candidate, initial,
-        evaluate(candidate), iteration, accepted, tuple(energies),
+        final, iteration, accepted, tuple(energies),
         status == 'converged', status, stationary)

@@ -159,7 +159,14 @@ class ReducedLocalCoordinates:
     route. This is an experimental local-action optimization, not a new rank
     truncation. The budget excludes original operators and packing temporaries.
     """
-    def __init__(self,sites,embedding,site, *, mpo=None, retain_outer=True, boundary_cache=None, action_only=False, structured=False, boundary_seeds=None):
+    def __init__(self,sites,embedding,site, *, mpo=None, retain_outer=True, boundary_cache=None, action_only=False, structured=False, boundary_seeds=None, factor_only=False):
+        """With factor_only, retain canonical partners but omit the unused center.
+
+        Source-to-physical maps use the exterior factors, independently of the
+        incumbent active tensor. All QR and SVD operations remain unchanged.
+        """
+        if factor_only and mpo is not None:
+            raise ValueError('Factor-only coordinates do not prepare a Hamiltonian')
         self.site=site;self.embedding=embedding
         self._prepared_mpo=None
         self._source_sites=sites
@@ -178,7 +185,11 @@ class ReducedLocalCoordinates:
         else:
             self.sites,self.left,self.right=_canonical_sites(sites,site,
                 keep_indices=None if retain_outer else {site-1,site,site+1},
-                boundary_seeds=boundary_seeds)
+                boundary_seeds=boundary_seeds,transform_active=not factor_only)
+            if factor_only:
+                # Factor maps need the boundaries and canonical partner, never
+                # the incumbent active tensor. Do not expose it as canonical.
+                self.sites=tuple(None if i==site else a for i,a in enumerate(self.sites))
         emb=embedding
         self.dimension=emb.source_size;self.blocks=[];self.images=[]
         left_factors={};right_factors={}
@@ -245,6 +256,8 @@ class ReducedLocalCoordinates:
         self._block_preconditioner=None
         self._correction_maps=None
         factors=[];largest=0.
+        local_cutoff=(np.sqrt(max(tolerance,np.finfo(float).eps*self.dimension))
+                      if singular_tolerance is None else singular_tolerance)
         self.overlap_report=[]
         for sl,factor_map in self.blocks:
             rows=factor_map.left.shape[0]*factor_map.nphysical*factor_map.right.shape[0]
@@ -254,7 +267,7 @@ class ReducedLocalCoordinates:
                     512*factor_map.size**2<=stream_workspace*1024**2):
                 from .streamed_overlap import streamed_svd
                 roots,u,s,vh=streamed_svd((rows,factor_map.size),factor_map.rows,
-                    workspace_mb=stream_workspace)
+                    workspace_mb=stream_workspace,relative_cutoff=local_cutoff)
                 inv=np.divide(1.,roots,out=np.zeros_like(roots),where=roots>0.)
                 largest=max(largest,float(s.max(initial=0.)))
                 factors.append((sl,roots,inv,s,vh,u))
@@ -275,6 +288,10 @@ class ReducedLocalCoordinates:
                 u,s,vh=svd(normalized,full_matrices=False,lapack_driver='gesvd')
             del normalized
             largest=max(largest,float(s.max(initial=0.)))
+            # The final global threshold cannot be smaller than this local
+            # threshold. Do not retain columns already certain to be dropped.
+            keep=s>local_cutoff*s.max(initial=0.)
+            u,s,vh=u[:,keep],s[keep],vh[keep]
             factors.append((sl,roots,inv,s,vh,u))
             self.overlap_report.append(dict(rows=rows,columns=factor_map.size,method='svd'))
         cutoff=largest*np.sqrt(max(tolerance,np.finfo(float).eps*self.dimension))
@@ -377,7 +394,7 @@ class ReducedLocalCoordinates:
     def set_hamiltonian(self,mpo):
         if self._prepared_mpo is mpo:return
         from .reduced_environment import ReducedEnvironmentChain
-        if self.sites is None:
+        if self.sites is None or self.sites[self.site] is None:
             self.sites,_,_=_canonical_sites(self._source_sites,self.site)
         self.hamiltonian=ReducedEnvironmentChain.build(self.sites,mpo,lazy=True)
         self.hamiltonian_action=self.hamiltonian.prepare_local_action(self.site)

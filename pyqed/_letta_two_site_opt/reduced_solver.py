@@ -281,12 +281,15 @@ def reduced_pair_problem(
     dense_solver_threshold=64,
     prune=True,
     boundary_cache=None,
+    norm_only=False,
 ):
     """Build the reduced two-site generalized problem with exact path support.
 
     Exterior support preserves the full free-pair space. Legal factor sources
     use complete paths through the current (possibly expanded) sector scaffold.
     Set ``prune=False`` only for Cartesian reference comparisons.
+    ``norm_only`` prepares QR norm geometry for compression and defers every
+    Hamiltonian environment until an H action is explicitly requested.
     """
 
     if not isinstance(state, ReducedLatticeLETTA):
@@ -315,7 +318,7 @@ def reduced_pair_problem(
     )
     expanded_dimension = int(np.prod(expanded_shape, dtype=int))
     if hamiltonian.contraction_backend == 'reduced':
-        if not frontier.requires_compact(state):
+        if not frontier.requires_compact(state) and not norm_only:
             h_chain=ReducedEnvironmentChain.build(sites,hamiltonian.native_mpo(state.physical_basis))
             n_chain=ReducedNormChain.build(sites)
             h_action=lambda v:layout.pack(h_chain.pair_action(left_site,layout.unpack(v)))
@@ -330,9 +333,31 @@ def reduced_pair_problem(
                 hamiltonian_action=h_action,metric_action=n_action,
                 equilibrated_projector_factory=lambda tol:n_chain.pair_projector(left_site,layout,tol,equilibrated=True))
         from .._letta_one_site_opt.frontier_contraction import state_signature, canonical_environment
-        canonical,full_left,full_right,h_chain=canonical_environment(
-            sites,left_site,hamiltonian.native_mpo(state.physical_basis),last_center=left_site+1,
-            cache=boundary_cache)
+        mpo=hamiltonian.native_mpo(state.physical_basis)
+        if norm_only:
+            from types import SimpleNamespace
+            from .._letta_one_site_opt.reduced_coordinates import _canonical_sites
+            seeds=None
+            if boundary_cache is not None and getattr(boundary_cache,'structured',None) is False:
+                from .._letta_one_site_opt.reduced_environment import chain_transfers
+                signatures=boundary_cache.signatures(sites,mpo,chain_transfers(sites,mpo)[0])
+                seeds=[(0,{q:np.eye(n) for q,n in Counter(sites[0].qns[0]).items()}),
+                       (len(sites),{q:np.eye(n) for q,n in Counter(sites[-1].qns[2]).items()})]
+                for side,(direction,cut) in enumerate((('lr',left_site),('rl',left_site+2))):
+                    found=boundary_cache.nearest(direction,cut,signatures)
+                    if found is not None:seeds[side]=(found[0],found[1][0])
+            canonical,full_left,full_right=_canonical_sites(sites,left_site,last_center=left_site+1,
+                boundary_seeds=seeds,keep_indices={left_site,left_site+1},boundary_matmul=True)
+            prepared=[]
+            def pair_action(i,blocks):
+                if not prepared:
+                    prepared.append(canonical_environment(sites,left_site,mpo,last_center=left_site+1,
+                        cache=boundary_cache)[3])
+                return prepared[0].pair_action(i,blocks)
+            h_chain=SimpleNamespace(pair_action=pair_action)
+        else:
+            canonical,full_left,full_right,h_chain=canonical_environment(
+                sites,left_site,mpo,last_center=left_site+1,cache=boundary_cache)
         from .._letta_one_site_opt.frontier_contraction import raw_pair_environments
         raw=[]
         def raw_environment():
@@ -343,7 +368,7 @@ def reduced_pair_problem(
         n_action=lambda v:layout.pack(raw_environment()[1].pair_action(left_site,layout.unpack(v)))
         projector=lambda tolerance:raw_environment()[1].pair_projector(left_site,layout,tolerance,equilibrated=True)
         h, n = None, None
-        if not matrix_free or layout.size <= dense_solver_threshold:
+        if not norm_only and (not matrix_free or layout.size <= dense_solver_threshold):
             identity = np.eye(layout.size)
             h = np.column_stack([h_action(v) for v in identity])
             n = np.column_stack([n_action(v) for v in identity])
@@ -751,13 +776,22 @@ def _optimize_reduced_pair(
     from .._letta_one_site_opt.reduced_updates import NUMERICAL_ERRORS, one_site_options
     from .._letta_one_site_opt.reduced_solver import optimize_reduced_site
     from .solver import LETTAPairUpdate
-    before = _energy(state, hamiltonian, stable=True)
+    import os
+    context=None
+    if hamiltonian.contraction_backend=='reduced' and os.environ.get('PYQED_PAIR_CONTEXT','1')=='1':
+        from .._letta_one_site_opt.dependency_environment import DependencySweepContext
+        context=DependencySweepContext(state,hamiltonian,structured=False,boundary_cache=boundary_cache)
+        context.energy_center=left_site if direction=='lr' else left_site+1
+        boundary_cache=context.boundary_cache
+    evaluate=context.stable_energy if context is not None else lambda s:_energy(s,hamiltonian,stable=True)
+    before = evaluate(state)
     try:
         candidate = (_expand_reduced_pair_space(state, left_site, bond_dim)
                      if options.reduced_sector_growth else state.copy())
         update = _optimize_allocated_reduced_pair(
-            candidate, hamiltonian, left_site, direction, bond_dim, options,boundary_cache=boundary_cache)
-        actual = _energy(candidate, hamiltonian, stable=True)
+            candidate, hamiltonian, left_site, direction, bond_dim, options,boundary_cache=boundary_cache,
+            context=None if context is None else context.for_state(candidate))
+        actual = evaluate(candidate)
         valid = update.accepted and actual <= before+options.energy_increase_tolerance
         # Compression must not cost the progress of an ordinary one-site step
         # from the same incumbent. Only compare feasible bond allocations.
@@ -766,8 +800,9 @@ def _optimize_reduced_pair(
             baseline = state.copy()
             site = left_site if direction == 'lr' else left_site+1
             try:
-                ordinary = optimize_reduced_site(baseline, hamiltonian, site, one_site_options(options))
-                baseline_energy = _energy(baseline, hamiltonian, stable=True)
+                ordinary = optimize_reduced_site(baseline, hamiltonian, site, one_site_options(options),
+                    context=None if context is None else context.for_state(baseline,center=site))
+                baseline_energy = evaluate(baseline)
                 update = replace(update, baseline_energy=baseline_energy)
                 if ordinary.accepted and (not valid or baseline_energy <= actual):
                     state.tensors, state.bond_sectors = baseline.tensors, baseline.bond_sectors
@@ -785,8 +820,9 @@ def _optimize_reduced_pair(
         fallback = state.copy()
         site = left_site if direction == 'lr' else left_site+1
         try:
-            ordinary = optimize_reduced_site(fallback, hamiltonian, site, one_site_options(options))
-            energy = _energy(fallback, hamiltonian, stable=True)
+            ordinary = optimize_reduced_site(fallback, hamiltonian, site, one_site_options(options),
+                context=None if context is None else context.for_state(fallback,center=site))
+            energy = evaluate(fallback)
             accepted = ordinary.accepted and np.isfinite(energy) and energy <= before+options.energy_increase_tolerance
             if accepted:
                 state.tensors, state.bond_sectors = fallback.tensors, fallback.bond_sectors
@@ -796,7 +832,7 @@ def _optimize_reduced_pair(
         return LETTAPairUpdate(left_site=left_site, right_site=left_site+1,
             shared_physical_sites=tuple(sorted(set(state.site_neighborhood(left_site)) &
                 set(state.site_neighborhood(left_site+1)))), old_energy=before,
-            energy=_energy(state, hamiltonian, stable=True),
+            energy=evaluate(state),
             local_energy=before if ordinary is None else ordinary.local_energy,
             metric_rank=0 if ordinary is None else ordinary.metric_rank,
             local_dimension=0 if ordinary is None else ordinary.local_dimension,
@@ -924,7 +960,7 @@ def _solve_reduced_pair_root(problem, state, hamiltonian, options):
 
 
 def _optimize_allocated_reduced_pair(
-    state, hamiltonian, left_site, direction, bond_dim, options, *, boundary_cache=None
+    state, hamiltonian, left_site, direction, bond_dim, options, *, boundary_cache=None, context=None
 ):
     problem = reduced_pair_problem(
         state,
@@ -938,7 +974,7 @@ def _optimize_allocated_reduced_pair(
         problem, state, hamiltonian, options
     )
     return compress_reduced_pair_vector(state, hamiltonian, problem, vector,
-        local_energy, metric_rank, residual, direction, bond_dim, options)
+        local_energy, metric_rank, residual, direction, bond_dim, options, context=context)
 
 
 def _metric_pair_split(problem, root, vector, sites, *, bond_dim,
@@ -966,7 +1002,7 @@ def _metric_pair_split(problem, root, vector, sites, *, bond_dim,
 
 def compress_reduced_pair_vector(state, hamiltonian, problem, vector, local_energy,
                                  metric_rank, residual, direction, bond_dim, options,
-                                 *, acceptance_energy=None, minimum_multiplicities=None):
+                                 *, acceptance_energy=None, minimum_multiplicities=None, context=None):
     """Compress a supplied pair target, without performing a pair eigensolve.
 
     CBE supplies its expanded one-site result and compares the compressed state
@@ -1059,7 +1095,8 @@ def compress_reduced_pair_vector(state, hamiltonian, problem, vector, local_ener
         state.bond_sectors[left_site], retained
     )
 
-    old_energy = _energy(state, hamiltonian, stable=True)
+    evaluate=context.stable_energy if context is not None else lambda s:_energy(s,hamiltonian,stable=True)
+    old_energy = evaluate(state)
     old_left = state.tensors[left_site]
     old_right = state.tensors[left_site + 1]
     old_bonds = state.bond_sectors
@@ -1069,8 +1106,8 @@ def compress_reduced_pair_vector(state, hamiltonian, problem, vector, local_ener
     bonds[left_site] = new_bond
     state.bond_sectors = tuple(bonds)
     state.tensors = state._validate_tensors(state.tensors)
-    new_energy = _energy(state, hamiltonian, stable=True)
-    energy_fit = _refine_pair_if_requested(state, hamiltonian, left_site, direction, options)
+    new_energy = evaluate(state)
+    energy_fit = _refine_pair_if_requested(state, hamiltonian, left_site, direction, options,context=context)
     if energy_fit is not None:
         state.tensors, state.bond_sectors = energy_fit.state.tensors, energy_fit.state.bond_sectors
         new_energy = energy_fit.energy
@@ -1082,7 +1119,7 @@ def compress_reduced_pair_vector(state, hamiltonian, problem, vector, local_ener
         state.bond_sectors = old_bonds
         new_energy = old_energy
     else:
-        state.normalize(center=left_site, balance=options.gauge_mode != 'frontier')
+        state.normalize(center=left_site, balance=context is None and options.gauge_mode != 'frontier')
     return LETTAPairUpdate(
         left_site=left_site,
         right_site=left_site + 1,
@@ -1117,13 +1154,13 @@ def compress_reduced_pair_vector(state, hamiltonian, problem, vector, local_ener
     )
 
 
-def _refine_pair_if_requested(state, hamiltonian, site, direction, options):
+def _refine_pair_if_requested(state, hamiltonian, site, direction, options, *, context=None):
     if options.split_method not in {'metric-als-energy', 'metric-energy', 'energy-refined'}:
         return None
     from .._letta_one_site_opt.reduced_updates import refine_reduced_pair_energy
     return refine_reduced_pair_energy(state, hamiltonian, site, options,
         max_iterations=options.energy_refinement_max_iterations,
-        tolerance=options.energy_refinement_tolerance, direction=direction)
+        tolerance=options.energy_refinement_tolerance, direction=direction,context=context)
 
 
 def _gram_roots(gram, tolerance):

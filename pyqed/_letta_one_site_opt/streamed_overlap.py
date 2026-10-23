@@ -2,14 +2,21 @@
 
 Adapts Demmel et al., SIAM J. Sci. Comput. 34, A206 (2012),
 doi:10.1137/080731992. This serial, recomputed-leaf variant avoids storing
-the input factor and never forms its Gram matrix. It retains all singular
-values; the caller applies its unchanged cutoff. Output singular vectors
+the input factor and never forms its Gram matrix. By default it retains all
+singular values; an optional safe local cutoff omits vectors the caller's
+unchanged final cutoff must discard. Output singular vectors
 and small tree factors are additional storage, outside the row workspace.
 """
 import numpy as np
 
 
-def streamed_svd(shape, rows, workspace_mb=32.):
+def streamed_svd(shape, rows, workspace_mb=32., *, relative_cutoff=None):
+    """Optionally emit only columns above a caller-supplied safe local cutoff.
+
+    A local largest singular value is a lower bound on the global largest.
+    Using the global relative cutoff here can therefore only omit columns
+    which the later global decision would also discard.
+    """
     m,n=shape
     if n==0 or m<n:
         raise ValueError('TSQR requires a nonempty tall factor')
@@ -42,6 +49,9 @@ def streamed_svd(shape, rows, workspace_mb=32.):
         nodes=next_nodes
     r,tree=nodes[0]
     u,s,vh=np.linalg.svd(r,full_matrices=False)
+    if relative_cutoff is not None:
+        keep=s>relative_cutoff*s.max(initial=0.)
+        u,s,vh=u[:,keep],s[keep],vh[keep]
     output=np.empty((m,len(s)),dtype=np.result_type(r,u))
     def emit(node,transform):
         if len(node)==2:

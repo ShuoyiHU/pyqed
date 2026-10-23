@@ -409,10 +409,12 @@ def _native_local_problem(state, hamiltonian, site, sites, embedding,
 
 
 class StableEnergyCache:
-    """Reuse QR-checked energy only for identical tensor values and fixed H.
+    """Reuse a checked physical energy for identical tensor values and fixed H.
 
     Holds a scalar signature and bounded independent QR energy prefixes.
-    Changed values always trigger a fresh contraction of the changed suffix.
+    Changed values require a fresh contraction, or a source Rayleigh quotient
+    just contracted for that exact state. Final refinement checks force a
+    separate contraction by invalidating the scalar entry.
     """
     def __init__(self, hamiltonian):
         self.hamiltonian = hamiltonian
@@ -428,6 +430,12 @@ class StableEnergyCache:
                             center=center, canonical_boundaries=canonical_boundaries,structured=structured)
             self.key, self.value = key, value
         return self.value
+
+    def remember(self, state, energy):
+        """Record a freshly contracted source Rayleigh quotient, never a Ritz estimate."""
+        from .frontier_contraction import state_signature
+        if not np.isfinite(energy):raise FloatingPointError('Nonfinite certified energy')
+        self.key,self.value=state_signature(state),float(energy)
 
 
 class ReducedSweepContext:
@@ -1074,6 +1082,11 @@ def _optimize_reduced_site_impl(state, hamiltonian, site, options, *, context=No
             vector*np.sqrt((state.target_two_j+1)/norm))
     if context is not None:
         context.synchronize([site])
+        remember=getattr(getattr(context,'energy_cache',None),'remember',None)
+        if getattr(context,'source_energy_checks',False) and remember is not None:
+            # The residual certificate already contracted the actual returned
+            # source vector with H and N. Scalar normalization leaves E fixed.
+            remember(state,diagnostics['energy'])
     return LETTASiteUpdate(
         site=int(site),
         local_energy=local_energy,

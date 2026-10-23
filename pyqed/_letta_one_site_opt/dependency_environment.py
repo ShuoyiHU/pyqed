@@ -47,6 +47,15 @@ class DependencySweepContext:
         self.dependency_stats={};self.energy_center=None
         self.frontier=None
         self.search_cache={}
+        self.source_energy_checks=False
+
+    def for_state(self, state, *, center=None):
+        """Own a candidate while sharing only value-validated preparations."""
+        result=type(self)(state,self.hamiltonian,structured=self.structured,
+                          boundary_cache=self.boundary_cache)
+        result.energy_cache=self.energy_cache
+        result.energy_center=self.energy_center if center is None else int(center)
+        return result
 
     def stable_energy(self,state=None):
         return self.energy_cache(self.state if state is None else state,

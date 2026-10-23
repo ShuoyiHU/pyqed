@@ -31,6 +31,25 @@ def test_empty_and_invalid():
  with pytest.raises(ValueError):PairMetricMap(empty,empty,{})(np.ones(1))
 
 
+def test_equal_fixed_factors_are_stored_once_without_changing_routes():
+ rng=np.random.default_rng(19)
+ left=rng.normal(size=(5,3))+1j*rng.normal(size=(5,3))
+ right=rng.normal(size=(4,2))+1j*rng.normal(size=(4,2))
+ src=_BlockVectorLayout({k:(3,1,2,2) for k in range(6)})
+ dst=_BlockVectorLayout({k:(5,1,2,4) for k in range(6)})
+ factors={k:(left.copy(),right.copy(),1.+k/10) for k in range(6)}
+ mapper=PairMetricMap(src,dst,factors)
+ assert mapper.factor_bytes==left.nbytes+right.nbytes
+ assert mapper.unshared_factor_bytes==6*mapper.factor_bytes
+ x=rng.normal(size=src.size)+1j*rng.normal(size=src.size)
+ expected=dst.pack({k:s*np.einsum('al,lpqr,br->apqb',l,src.unpack(x)[k],r,optimize=True)
+                    for k,(l,r,s) in factors.items()})
+ np.testing.assert_allclose(mapper(x),expected,rtol=1e-13,atol=1e-13)
+ factors[0][0][0,0]+=1e-8
+ changed=PairMetricMap(src,dst,factors)
+ assert changed.factor_bytes==2*left.nbytes+right.nbytes
+
+
 def test_cancellation_preserves_original_contraction_accuracy():
  from pathlib import Path
  # Captured D30 Hubbard ALS residual; oracle evaluated at 70 decimal digits.

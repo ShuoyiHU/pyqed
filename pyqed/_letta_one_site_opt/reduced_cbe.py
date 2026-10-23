@@ -287,7 +287,7 @@ def _tangent_coordinates(scaffold, problem, embeddings, old, options):
     for side, embedding in enumerate(embeddings):
         active = _active_source_indices(embedding, old, 'left' if side == 0 else 'right')
         coordinates = ReducedLocalCoordinates(sites, embedding, problem.left_site+side, retain_outer=False,
-            boundary_seeds=root.boundary_seeds)
+            boundary_seeds=root.boundary_seeds,factor_only=True)
         coordinates.restrict(active)
         coordinates.prepare(options.metric_tolerance)
         result.append(coordinates)
@@ -355,13 +355,12 @@ def select_metric_cbe(scaffold, problem, root, old, capacities, embeddings, fact
             matvec=expand, rmatvec=pullback, dtype=dtype)
         jacobian = jacobian@preconditioner
         if physical_tangent:
-            from .._letta_two_site_opt.reduced_compression import _physical_factor_map
-            physical_maps=[_physical_factor_map(c,root,problem.left_site,side) for side,c in enumerate(maps)]
+            from .._letta_two_site_opt.reduced_compression import _supported_factor_map
+            physical_maps=[_supported_factor_map(c,root,problem.left_site,side) for side,c in enumerate(maps)]
             def forward(z):
-                return root.project_physical(physical_maps[0][0](z[:rank])+physical_maps[1][0](z[rank:]))
+                return physical_maps[0][0](z[:rank])+physical_maps[1][0](z[rank:])
             def reverse(w):
-                full=root.embed_physical(w)
-                return np.concatenate([m[1](full) for m in physical_maps])
+                return np.concatenate([m[1](w) for m in physical_maps])
             jacobian=LinearOperator(jacobian.shape,matvec=forward,rmatvec=reverse,dtype=dtype)
             from .tangent_projection import project_tangent
             direct_projection, projection_info = project_tangent(maps, root,
@@ -525,13 +524,17 @@ def reduced_cbe_site(state, hamiltonian, site, direction, bond_dim, options, *, 
         result=DependencySweepContext(candidate,hamiltonian,boundary_cache=boundary_cache,
             structured=options.simplify_fixed_ties)
         result.energy_cache=energy_cache
+        result.energy_center=site
         return result
-    before = energy_cache(state)
+    def evaluate(candidate):
+        current=local_context(candidate)
+        return energy_cache(candidate) if current is None else current.stable_energy()
+    before = evaluate(state)
     baseline = state.copy()
     try:
         ordinary = optimize_reduced_site(baseline, hamiltonian, site, one_site_options(options),
             energy_cache=energy_cache,context=local_context(baseline))
-        base_energy = energy_cache(baseline)
+        base_energy = evaluate(baseline)
     except NUMERICAL_ERRORS as error:
         from .solver import LETTASiteUpdate
         return LETTASiteUpdate(site=site, local_energy=before, energy=before,
@@ -567,18 +570,19 @@ def reduced_cbe_site(state, hamiltonian, site, direction, bond_dim, options, *, 
                 candidate = expand_reduced_cbe(baseline, selection, direction)
                 expanded = optimize_reduced_site(candidate, hamiltonian, site, one_site_options(options),
                     energy_cache=energy_cache,context=local_context(candidate))
-                expanded_energy = energy_cache(candidate)
+                expanded_energy = evaluate(candidate)
                 update = replace(update, cbe_expanded_energy=expanded_energy)
                 expansion_guard = 100*np.finfo(float).eps*max(1., abs(base_energy), abs(expanded_energy))
                 if expanded_energy < base_energy-expansion_guard:
                     problem = reduced_pair_problem(candidate, hamiltonian, i,
-                        matrix_free=True, dense_solver_threshold=0,boundary_cache=boundary_cache)
+                        matrix_free=True, dense_solver_threshold=0,boundary_cache=boundary_cache,norm_only=True)
                     trim = compress_reduced_pair_vector(candidate, hamiltonian, problem,
                         problem.old_vector, expanded.local_energy, expanded.metric_rank,
                         expanded.residual_norm, direction, bond_dim, _trim_options(options),
                         acceptance_energy=base_energy,
-                        minimum_multiplicities={q: 1 for q in baseline.bond_sectors[i]})
-                    energy = energy_cache(candidate)
+                        minimum_multiplicities={q: 1 for q in baseline.bond_sectors[i]},
+                        context=local_context(candidate))
+                    energy = evaluate(candidate)
                     update = replace(update, cbe_trimmed_energy=trim.energy_refinement_initial_energy,
                         cbe_refined_energy=trim.energy_refinement_energy,
                         cbe_trim_loss=trim.metric_truncation_loss,
@@ -603,8 +607,9 @@ def reduced_cbe_site(state, hamiltonian, site, direction, bond_dim, options, *, 
                     from .reduced_updates import refine_reduced_pair_energy
                     refinement = refine_reduced_pair_energy(baseline, hamiltonian, i, options,
                         max_iterations=options.cbe_energy_refinement_max_iterations,
-                        tolerance=options.cbe_energy_refinement_tolerance, direction=direction)
-                    energy = energy_cache(refinement.state)
+                        tolerance=options.cbe_energy_refinement_tolerance, direction=direction,
+                        context=local_context(baseline))
+                    energy = evaluate(refinement.state)
                     update = replace(update, cbe_refined_energy=energy,
                         cbe_trim_method='fixed-bond-energy-relaxation',
                         cbe_energy_refinement_iterations=refinement.iterations,

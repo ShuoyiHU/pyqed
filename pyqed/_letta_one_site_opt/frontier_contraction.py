@@ -353,21 +353,27 @@ class CanonicalBoundaryCache:
         self.entries=OrderedDict();self.max_bytes=max_bytes;self.nbytes=0
         self.hits=0;self.advances=0;self.mpo=None
 
-    def signatures(self,sites,mpo):
+    def signatures(self,sites,mpo,transfers=None):
         import hashlib
         if self.mpo is not mpo:
             self.entries.clear();self.nbytes=0;self.mpo=mpo
         signatures=[]
-        for site in sites:
+        for i,site in enumerate(sites):
             h=hashlib.blake2b()
-            h.update(repr((site.qns,site.dirs,
-                           site.metadata.get('letta_frontier_support'))).encode())
+            # QR and environment recurrence depend on these numerical cores
+            # and the filtered kernels below, not the graph's descriptive ID.
+            h.update(repr((site.qns,site.dirs)).encode())
             for key,a in site.data.items():
                 h.update(repr((key,a.shape,a.dtype.str)).encode())
                 if isinstance(a,ScatterBlock):
                     h.update(np.ascontiguousarray(a.indices).view(np.uint8))
                     h.update(np.ascontiguousarray(a.values).view(np.uint8))
                 else:h.update(np.ascontiguousarray(a).view(np.uint8))
+            if transfers is not None:
+                for transfer in transfers[i]:
+                    h.update(repr((transfer.bra_key,transfer.ket_key,transfer.left_key,
+                                   transfer.right_key,transfer.kernel.shape,transfer.kernel.dtype.str)).encode())
+                    h.update(np.ascontiguousarray(transfer.kernel).view(np.uint8))
             signatures.append(h.digest())
         return tuple(signatures)
 
@@ -416,13 +422,12 @@ def canonical_environment(sites, center, mpo, *, last_center=None, cache=None, t
                 'rl':(_boundary(sites[-1],mpo.sites[-1],2),0.)}
     seeds=None;signatures=None
     if cache is not None:
-        # Global backward pruning depends on both exteriors. A layout change
-        # can revive an operator path, so prefix-only value keys are insufficient.
-        if getattr(cache,'operator_paths_key',None)!=path_key:
-            cache.entries.clear();cache.nbytes=0;cache.operator_paths_key=path_key
+        # Global pruning can change distant operator routes. Key each boundary
+        # by its actual filtered kernels, rather than discard all boundaries
+        # whenever an unrelated allocation or pending-label graph changes.
         if getattr(cache,"structured",None) != structured:
             cache.entries.clear();cache.nbytes=0;cache.structured=structured
-        signatures=cache.signatures(sites,mpo)
+        signatures=cache.signatures(sites,mpo,transfers)
         from collections import Counter
         seeds=[(0,{q:np.eye(d) for q,d in Counter(sites[0].qns[0]).items()}),
                (len(sites),{q:np.eye(d) for q,d in Counter(sites[-1].qns[2]).items()})]
