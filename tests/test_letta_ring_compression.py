@@ -1,4 +1,4 @@
-"""All four shared compressors in a correlated cyclic physical metric."""
+"""Shared compressors in a correlated cyclic physical metric."""
 from collections import Counter
 
 import numpy as np
@@ -45,7 +45,7 @@ def test_ring_factor_adjoint_and_legal_gauges(edge):
     np.testing.assert_allclose(p.merge(aa,bb),p.merge(a,b),atol=3e-12)
 
 
-@pytest.mark.parametrize('solver',['als','variable-projection','joint-ls','grassmann-newton'])
+@pytest.mark.parametrize('solver',['als','variable-projection','joint-ls','grassmann-newton','joint-ls-operator'])
 @pytest.mark.parametrize('edge',[0,2])
 def test_all_ring_compressors_fit_the_physical_metric(solver,edge):
     state,p,a,b,retained = problem_and_factors(edge)

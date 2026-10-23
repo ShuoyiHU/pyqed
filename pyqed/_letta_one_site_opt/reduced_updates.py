@@ -1,5 +1,5 @@
 """Native reduced energy refinement and local stationarity diagnostics."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from operator import index
 
 import numpy as np
@@ -14,7 +14,8 @@ def one_site_options(options):
     names = ('tolerance', 'metric_tolerance', 'energy_increase_tolerance',
              'eigensolver_tolerance', 'eigensolver_max_iterations',
              'dense_solver_threshold', 'matrix_free', 'gauge_mode')
-    return LETTADMROptions(max_sweeps=1, **{k: getattr(options, k) for k in names})
+    return LETTADMROptions(max_sweeps=1,simplify_fixed_ties=getattr(options,'simplify_fixed_ties',False),
+                          **{k: getattr(options, k) for k in names})
 
 
 def local_residual_diagnostics(problem, vector, *, metric_tolerance=1e-12):
@@ -55,11 +56,12 @@ def local_residual(problem, vector, *, metric_tolerance=1e-12):
     return report['residual_norm'],report['relative_residual']
 
 
-def reduced_stationarity(state, hamiltonian, sites, options):
+def reduced_stationarity(state, hamiltonian, sites, options, *, context=None):
     """Rebuild local actions at the final state, after all neighboring changes."""
     from .reduced_solver import reduced_local_problem
-    context = None
-    if getattr(options, 'simplify_fixed_ties', False):
+    if context is not None and (context.state is not state or context.hamiltonian is not hamiltonian):
+        raise ValueError('Stationarity context must own the state and Hamiltonian being checked')
+    if context is None and getattr(options, 'simplify_fixed_ties', False):
         from .dependency_environment import DependencySweepContext
         context = DependencySweepContext(state, hamiltonian)
     reports = []
@@ -108,7 +110,19 @@ def refine_reduced_pair_energy(state, hamiltonian, left_site, options, *,
     local_options = one_site_options(options)
     sites = (left_site, left_site+1) if direction == 'lr' else (left_site+1, left_site)
     energy_cache = StableEnergyCache(hamiltonian)
-    initial = energy_cache(candidate)
+    import os
+    context=None
+    use_context=(getattr(hamiltonian,'contraction_backend',None)=='reduced' and
+                 os.environ.get('PYQED_PAIR_CONTEXT','1')=='1')
+    if local_options.simplify_fixed_ties or use_context:
+        from .dependency_environment import DependencySweepContext
+        context=DependencySweepContext(candidate,hamiltonian,structured=local_options.simplify_fixed_ties)
+    if context is not None:
+        context.energy_center=sites[0]
+        evaluate=context.stable_energy
+    else:
+        evaluate=energy_cache
+    initial = evaluate(candidate)
     energies = [initial]
     accepted = 0
     status = 'maximum energy-refinement rounds reached'
@@ -118,18 +132,21 @@ def refine_reduced_pair_energy(state, hamiltonian, left_site, options, *,
         before = energies[-1]
         updates = []
         for site in sites:
-            update = optimize_reduced_site(candidate, hamiltonian, site, local_options, energy_cache=energy_cache)
+            update = optimize_reduced_site(candidate, hamiltonian, site, local_options,
+                energy_cache=energy_cache,context=context)
             updates.append(update)
             accepted += int(update.accepted)
             energies.append(update.energy)
         if abs(energies[-1]-before) <= tolerance:
-            stationary = reduced_stationarity(candidate, hamiltonian, sites, local_options)
+            check_options=replace(local_options,simplify_fixed_ties=True) if context is not None else local_options
+            stationary = reduced_stationarity(candidate, hamiltonian, sites, check_options,context=context)
             if (all(u.accepted and u.local_converged for u in updates) and
                     max(r['relative_residual'] for r in stationary) <= options.eigensolver_tolerance):
                 status = 'converged'
                 break
     if not stationary or status != 'converged':
-        stationary = reduced_stationarity(candidate, hamiltonian, sites, local_options)
+        check_options=replace(local_options,simplify_fixed_ties=True) if context is not None else local_options
+        stationary = reduced_stationarity(candidate, hamiltonian, sites, check_options,context=context)
     return ReducedEnergyRefinement(candidate, initial,
-        energy_cache(candidate), iteration, accepted, tuple(energies),
+        evaluate(candidate), iteration, accepted, tuple(energies),
         status == 'converged', status, stationary)

@@ -3,6 +3,21 @@ import pytest
 from pyqed._letta_two_site_opt.sector_operator import SectorOperator
 from pyqed._letta_two_site_opt.shared_sector_products import SharedSectorProducts
 from concurrent.futures import ThreadPoolExecutor
+
+def test_action_cache_does_not_keep_discarded_operator_alive(monkeypatch):
+    import gc,weakref
+    monkeypatch.setenv('PYQED_SHARED_PRODUCTS','1')
+    monkeypatch.setenv('PYQED_SECTOR_THREADS','1')
+    gc.collect();enabled=gc.isenabled();gc.disable()
+    try:
+        op=SectorOperator({0:(2,1,2)},[(0,0,np.eye(2)[None],np.ones((1,1,1,1)),np.eye(2)[None])])
+        ref=weakref.ref(op)
+        op.apply_packed(np.ones(4))
+        del op
+        assert ref() is None
+    finally:
+        if enabled:gc.enable()
+
 @pytest.mark.parametrize('budget',[(0,0),(10000000,0),(0,10000000),(1024,10000000)])
 @pytest.mark.parametrize('complex_values',[False,True])
 def test_cache(budget,complex_values,monkeypatch):

@@ -25,7 +25,8 @@ def test_lazy_boundaries_match_eager_before_and_after_updates(nelec):
         prepared=lazy.prepare_local_action(site)
         for blocks in (sites[site].data, {k:(1.+.3j)*a for k,a in sites[site].data.items()}):
             bound=prepared(blocks); direct=lazy.local_action(site,blocks)
-            for key in direct:np.testing.assert_array_equal(bound[key],direct[key])
+            # Channel pruning/combination changes summation order only.
+            for key in direct:np.testing.assert_allclose(bound[key],direct[key],rtol=3e-14,atol=3e-14)
         for key in expected:np.testing.assert_array_equal(actual[key],expected[key])
     assert lazy.expectation()==eager.expectation()
     changed=sites[1].copy()

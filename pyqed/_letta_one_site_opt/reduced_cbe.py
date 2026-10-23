@@ -17,7 +17,7 @@ import numpy as np
 from scipy.sparse.linalg import LinearOperator, lsmr
 
 from .reduced_updates import NUMERICAL_ERRORS, one_site_options, reduced_stationarity
-from .._letta_two_site_opt.reduced_compression import ReducedPairMetricRoot, compress_reduced_pair
+from .._letta_two_site_opt.reduced_compression import pair_metric_root, compress_reduced_pair
 
 
 @dataclass(frozen=True)
@@ -43,7 +43,7 @@ class ReducedCBESelection:
     pruned_allocations: int = 0
 
 
-def select_reduced_cbe(state, hamiltonian, left_site, options):
+def select_reduced_cbe(state, hamiltonian, left_site, options, *, boundary_cache=None):
     """Select residual factors without a two-site energy minimization.
 
     ``exact`` denotes native, unapproximated pair actions, not a globally
@@ -75,8 +75,8 @@ def select_reduced_cbe(state, hamiltonian, left_site, options):
     old = Counter(state.bond_sectors[left_site])
     scaffold = _expand_reduced_pair_space(state, left_site, sum(old.values())+budget)
     problem = reduced_pair_problem(scaffold, hamiltonian, left_site,
-                                   matrix_free=True, dense_solver_threshold=0)
-    root = ReducedPairMetricRoot(problem, scaffold, options.metric_tolerance)
+                                   matrix_free=True, dense_solver_threshold=0,boundary_cache=boundary_cache)
+    root = pair_metric_root(problem, scaffold, options.metric_tolerance)
     le, re = (problem.frontier.site_embedding(scaffold, k) for k in (left_site, left_site+1))
     a, b = le.pack_source(scaffold.tensors[left_site]), re.pack_source(scaffold.tensors[left_site+1])
     ablocks, bblocks = _expanded_source_blocks(le, a), _expanded_source_blocks(re, b)
@@ -144,7 +144,7 @@ def _fit_residual_pair(state, problem, target, capacities, embeddings, options):
     le, re = embeddings
     seeds = _source_seeds(embeddings, 2817+problem.left_site,
         complex_data=any(np.iscomplexobj(v) for tensor in state.tensors for v in tensor.values()))
-    root = ReducedPairMetricRoot(problem,state,options.metric_tolerance)
+    root = pair_metric_root(problem,state,options.metric_tolerance)
     weights = Counter()
     for key, block in root.physical_layout.unpack(root.physical_apply(target)).items():
         weights[key[2]] += float(np.linalg.norm(block)**2)
@@ -282,10 +282,12 @@ def _tangent_coordinates(scaffold, problem, embeddings, old, options):
     from .reduced_coordinates import ReducedLocalCoordinates
     from .._letta_two_site_opt.reduced_solver import _active_source_indices
     sites = problem.frontier.to_mps(scaffold, compact=True)
+    root=pair_metric_root(problem,scaffold,options.metric_tolerance)
     result = []
     for side, embedding in enumerate(embeddings):
         active = _active_source_indices(embedding, old, 'left' if side == 0 else 'right')
-        coordinates = ReducedLocalCoordinates(sites, embedding, problem.left_site+side, retain_outer=False)
+        coordinates = ReducedLocalCoordinates(sites, embedding, problem.left_site+side, retain_outer=False,
+            boundary_seeds=root.boundary_seeds)
         coordinates.restrict(active)
         coordinates.prepare(options.metric_tolerance)
         result.append(coordinates)
@@ -498,7 +500,7 @@ def _trim_options(options):
         energy_refinement_tolerance=options.cbe_energy_refinement_tolerance)
 
 
-def reduced_cbe_site(state, hamiltonian, site, direction, bond_dim, options):
+def reduced_cbe_site(state, hamiltonian, site, direction, bond_dim, options, *, context=None):
     """Ordinary baseline → residual expansion → one-site solve → guarded trim.
 
     A numerical failure discards the entire expansion candidate and commits the
@@ -514,10 +516,21 @@ def reduced_cbe_site(state, hamiltonian, site, direction, bond_dim, options):
     if direction not in {'lr', 'rl'}:
         raise ValueError('CBE direction must be lr or rl')
     energy_cache = StableEnergyCache(hamiltonian)
+    from .frontier_contraction import CanonicalBoundaryCache
+    boundary_cache=CanonicalBoundaryCache() if context is None else context.boundary_cache
+    def local_context(candidate):
+        import os
+        if not options.simplify_fixed_ties and os.environ.get('PYQED_PAIR_CONTEXT','1')!='1':return None
+        from .dependency_environment import DependencySweepContext
+        result=DependencySweepContext(candidate,hamiltonian,boundary_cache=boundary_cache,
+            structured=options.simplify_fixed_ties)
+        result.energy_cache=energy_cache
+        return result
     before = energy_cache(state)
     baseline = state.copy()
     try:
-        ordinary = optimize_reduced_site(baseline, hamiltonian, site, one_site_options(options), energy_cache=energy_cache)
+        ordinary = optimize_reduced_site(baseline, hamiltonian, site, one_site_options(options),
+            energy_cache=energy_cache,context=local_context(baseline))
         base_energy = energy_cache(baseline)
     except NUMERICAL_ERRORS as error:
         from .solver import LETTASiteUpdate
@@ -532,7 +545,7 @@ def reduced_cbe_site(state, hamiltonian, site, direction, bond_dim, options):
     chosen = baseline
     if 0 <= i < state.nsites-1:
         try:
-            selection = select_reduced_cbe(baseline.copy(), hamiltonian, i, options)
+            selection = select_reduced_cbe(baseline.copy(), hamiltonian, i, options,boundary_cache=boundary_cache)
             update = replace(update, cbe_expansion_dimension=sum(selection.multiplicities.values()),
                 cbe_projection_iterations=selection.projection_iterations,
                 cbe_projection_converged=selection.projection_converged,
@@ -552,13 +565,14 @@ def reduced_cbe_site(state, hamiltonian, site, direction, bond_dim, options):
                     allocation=tuple((str(q), n) for q, n in selection.multiplicities.items())))
             if selection.multiplicities:
                 candidate = expand_reduced_cbe(baseline, selection, direction)
-                expanded = optimize_reduced_site(candidate, hamiltonian, site, one_site_options(options), energy_cache=energy_cache)
+                expanded = optimize_reduced_site(candidate, hamiltonian, site, one_site_options(options),
+                    energy_cache=energy_cache,context=local_context(candidate))
                 expanded_energy = energy_cache(candidate)
                 update = replace(update, cbe_expanded_energy=expanded_energy)
                 expansion_guard = 100*np.finfo(float).eps*max(1., abs(base_energy), abs(expanded_energy))
                 if expanded_energy < base_energy-expansion_guard:
                     problem = reduced_pair_problem(candidate, hamiltonian, i,
-                        matrix_free=True, dense_solver_threshold=0)
+                        matrix_free=True, dense_solver_threshold=0,boundary_cache=boundary_cache)
                     trim = compress_reduced_pair_vector(candidate, hamiltonian, problem,
                         problem.old_vector, expanded.local_energy, expanded.metric_rank,
                         expanded.residual_norm, direction, bond_dim, _trim_options(options),
@@ -575,14 +589,16 @@ def reduced_cbe_site(state, hamiltonian, site, direction, bond_dim, options):
                         cbe_energy_refinement_substeps=trim.energy_refinement_accepted_substeps)
                     guard = 100*np.finfo(float).eps*max(1., abs(base_energy), abs(energy))
                     if trim.accepted and energy < base_energy-guard and len(candidate.bond_sectors[i]) <= bond_dim:
-                        audit = reduced_stationarity(candidate, hamiltonian, (site,), options)[0]
+                        audit = reduced_stationarity(candidate, hamiltonian, (site,), options,
+                            context=local_context(candidate))[0]
                         update = replace(update, energy=energy, accepted=True, cbe_baseline_selected=False,
                             residual_norm=audit['residual_norm'], relative_residual=audit['relative_residual'],
                             local_converged=audit['relative_residual'] <= options.eigensolver_tolerance)
                         chosen = candidate
             else:
                 neighbor = i+1 if direction == 'lr' else i
-                stationarity = reduced_stationarity(baseline, hamiltonian, (neighbor,), options)[0]
+                stationarity = reduced_stationarity(baseline, hamiltonian, (neighbor,), options,
+                    context=local_context(baseline))[0]
                 if stationarity['relative_residual'] > options.eigensolver_tolerance:
                     from .reduced_updates import refine_reduced_pair_energy
                     refinement = refine_reduced_pair_energy(baseline, hamiltonian, i, options,
@@ -595,7 +611,8 @@ def reduced_cbe_site(state, hamiltonian, site, direction, bond_dim, options):
                         cbe_energy_refinement_substeps=refinement.accepted_substeps)
                     guard = 100*np.finfo(float).eps*max(1., abs(base_energy), abs(energy))
                     if energy < base_energy-guard:
-                        audit = reduced_stationarity(refinement.state, hamiltonian, (site,), options)[0]
+                        audit = reduced_stationarity(refinement.state, hamiltonian, (site,), options,
+                            context=local_context(refinement.state))[0]
                         update = replace(update, energy=energy, accepted=True, cbe_baseline_selected=False,
                             residual_norm=audit['residual_norm'], relative_residual=audit['relative_residual'],
                             local_converged=audit['relative_residual'] <= options.eigensolver_tolerance)

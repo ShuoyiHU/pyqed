@@ -139,7 +139,7 @@ def frontier_energy(state, mpo, *, cache=None):
     return numerator, denominator
 
 
-def centered_energy(state, mpo, center, *, cache=None):
+def centered_energy(state, mpo, center, *, cache=None,structured=True):
     """Independent expectation using two-sided exact QR environments.
 
     Adapts the moving-environment MPS contraction of Schollwoeck,
@@ -153,7 +153,7 @@ def centered_energy(state, mpo, center, *, cache=None):
     frontier=ReducedFrontier.from_state(view)
     sites=frontier.to_mps(view,compact=True)
     canonical,left,right,chain=canonical_environment(sites,center,mpo,cache=cache,
-        structured=True,transform_active=False)
+        structured=structured,transform_active=False)
     from .numpy_contractions import cached_einsum
     blocks={key:cached_einsum('al,lpr,br->apb',left[key[0]],np.asarray(a),right[key[2]])
             for key,a in canonical[center].data.items()}
@@ -407,14 +407,19 @@ def canonical_environment(sites, center, mpo, *, last_center=None, cache=None, t
     The active interval and original compact outer cores remain available.
     """
     from .reduced_coordinates import _canonical_sites
-    from .reduced_environment import (_boundary,cached_transfers,advance_left,
+    from .reduced_environment import (_boundary,chain_transfers,advance_left,
                                      advance_right,ReducedEnvironmentChain)
     from .reduced_norm import _normalize
     last_center=center if last_center is None else last_center
+    transfers,path_key,path_report=chain_transfers(sites,mpo)
     boundaries={'lr':(_boundary(sites[0],mpo.sites[0],0),0.),
                 'rl':(_boundary(sites[-1],mpo.sites[-1],2),0.)}
     seeds=None;signatures=None
     if cache is not None:
+        # Global backward pruning depends on both exteriors. A layout change
+        # can revive an operator path, so prefix-only value keys are insufficient.
+        if getattr(cache,'operator_paths_key',None)!=path_key:
+            cache.entries.clear();cache.nbytes=0;cache.operator_paths_key=path_key
         if getattr(cache,"structured",None) != structured:
             cache.entries.clear();cache.nbytes=0;cache.structured=structured
         signatures=cache.signatures(sites,mpo)
@@ -431,11 +436,12 @@ def canonical_environment(sites, center, mpo, *, last_center=None, cache=None, t
     def consume(direction,i,site):
         environment,scale=boundaries[direction]
         advance=advance_left if direction=='lr' else advance_right
-        boundaries[direction]=_normalize(advance(environment,site,cached_transfers(mpo,i,site),structured=structured),scale)
+        boundaries[direction]=_normalize(advance(environment,site,transfers[i],structured=structured),scale)
     canonical,left,right=_canonical_sites(sites,center,last_center=last_center,
         consume=consume,keep_indices=set(range(center,last_center+1)),
         boundary_seeds=seeds,boundary_callback=store,transform_active=transform_active,boundary_matmul=True,structured=structured)
-    chain=ReducedEnvironmentChain.build(canonical,mpo,lazy=True)
+    chain=ReducedEnvironmentChain.build(canonical,mpo,lazy=True,transfers=transfers)
+    chain.operator_paths_report=path_report
     chain.left[center],chain.left_log_scales[center]=boundaries['lr']
     chain.right[last_center+1],chain.right_log_scales[last_center+1]=boundaries['rl']
     chain.left_valid,chain.right_valid=center,last_center+1

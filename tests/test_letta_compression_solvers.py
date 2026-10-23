@@ -16,6 +16,41 @@ from pyqed._letta_two_site_opt import (
 METHODS = ['variable-projection', 'joint-ls', 'grassmann-newton']
 
 
+@pytest.mark.parametrize('complex_data',[False,True])
+def test_operator_jacobian_and_adjoint_with_restricted_parameters(monkeypatch,complex_data):
+    from types import SimpleNamespace
+    import pyqed._letta_compression as module
+    rng=np.random.default_rng(81)
+    def random(shape):
+        x=rng.normal(size=shape)
+        return x+1j*rng.normal(size=shape) if complex_data else x
+    target=random((4,3));left=random((4,2));right=random((2,3));root_matrix=random((10,12))
+    li=np.array([0,1,2,3,5,7]);ri=np.array([0,1,2,4,5])
+    left.ravel()[[4,6]]=0.;right.ravel()[3]=0.
+    apply=lambda x:root_matrix@x.ravel()
+    adjoint=lambda x:root_matrix.conj().T@x
+    root=SimpleNamespace(apply=apply,adjoint=adjoint,physical_apply=apply,physical_adjoint=adjoint)
+    def factor_adjoint(side,a,b,x):
+        x=x.reshape(target.shape)
+        return (x@b.conj().T).ravel()[li] if side==0 else (a.conj().T@x).ravel()[ri]
+    original=module.least_squares
+    checked=[]
+    def verify(fun,x,*,jac,**kw):
+        j=jac(x);v=rng.normal(size=len(x));w=rng.normal(size=j.shape[0]);h=1e-6
+        np.testing.assert_allclose(j@v,(fun(x+h*v)-fun(x-h*v))/(2*h),rtol=2e-7,atol=2e-7)
+        np.testing.assert_allclose(np.dot(w,j@v),np.dot(j.rmatvec(w),v),rtol=2e-12,atol=2e-12)
+        checked.append(True)
+        return original(fun,x,jac=jac,**kw)
+    monkeypatch.setattr(module,'least_squares',verify)
+    loss=np.linalg.norm(apply(left@right-target))**2
+    fit=compress_factors(target,metric(root_matrix.conj().T@root_matrix),left,right,
+        options=MetricCompressionOptions(solver='joint-ls-operator',max_iterations=15),
+        left_indices=li,right_indices=ri,square_root=root,factor_adjoint=factor_adjoint,
+        fallback=lambda:(left,right,loss,0))
+    assert checked and fit.loss<=loss
+    assert fit.diagnostics['used_solver']=='joint-ls-operator'
+
+
 def metric(a):
     return BlockDiagonalMetric(len(a), [a], [np.arange(len(a))])
 

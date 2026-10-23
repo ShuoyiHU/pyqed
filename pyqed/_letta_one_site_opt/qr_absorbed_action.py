@@ -91,7 +91,7 @@ class QRAbsorbedAction:
         self.report['allocated_boundary_bytes']=self.op.left.nbytes+self.op.right.nbytes
     def __call__(self,z):
         blocks={i:(U@z[m[1]]).reshape(self.op.layout.shapes[i]) for i,(U,m) in enumerate(zip(self.spectral_images,self.maps))}
-        acted=self.op.layout.unpack(self.op.apply_packed(self.op.layout.pack(blocks),shared_products=False),copy=False)
+        acted=self.op.layout.unpack(self.op.apply_packed(self.op.layout.pack(blocks)),copy=False)
         result=np.zeros(self.rank,complex)
         for i,(U,m) in enumerate(zip(self.spectral_images,self.maps)):
             result[m[1]]=U.conj().T@acted[i].ravel()

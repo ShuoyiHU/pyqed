@@ -1,7 +1,7 @@
 """Safeguarded physical-norm compression for bilinear LETTA factors.
 
-The nonlinear methods use bounded dense *factor* Jacobians, never a global
-wavefunction. The caller supplies a topology-specific metric square root;
+The nonlinear methods use bounded factor Jacobians or their matrix-free
+actions, never a global wavefunction. The caller supplies a topology-specific metric square root;
 ALS uses its forward/adjoint actions through matrix-free linear solves. Shared-index and charge blocks restrict the factor
 charts; the objective always uses the full metric, including block couplings.
 """
@@ -18,6 +18,8 @@ class MetricCompressionOptions:
     max_iterations is a residual-evaluation budget for least squares and a
     trust-region iteration budget for Newton. ALS uses the calling solver's
     existing budget unless als_max_iterations is supplied.
+    ``joint-ls-operator`` is wired into the reduced SU(2) compressor; other
+    callers must provide the physical square root and both factor adjoints.
     """
     solver: str = "als"
     max_iterations: int = 100
@@ -29,7 +31,7 @@ class MetricCompressionOptions:
     lsmr_max_iterations: int | None = None
 
     def __post_init__(self):
-        if self.solver not in {"als", "variable-projection", "joint-ls", "grassmann-newton"}:
+        if self.solver not in {"als", "variable-projection", "joint-ls", "grassmann-newton", "joint-ls-operator"}:
             raise ValueError(f"Unknown compression solver: {self.solver!r}")
         for name in ("max_iterations", "als_max_iterations", "lsmr_max_iterations"):
             value = getattr(self, name)
@@ -224,12 +226,21 @@ class _ProjectedProblem:
 
 def compress_factors(target, metric, left, right, *, options, fallback,
                      metric_tolerance=1e-12, layout=None,
-                     left_indices=None, right_indices=None, gauge_blocks=None, square_root=None):
+                     left_indices=None, right_indices=None, gauge_blocks=None, square_root=None,
+                     factor_adjoint=None):
     """Fit two factors; fallback returns (left, right, loss, iterations).
 
     Dense workspace is estimated *before* building charts or Jacobians.
     The best iterate in the original physical metric is retained, including
     the incoming factors, even if the optimizer exhausts its budget or fails.
+    ``joint-ls-operator`` adapts trust-region Gauss-Newton with LSMR
+    (Fong and Saunders, SIAM J. Sci. Comput. 33, 2950, 2011,
+    doi:10.1137/10079687X). It needs physical-root and factor adjoints, stores
+    no Jacobian, and retains the same full physical loss and acceptance guard.
+    ``factor_adjoint(side,a,b,z)`` returns derivatives already restricted to
+    that side's allowed complex parameters, before real/imaginary packing.
+    Gauge redundancy is regularized in the inner solve; global optimality is
+    not guaranteed. This is an adaptation, not published LETTA compression.
     """
     if not isinstance(options, MetricCompressionOptions):
         raise TypeError("compression must be MetricCompressionOptions.")
@@ -287,7 +298,11 @@ def compress_factors(target, metric, left, right, *, options, fallback,
     lc, rc = _Coordinates(left.shape, dtype, left_indices), _Coordinates(right.shape, dtype, right_indices)
     complex_data = np.issubdtype(dtype, np.complexfloating)
     reverse = [(b.T, a.T) for a, b in blocks]
-    flip = options.solver != "joint-ls" and _chart_size(reverse, complex_data) < _chart_size(blocks, complex_data)
+    joint_mode=options.solver in ('joint-ls','joint-ls-operator')
+    operator_mode=options.solver=='joint-ls-operator'
+    if operator_mode and (factor_adjoint is None or square_root is None):
+        raise ValueError('joint-ls-operator requires physical-root and factor adjoints')
+    flip = not joint_mode and _chart_size(reverse, complex_data) < _chart_size(blocks, complex_data)
     # Swapping factor roles uses a transpose of each gauge block, not a
     # permutation/approximation of the metric or the physical merge map.
     if flip:
@@ -305,8 +320,13 @@ def compress_factors(target, metric, left, right, *, options, fallback,
     doubles += (left.size+right.size)*(joint+p)* (2 if complex_data else 1)
     doubles += sum(a.shape[0]**2 for a, _ in blocks)*(2 if complex_data else 1)
     workspace = 8*8*doubles
+    if operator_mode:
+        physical_size=getattr(square_root,'physical_layout',None)
+        physical_size=physical_size.size if physical_size is not None else target.size
+        workspace=16*16*(physical_size+target.size+left.size+right.size)
     diagnostics.update(estimated_workspace_bytes=workspace, factor_side="right" if flip else "left",
-                       nonlinear_parameters=joint if options.solver == "joint-ls" else p)
+                       nonlinear_parameters=joint if joint_mode else p,
+                       materialized_jacobian=not operator_mode)
     if workspace > options.max_workspace_mb*1024**2:
         # Restore physical orientation for fallback's observe.
         if flip:
@@ -323,9 +343,9 @@ def compress_factors(target, metric, left, right, *, options, fallback,
             return np.r_[v.real, v.imag] if complex_data else v.real
         b = weighted(target)
         weighted_merge = lambda a, b: weighted(merge(a, b))
-        if options.solver == "joint-ls":
+        if joint_mode:
             left, right = _balance(left, right, blocks)
-            xb, tb = list(lc.basis()), list(rc.basis())
+            if not operator_mode:xb, tb = list(lc.basis()), list(rc.basis())
             def factors(x):
                 return lc.unpack(x[:lc.size]), rc.unpack(x[lc.size:])
             def residual(x):
@@ -336,11 +356,29 @@ def compress_factors(target, metric, left, right, *, options, fallback,
                 return weighted_merge(a, c)-b
             def jacobian(x):
                 a, c = factors(x)
+                if operator_mode:
+                    from scipy.sparse.linalg import LinearOperator
+                    def forward(v):
+                        da,dc=factors(np.asarray(v).reshape(-1))
+                        return weighted_merge(da,c)+weighted_merge(a,dc)
+                    def backward(v):
+                        v=np.asarray(v).reshape(-1)
+                        z=v[:len(v)//2]+1j*v[len(v)//2:] if complex_data else v
+                        adjoint=getattr(root,'physical_adjoint',root.adjoint)
+                        pulled=adjoint(z)
+                        gradients=[factor_adjoint(side,a,c,pulled) for side in (0,1)]
+                        return np.concatenate([np.r_[g.real,g.imag] if complex_data else g.real
+                                               for g in gradients])
+                    return LinearOperator((len(b),lc.size+rc.size),matvec=forward,
+                                          rmatvec=backward,dtype=float)
                 return np.column_stack([weighted_merge(dx, c) for dx in xb] +
                                        [weighted_merge(a, dt) for dt in tb])
+            extra={} if not operator_mode else dict(tr_solver='lsmr',tr_options=dict(
+                atol=options.tolerance,btol=options.tolerance,
+                maxiter=options.lsmr_max_iterations or max(50,min(1000,5*(lc.size+rc.size)))))
             result = least_squares(residual, np.r_[lc.pack(left), rc.pack(right)], jac=jacobian,
                                    max_nfev=options.max_iterations, ftol=options.tolerance,
-                                   xtol=options.tolerance, gtol=options.tolerance, method="trf")
+                                   xtol=options.tolerance, gtol=options.tolerance, method="trf",**extra)
             count = result.nfev
             optimality = result.optimality
         else:

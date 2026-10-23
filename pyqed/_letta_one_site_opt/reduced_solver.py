@@ -420,12 +420,12 @@ class StableEnergyCache:
         from .frontier_contraction import EnergyBoundaryCache
         self.boundaries = EnergyBoundaryCache()
 
-    def __call__(self, state, *, center=None, canonical_boundaries=None):
+    def __call__(self, state, *, center=None, canonical_boundaries=None,structured=True):
         from .frontier_contraction import state_signature
         key = state_signature(state)
         if key != self.key:
             value = _energy(state, self.hamiltonian, stable=True, energy_boundaries=self.boundaries,
-                            center=center, canonical_boundaries=canonical_boundaries)
+                            center=center, canonical_boundaries=canonical_boundaries,structured=structured)
             self.key, self.value = key, value
         return self.value
 
@@ -632,6 +632,13 @@ def _matrix_free_generalized_davidson(problem, options, initial_vector):
 def _davidson_in_metric_coordinates(problem, options, initial_vector):
     """Lowest generalized root in an N-orthonormal Davidson space.
 
+    Adapts E. R. Davidson, J. Comput. Phys. 17, 87--94 (1975),
+    doi:10.1016/0021-9991(75)90065-0. Restarts, metric orthogonalization,
+    whole-support probes and optional block inverses/recycled vectors are
+    implementation adaptations, not a reproduction of the original algorithm.
+    Recycled vectors always receive fresh H/N applications. An optional byte
+    budget limits retained basis storage; no tolerance is relaxed.
+
     The overlap operator may be positive semidefinite.  Null directions are
     removed during metric orthogonalization, so neither N nor a whitening
     matrix is ever materialized.
@@ -665,12 +672,32 @@ def _davidson_in_metric_coordinates(problem, options, initial_vector):
     lindep = max(
         float(options.metric_tolerance), np.finfo(float).eps * dimension
     )
-    max_space = min(dimension, 48)
+    import os
+    requested_space = int(os.environ.get('PYQED_DAVIDSON_SPACE', '48'))
+    requested_retain = int(os.environ.get('PYQED_DAVIDSON_RETAIN', '4'))
+    budget = float(os.environ.get('PYQED_DAVIDSON_MB', '0'))*1024**2
+    if requested_space < 4 or requested_retain < 1 or budget < 0:
+        raise ValueError('Invalid Davidson search-space budget')
+    # V, NV and HV are all retained. Leave room for copies during restart.
+    capacity = int(budget//max(1, 6*16*dimension)) if budget else requested_space
+    max_space = min(dimension, requested_space, capacity)
+    if max_space < min(4, dimension):
+        raise MemoryError('Davidson budget cannot hold four search vectors')
+    retained_count = min(requested_retain, max(1, max_space-2))
+    report = dict(max_space=max_space, retained=retained_count,
+                  hamiltonian_applications=0, restarts=0, iterations=0)
+    if isinstance(problem, SimpleNamespace):
+        problem.search_report = report
+
+    def apply_hamiltonian(vector):
+        report['hamiltonian_applications'] += 1
+        return problem.apply_hamiltonian(vector)
+
     minimum_explored = min(dimension, max_space, 16)
     metric_scale = problem.metric_scale
     basis = initial_vector[:, None]
     metric_basis = metric_initial[:, None]
-    hamiltonian_basis = problem.apply_hamiltonian(initial_vector)[:, None]
+    hamiltonian_basis = apply_hamiltonian(initial_vector)[:, None]
     initial_rayleigh = float(np.vdot(initial_vector, hamiltonian_basis[:, 0]).real)
     seed_cursor = 0
 
@@ -742,6 +769,17 @@ def _davidson_in_metric_coordinates(problem, options, initial_vector):
     # They are search vectors only: no random perturbation of the state or
     # Hamiltonian is made, and the incumbent remains in the Ritz space.
     rng = np.random.default_rng(271828)
+    recycled=getattr(problem,'initial_search_vectors',())
+    report['recycled_vectors']=0
+    for seed in recycled:
+        if basis.shape[1]>=max_space-2:break
+        candidate,metric_candidate=metric_orthogonalize(seed)
+        if candidate is not None:
+            basis=np.column_stack((basis,candidate))
+            metric_basis=np.column_stack((metric_basis,metric_candidate))
+            # H and N belong to the new local problem, never to the old solve.
+            hamiltonian_basis=np.column_stack((hamiltonian_basis,apply_hamiltonian(candidate)))
+            report['recycled_vectors']+=1
     for _ in range(min(2, dimension - 1)):
         candidate, metric_candidate = metric_orthogonalize(
             rng.normal(size=dimension) + 1j*rng.normal(size=dimension))
@@ -749,12 +787,13 @@ def _davidson_in_metric_coordinates(problem, options, initial_vector):
             basis = np.column_stack((basis, candidate))
             metric_basis = np.column_stack((metric_basis, metric_candidate))
             hamiltonian_basis = np.column_stack(
-                (hamiltonian_basis, problem.apply_hamiltonian(candidate)))
+                (hamiltonian_basis, apply_hamiltonian(candidate)))
 
     energy = np.inf
     residual = np.zeros(dimension, dtype=complex)
     coefficients = np.ones(basis.shape[1], dtype=complex)
     for _iteration in range(int(options.eigensolver_max_iterations)):
+        report['iterations'] = _iteration+1
         energy, coefficients, _values, projected_vectors = lowest_projected_root()
         candidate = None
         metric_candidate = None
@@ -792,7 +831,8 @@ def _davidson_in_metric_coordinates(problem, options, initial_vector):
         if candidate is None:
             break
         if basis.shape[1] >= max_space:
-            retained = min(4, projected_vectors.shape[1])
+            retained = min(retained_count, projected_vectors.shape[1])
+            report['restarts'] += 1
             restart = projected_vectors[:, :retained]
             basis = basis @ restart
             metric_basis = metric_basis @ restart
@@ -807,11 +847,13 @@ def _davidson_in_metric_coordinates(problem, options, initial_vector):
         basis = np.column_stack((basis, candidate))
         metric_basis = np.column_stack((metric_basis, metric_candidate))
         hamiltonian_basis = np.column_stack(
-            (hamiltonian_basis, problem.apply_hamiltonian(candidate))
+            (hamiltonian_basis, apply_hamiltonian(candidate))
         )
 
     energy, coefficients, _values, _vectors = lowest_projected_root()
     vector = basis @ coefficients
+    if isinstance(problem,SimpleNamespace):
+        problem.search_vectors=basis@_vectors[:,:min(retained_count,4)]
     return energy, vector, basis.shape[1]
 
 
@@ -840,13 +882,16 @@ def _lowest_generalized_matrix_free(problem, options, *, initial_vector):
 
 
 def _lowest_coordinate_root(problem, options, initial_vector):
+    import os
     coordinates=problem.coordinates
     coordinates.prepare(options.metric_tolerance)
     initial=coordinates.coordinates(initial_vector)
     if coordinates.rank==0:
         raise ValueError('Reduced local metric has no retained directions')
-    local_options=replace(options,eigensolver_tolerance=options.eigensolver_tolerance/
-                          max(1.,coordinates.residual_amplification))
+    strict_tolerance=options.eigensolver_tolerance/max(1.,coordinates.residual_amplification)
+    physical_stopping=os.environ.get('PYQED_PHYSICAL_RESIDUAL_SOLVE','0')=='1'
+    local_options=replace(options,eigensolver_tolerance=(options.eigensolver_tolerance*.25
+                          if physical_stopping else strict_tolerance))
     if not options.matrix_free or coordinates.rank<=options.dense_solver_threshold:
         h=np.column_stack([coordinates.apply(v) for v in np.eye(coordinates.rank)])
         local=SimpleNamespace(hamiltonian=.5*(h+h.conj().T),metric=np.eye(coordinates.rank),
@@ -860,7 +905,11 @@ def _lowest_coordinate_root(problem, options, initial_vector):
         if preconditioner not in ('none','blocks'):
             raise ValueError('PYQED_LOCAL_PRECONDITIONER must be none or blocks')
         if preconditioner=='blocks':local.preconditioner=coordinates.preconditioned_residual
+        if hasattr(coordinates,'search_cache'):
+            cache,key=coordinates.search_cache
+            local.initial_search_vectors=[coordinates.coordinates(v) for v in cache.get(key,())]
         _,z,_=_davidson_in_metric_coordinates(local,local_options,initial)
+        coordinates.search_report=local.search_report
     vector=coordinates.expand(z)
     norm=coordinates.norm(vector)
     if not np.isfinite(norm) or norm<=np.finfo(float).tiny:
@@ -868,7 +917,31 @@ def _lowest_coordinate_root(problem, options, initial_vector):
     vector/=np.sqrt(norm)
     from .reduced_updates import local_residual_diagnostics
     diagnostics=local_residual_diagnostics(problem,vector,metric_tolerance=options.metric_tolerance)
+    # The accepted criterion is unchanged. A physical-coordinate solve avoids
+    # tightening by an unrelated raw-coordinate condition number; certification
+    # still uses a fresh source H action. Retry the original stricter solve if
+    # reconstruction or a small energy scale makes that certificate fail.
+    if (physical_stopping and options.matrix_free and
+            coordinates.rank>options.dense_solver_threshold and
+            diagnostics['relative_residual']>options.eigensolver_tolerance):
+        first_report=coordinates.search_report.copy()
+        _,z,_=_davidson_in_metric_coordinates(local,
+            replace(options,eigensolver_tolerance=min(strict_tolerance,
+                options.eigensolver_tolerance*.01)),z)
+        vector=coordinates.expand(z)
+        vector/=np.sqrt(coordinates.norm(vector))
+        diagnostics=local_residual_diagnostics(problem,vector,metric_tolerance=options.metric_tolerance)
+        coordinates.search_report={**local.search_report,'retry':True,'first_attempt':first_report}
     coordinates.solution_diagnostics=(vector.copy(),diagnostics)
+    if hasattr(coordinates,'search_cache') and hasattr(local,'search_vectors'):
+        cache,key=coordinates.search_cache
+        vectors=[coordinates.expand(v) for v in local.search_vectors.T]
+        # Source vectors are small compared with auxiliary-frontier vectors.
+        needed=sum(v.nbytes for v in vectors)
+        cache.pop(key,None)
+        while cache and sum(v.nbytes for entry in cache.values() for v in entry)+needed>16*1024**2:
+            cache.pop(next(iter(cache)))
+        if needed<=16*1024**2:cache[key]=vectors
     return diagnostics['energy'],vector,coordinates.rank,diagnostics['residual_norm']
 
 
@@ -914,13 +987,13 @@ def _mpo_expectation(state, factors, *, stable=False):
     return final.expectation()
 
 
-def _energy(state, hamiltonian, *, stable=False, energy_boundaries=None, center=None, canonical_boundaries=None):
+def _energy(state, hamiltonian, *, stable=False, energy_boundaries=None, center=None, canonical_boundaries=None,structured=True):
     if (isinstance(hamiltonian, ReducedMPOHamiltonian)
             and hamiltonian.contraction_backend == 'reduced'):
         if stable and center is not None:
             from .frontier_contraction import centered_energy
             numerator,denominator=centered_energy(state,hamiltonian.native_mpo(state.physical_basis),
-                center,cache=canonical_boundaries)
+                center,cache=canonical_boundaries,structured=structured)
             return _checked_energy(numerator,denominator)
         if stable:
             from .dependency_environment import fixed_dependency_view
@@ -1074,8 +1147,8 @@ def reduced_letta_dmrg(hamiltonian, *, state, options, sweep_callback=None):
             raise ValueError('reduced CBE requires physical-metric pair trimming')
     context_type=ReducedSweepContext
     if options.simplify_fixed_ties:
-        if options.gauge_mode!='none' or options.cbe_enabled:
-            raise ValueError('simplify_fixed_ties requires gauge_mode="none" and one-site updates without CBE')
+        if options.gauge_mode!='none':
+            raise ValueError('simplify_fixed_ties requires gauge_mode="none"')
         if not isinstance(hamiltonian,ReducedMPOHamiltonian) or hamiltonian.contraction_backend!='reduced':
             raise ValueError('simplify_fixed_ties requires reduced MPO environments')
         from .dependency_environment import DependencySweepContext
@@ -1114,10 +1187,12 @@ def reduced_letta_dmrg(hamiltonian, *, state, options, sweep_callback=None):
                     from .reduced_mps_cbe import mps_cbe_site as reduced_cbe_site
                 else:
                     from .reduced_cbe import reduced_cbe_site
-                updates.append(reduced_cbe_site(state, hamiltonian, site, direction, nominal_bond, options))
+                extra={} if options.cbe_selector=='mps-dd' else dict(context=context)
+                updates.append(reduced_cbe_site(state, hamiltonian, site, direction, nominal_bond, options,**extra))
                 # A new multiplet allocation changes layouts as well as values.
                 if context is not None:
-                    context = context_type(state, hamiltonian)
+                    if options.simplify_fixed_ties:context.synchronize(range(state.nsites))
+                    else:context = context_type(state, hamiltonian)
             else:
                 try:
                     update = optimize_reduced_site(state, hamiltonian, site, options, context=context)

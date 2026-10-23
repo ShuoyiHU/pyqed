@@ -35,20 +35,23 @@ class DependencySweepContext:
 
     Re-evaluate exact dependencies after every update. Boundary cache keys
     include current layouts and values, so changed dependencies invalidate reuse.
-    Only reduced one-site optimization is supported; CBE uses its own gauges.
+    Each context owns one transaction state; CBE candidate copies may share
+    the value-validated boundary cache without sharing mutable state.
     """
-    def __init__(self,state,hamiltonian, *, structured=True):
+    def __init__(self,state,hamiltonian, *, structured=True,boundary_cache=None):
         from .reduced_solver import StableEnergyCache
         self.structured=structured
         self.state=state;self.hamiltonian=hamiltonian
-        self.boundary_cache=CanonicalBoundaryCache()
+        self.boundary_cache=CanonicalBoundaryCache() if boundary_cache is None else boundary_cache
         self.energy_cache=StableEnergyCache(hamiltonian)
         self.dependency_stats={};self.energy_center=None
         self.frontier=None
+        self.search_cache={}
 
     def stable_energy(self,state=None):
         return self.energy_cache(self.state if state is None else state,
-            center=self.energy_center,canonical_boundaries=self.boundary_cache)
+            center=self.energy_center,canonical_boundaries=self.boundary_cache,
+            structured=self.structured)
 
     def synchronize(self,indices):
         # Views are rebuilt from current tensors; no stale expanded cores exist.
@@ -69,5 +72,12 @@ class DependencySweepContext:
             max_frontier_multiplets=max((len(a.qns[2]) for a in sites[:-1]),default=1),
             source_parameters=embedding.source_size,
             full_source_parameters=embedding.source_layout.size)
-        return _native_local_problem(view,self.hamiltonian,site,sites,embedding,
+        problem=_native_local_problem(view,self.hamiltonian,site,sites,embedding,
             options.matrix_free,options.dense_solver_threshold,self.boundary_cache,structured=self.structured)
+        import os
+        if os.environ.get('PYQED_DAVIDSON_RECYCLE','0')=='1':
+            support=embedding.supported_source_indices
+            key=(site,tuple(view.site_neighborhood(site)),tuple(embedding.source_layout.shapes.items()),
+                 None if support is None else support.tobytes())
+            problem.coordinates.search_cache=(self.search_cache,key)
+        return problem

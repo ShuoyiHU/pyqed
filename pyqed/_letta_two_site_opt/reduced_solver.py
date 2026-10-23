@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, replace, field
 from operator import index
 
 import numpy as np
@@ -46,6 +46,7 @@ class ReducedPairProblem:
     metric_action: object | None = None
     equilibrated_projector_factory: object | None = None
     canonical_data: object | None = None
+    prepared_cache: dict = field(default_factory=dict, compare=False, repr=False)
 
     @property
     def local_dimension(self):
@@ -279,6 +280,7 @@ def reduced_pair_problem(
     matrix_free=False,
     dense_solver_threshold=64,
     prune=True,
+    boundary_cache=None,
 ):
     """Build the reduced two-site generalized problem with exact path support.
 
@@ -329,12 +331,17 @@ def reduced_pair_problem(
                 equilibrated_projector_factory=lambda tol:n_chain.pair_projector(left_site,layout,tol,equilibrated=True))
         from .._letta_one_site_opt.frontier_contraction import state_signature, canonical_environment
         canonical,full_left,full_right,h_chain=canonical_environment(
-            sites,left_site,hamiltonian.native_mpo(state.physical_basis),last_center=left_site+1)
+            sites,left_site,hamiltonian.native_mpo(state.physical_basis),last_center=left_site+1,
+            cache=boundary_cache)
         from .._letta_one_site_opt.frontier_contraction import raw_pair_environments
-        raw_h,raw_n=raw_pair_environments(sites,left_site,hamiltonian.native_mpo(state.physical_basis))
-        h_action=lambda v:layout.pack(raw_h.pair_action(left_site,layout.unpack(v)))
-        n_action=lambda v:layout.pack(raw_n.pair_action(left_site,layout.unpack(v)))
-        projector=lambda tolerance:raw_n.pair_projector(left_site,layout,tolerance,equilibrated=True)
+        raw=[]
+        def raw_environment():
+            if not raw:
+                raw.extend(raw_pair_environments(sites,left_site,hamiltonian.native_mpo(state.physical_basis)))
+            return raw
+        h_action=lambda v:layout.pack(raw_environment()[0].pair_action(left_site,layout.unpack(v)))
+        n_action=lambda v:layout.pack(raw_environment()[1].pair_action(left_site,layout.unpack(v)))
+        projector=lambda tolerance:raw_environment()[1].pair_projector(left_site,layout,tolerance,equilibrated=True)
         h, n = None, None
         if not matrix_free or layout.size <= dense_solver_threshold:
             identity = np.eye(layout.size)
@@ -739,7 +746,7 @@ def _retained_bond_sectors(old_bond, retained):
 
 
 def _optimize_reduced_pair(
-    state, hamiltonian, left_site, direction, bond_dim, options
+    state, hamiltonian, left_site, direction, bond_dim, options, *, boundary_cache=None
 ):
     from .._letta_one_site_opt.reduced_updates import NUMERICAL_ERRORS, one_site_options
     from .._letta_one_site_opt.reduced_solver import optimize_reduced_site
@@ -749,7 +756,7 @@ def _optimize_reduced_pair(
         candidate = (_expand_reduced_pair_space(state, left_site, bond_dim)
                      if options.reduced_sector_growth else state.copy())
         update = _optimize_allocated_reduced_pair(
-            candidate, hamiltonian, left_site, direction, bond_dim, options)
+            candidate, hamiltonian, left_site, direction, bond_dim, options,boundary_cache=boundary_cache)
         actual = _energy(candidate, hamiltonian, stable=True)
         valid = update.accepted and actual <= before+options.energy_increase_tolerance
         # Compression must not cost the progress of an ordinary one-site step
@@ -891,9 +898,9 @@ def _solve_reduced_pair_root(problem, state, hamiltonian, options):
     if hamiltonian.contraction_backend != 'reduced':
         return _solve_local_problem(problem, options, initial_vector=problem.old_vector)
     from types import SimpleNamespace
-    from .reduced_compression import ReducedPairMetricRoot
+    from .reduced_compression import pair_metric_root
     from .._letta_one_site_opt.reduced_solver import _davidson_in_metric_coordinates
-    root = ReducedPairMetricRoot(problem, state, options.metric_tolerance)
+    root = pair_metric_root(problem, state, options.metric_tolerance)
     apply = _orthogonal_pair_action(problem, root, state, hamiltonian)
     initial = root.apply(problem.old_vector)
     if not options.matrix_free or root.size <= options.dense_solver_threshold:
@@ -917,7 +924,7 @@ def _solve_reduced_pair_root(problem, state, hamiltonian, options):
 
 
 def _optimize_allocated_reduced_pair(
-    state, hamiltonian, left_site, direction, bond_dim, options
+    state, hamiltonian, left_site, direction, bond_dim, options, *, boundary_cache=None
 ):
     problem = reduced_pair_problem(
         state,
@@ -925,6 +932,7 @@ def _optimize_allocated_reduced_pair(
         left_site,
         matrix_free=options.matrix_free,
         dense_solver_threshold=options.dense_solver_threshold,
+        boundary_cache=boundary_cache,
     )
     local_energy, vector, metric_rank, residual = _solve_reduced_pair_root(
         problem, state, hamiltonian, options
@@ -971,8 +979,8 @@ def compress_reduced_pair_vector(state, hamiltonian, problem, vector, local_ener
         return _optimize_untied_split(state, hamiltonian, problem, vector,
             local_energy, metric_rank, residual, direction, bond_dim, options,
             acceptance_energy=acceptance_energy)
-    from .reduced_compression import ReducedPairMetricRoot
-    norm_root = ReducedPairMetricRoot(problem, state, options.metric_tolerance)
+    from .reduced_compression import pair_metric_root
+    norm_root = pair_metric_root(problem, state, options.metric_tolerance)
     def physical_norm(v):
         return float(np.linalg.norm(norm_root.physical_apply(v))**2)
     sites = tuple(problem.frontier.to_mps(state, compact=True))
@@ -1242,6 +1250,8 @@ def reduced_two_site_dmrg(hamiltonian, *, state, bond_dim, options):
     history = []
     converged = False
     message = "STOP: MAXIMUM SWEEPS REACHED"
+    from .._letta_one_site_opt.frontier_contraction import CanonicalBoundaryCache
+    boundary_cache=CanonicalBoundaryCache()
     for sweep in range(1, int(options.max_sweeps) + 1):
         from .._letta_one_site_opt.reduced_gauge import GaugeQRBoundary
         gauge_boundary=GaugeQRBoundary(state,direction) if options.gauge_mode=='frontier' else None
@@ -1253,7 +1263,7 @@ def reduced_two_site_dmrg(hamiltonian, *, state, bond_dim, options):
         updates = []
         for site in pair_sites:
             updates.append(_optimize_reduced_pair(
-                state, hamiltonian, site, direction, bond_dim, options
+                state, hamiltonian, site, direction, bond_dim, options,boundary_cache=boundary_cache
             ))
             if initial_recovery:
                 updates[-1] = replace(updates[-1], recovery_reason=initial_recovery)

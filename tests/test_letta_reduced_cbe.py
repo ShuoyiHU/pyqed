@@ -83,7 +83,7 @@ def test_cbe_uses_expanded_one_site_not_pair_diagonalization(monkeypatch):
     assert all(u.energy <= u.cbe_baseline_energy+1e-10 for u in updates if u.cbe_baseline_energy is not None)
 
 
-@pytest.mark.parametrize('solver', ['als', 'variable-projection', 'joint-ls', 'grassmann-newton'])
+@pytest.mark.parametrize('solver', ['als', 'variable-projection', 'joint-ls', 'grassmann-newton', 'joint-ls-operator'])
 def test_cbe_compressors_and_same_start_one_site_baseline(solver):
     s, h = incomplete()
     options = replace(controls(), compression=MetricCompressionOptions(solver=solver,
@@ -117,14 +117,16 @@ def test_failed_expansion_restores_and_returns_ordinary_update(monkeypatch):
 
 
 @pytest.mark.parametrize('ties', [((0,), (1,), (2,)), ((0, 2), (1, 0), (2, 1))])
-def test_complex_molecular_cbe_matches_independent_reference_and_preserves_ties(ties):
+@pytest.mark.parametrize('structured',[False,True])
+def test_complex_molecular_cbe_matches_independent_reference_and_preserves_ties(ties,structured):
     from test_letta_qchem import determinant_hamiltonian
     p = ElectronicProblem(*integrals(3), (2, 1), .2)
     h = p.su2_mpo()
     s = ReducedLatticeLETTA.random((1, 3), symmetry=p.symmetry('su2'),
         neighborhoods=ties, real=False, seed=32)
     before = _energy(s, h, stable=True)
-    result = letta_dmrg(h, state=s, options=replace(controls(), max_sweeps=3, gauge_mode='none'))
+    result = letta_dmrg(h, state=s, options=replace(controls(), max_sweeps=3, gauge_mode='none',
+                                                 simplify_fixed_ties=structured))
     vector = result.state.state_vector()
     dense = determinant_hamiltonian(p)
     reference = np.vdot(vector, dense@vector).real/np.vdot(vector, vector).real

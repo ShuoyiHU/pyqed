@@ -13,7 +13,10 @@ import numpy as np
 
 class SharedSectorProducts:
     def __init__(self, operator, ram_bytes, disk_bytes=0):
-        self.operator = operator
+        import weakref
+        # The operator owns this schedule. A strong back-reference retains
+        # its large boundary arrays until cyclic GC after a site is discarded.
+        self.operator = weakref.proxy(operator)
         self.keys = []
         self.rows = {}
         groups = defaultdict(list)

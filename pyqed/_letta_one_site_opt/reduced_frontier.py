@@ -418,6 +418,9 @@ class ReducedFrontier:
                     metadata={
                         "physical_basis": "fully_reduced_su2",
                         "letta_frontier_support": None if support is None else support.fingerprint,
+                        "letta_operator_support": None if support is None else (
+                            support.edges[site],support.bases[site],support.bases[site+1],
+                            site in (getattr(self,'left_site',-2),getattr(self,'left_site',-2)+1)),
                         "letta_frontier_left": self.left_variables(site),
                         "letta_frontier_right": self.right_variables(site),
                     },

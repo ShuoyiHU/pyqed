@@ -54,7 +54,7 @@ def test_reduced_factor_gauge_blocks_preserve_merged_state(ties):
     np.testing.assert_allclose(merge(a, invisible_b), 0., atol=1e-14)
 
 
-@pytest.mark.parametrize('solver', ['als', 'variable-projection', 'joint-ls', 'grassmann-newton'])
+@pytest.mark.parametrize('solver', ['als', 'variable-projection', 'joint-ls', 'grassmann-newton', 'joint-ls-operator'])
 def test_all_reduced_compression_solvers_use_physical_metric(solver, monkeypatch):
     s, p, le, re, a, b, retained = example()
     rng = np.random.default_rng(5)
@@ -88,7 +88,7 @@ def test_reduced_als_and_linear_budgets_are_independent():
     assert fit.diagnostics['status'] != 'converged'
 
 
-@pytest.mark.parametrize('solver', ['als', 'variable-projection', 'joint-ls', 'grassmann-newton'])
+@pytest.mark.parametrize('solver', ['als', 'variable-projection', 'joint-ls', 'grassmann-newton', 'joint-ls-operator'])
 def test_reduced_two_site_dispatches_requested_compressor(solver):
     from pyqed._letta_two_site_opt import LETTATwoSiteOptions, letta_two_site_dmrg
     from pyqed._letta_one_site_opt.reduced_solver import _energy

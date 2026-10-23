@@ -94,6 +94,36 @@ def cached_transfers(mpo, i, site):
     return cache[key]
 
 
+def chain_transfers(sites,mpo):
+    """Cache global structural pruning, retaining inputs to validate identity."""
+    import os
+    transfers=tuple(cached_transfers(mpo,i,a) for i,a in enumerate(sites))
+    enabled=os.environ.get('PYQED_OPERATOR_PATHS','1')=='1'
+    conditional=int(os.environ.get('PYQED_OPERATOR_PENDING_EDGES','0'))
+    # The coarse graph depends only on sector/channel transitions. Including
+    # pending-label fingerprints there would flush valid exterior caches when
+    # an exactly constant tie is removed from a fixed tensor view.
+    pending=(tuple(a.metadata.get('letta_frontier_support') for a in sites)
+             if conditional>0 else None)
+    key=(enabled,conditional,pending,
+         tuple(id(t) for t in transfers),tuple(sites[0].qns[0]),tuple(sites[-1].qns[2]))
+    cache=getattr(mpo,'_operator_paths_cache',None)
+    if cache is None or cache[0]!=key:
+        if enabled:
+            from .operator_paths import prune_transfers
+            filtered,report=prune_transfers(transfers,
+                _boundary(sites[0],mpo.sites[0],0),_boundary(sites[-1],mpo.sites[-1],2))
+        else:filtered,report=transfers,dict(disabled=True)
+        if conditional>0:
+            from .operator_paths import prune_conditioned_transfers
+            filtered,extra=prune_conditioned_transfers(sites,filtered,
+                _boundary(sites[0],mpo.sites[0],0),_boundary(sites[-1],mpo.sites[-1],2),max_edges=conditional)
+            report={**report,**extra}
+        cache=(key,transfers,filtered,report)
+        object.__setattr__(mpo,'_operator_paths_cache',cache)
+    return cache[2],key,cache[3]
+
+
 def _boundary(site, mpo_site, axis):
     qns = tuple(dict.fromkeys(mpo_site.qns[axis]))
     if len(qns) != 1 or _sector_irrep(qns[0]).two_j != 0:
@@ -162,12 +192,12 @@ class ReducedEnvironmentChain(MovingReducedEnvironments):
     right_log_scales: list
 
     @classmethod
-    def build(cls, sites, mpo, *, lazy=False):
+    def build(cls, sites, mpo, *, lazy=False,transfers=None):
         """Build boundaries eagerly, or defer them to exact ``ensure`` calls."""
         sites = tuple(sites)
         if len(sites) != len(mpo.sites):
             raise ValueError('one reduced MPO core is required per site')
-        transfers = tuple(cached_transfers(mpo, i, a) for i, a in enumerate(sites))
+        if transfers is None:transfers=chain_transfers(sites,mpo)[0]
         if lazy:
             n = len(sites)
             left = [_boundary(sites[0], mpo.sites[0], 0)] + [None]*n
@@ -253,7 +283,7 @@ class ReducedEnvironmentChain(MovingReducedEnvironments):
                 kernel=kernel/_sector_irrep(first.bra_key[2]).dim
                 terms.append((bra,ket,left,kernel,right))
         scale=np.exp(self.left_log_scales[site]+self.right_log_scales[site+2])
-        return SectorOperator({key:a.shape for key,a in blocks.items()},terms,scale)
+        return combine_fixed_channels(SectorOperator({key:a.shape for key,a in blocks.items()},terms,scale))
 
     def _pair_action_reference(self, site, blocks):
         """Python contraction reference for validation of compiled pair actions."""
@@ -289,11 +319,15 @@ class ReducedEnvironmentChain(MovingReducedEnvironments):
 
     def replace_sites(self, changes):
         self._prepared_pairs={}
+        previous=chain_transfers(self.sites,self.mpo)[1]
         super().replace_sites(changes)
-        transfers = list(self.transfers)
-        for i, site in changes.items():
-            transfers[i] = cached_transfers(self.mpo, i, site)
-        self.transfers = tuple(transfers)
+        self.transfers,current,_=chain_transfers(self.sites,self.mpo)
+        if current!=previous:
+            # A new sector can revive a formerly disconnected operator channel
+            # anywhere in the chain, not only next to the changed tensor.
+            self.left_valid,self.right_valid=0,len(self.sites)
+            self.left[0]=_boundary(self.sites[0],self.mpo.sites[0],0)
+            self.right[-1]=_boundary(self.sites[-1],self.mpo.sites[-1],2)
 
     def _advance_left(self, i):
         return advance_left(self.left[i], self.sites[i], self.transfers[i])

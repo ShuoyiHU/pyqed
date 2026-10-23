@@ -99,6 +99,23 @@ class _OverlapFactor:
         return overlap_factor_matrix(self.left,self.right,self.source,self.lmap,
             self.pmap,self.rmap,self.nphysical,self.size,self.weight)
 
+    def rows(self,start,stop):
+        """A row tile of the exact map, including repeated scatter indices."""
+        index=np.arange(start,stop)
+        a,rem=np.divmod(index,self.nphysical*self.right.shape[0])
+        p,b=np.divmod(rem,self.right.shape[0])
+        out=np.zeros((stop-start,self.size),dtype=np.result_type(self.left,self.right))
+        for physical in np.unique(p):
+            take=np.flatnonzero(p==physical)
+            entries=np.flatnonzero(self.pmap==physical)
+            # Bound the additional gather temporary separately from out.
+            stride=max(1,1048576//max(1,len(take)))
+            for offset in range(0,len(entries),stride):
+                selected=entries[offset:offset+stride]
+                values=self.weight*self.left[a[take,None],self.lmap[selected]]*self.right[b[take,None],self.rmap[selected]]
+                np.add.at(out,(take[:,None],self.source[selected]),values)
+        return out
+
     @property
     def stored_elements(self):
         return sum(a.size for a in (self.left,self.right,self.source,self.lmap,self.pmap,self.rmap))
@@ -142,7 +159,7 @@ class ReducedLocalCoordinates:
     route. This is an experimental local-action optimization, not a new rank
     truncation. The budget excludes original operators and packing temporaries.
     """
-    def __init__(self,sites,embedding,site, *, mpo=None, retain_outer=True, boundary_cache=None, action_only=False, structured=False):
+    def __init__(self,sites,embedding,site, *, mpo=None, retain_outer=True, boundary_cache=None, action_only=False, structured=False, boundary_seeds=None):
         self.site=site;self.embedding=embedding
         self._prepared_mpo=None
         self._source_sites=sites
@@ -160,7 +177,8 @@ class ReducedLocalCoordinates:
             self._prepared_mpo=mpo
         else:
             self.sites,self.left,self.right=_canonical_sites(sites,site,
-                keep_indices=None if retain_outer else {site-1,site,site+1})
+                keep_indices=None if retain_outer else {site-1,site,site+1},
+                boundary_seeds=boundary_seeds)
         emb=embedding
         self.dimension=emb.source_size;self.blocks=[];self.images=[]
         left_factors={};right_factors={}
@@ -205,20 +223,43 @@ class ReducedLocalCoordinates:
         settings=(tolerance,singular_tolerance,max_workspace_mb)
         if getattr(self,'tolerance',None)==settings:
             return
+        import os
+        stream_threshold=float(os.environ.get('PYQED_OVERLAP_STREAM_MB','64'))*1024**2
         if max_workspace_mb is not None:
-            # Conservative bound for dense blocks, retained SVD factors, and
-            # LAPACK work arrays; this is not a bound on total solver memory.
-            elements=sum(f.left.shape[0]*f.nphysical*f.right.shape[0]*f.size
-                         for _,f in self.blocks)
-            if 8*16*elements>max_workspace_mb*1024**2:
+            # Retained U/V storage is unavoidable. Tall streamed blocks need
+            # row and small-tree work, not a second complete factor or Gram.
+            stored=workspace=0
+            for _,f in self.blocks:
+                m,n=f.left.shape[0]*f.nphysical*f.right.shape[0],f.size
+                stored+=16*(m+n)*min(m,n)
+                streaming=(stream_threshold>=0 and m>8*n and 16*m*n>stream_threshold
+                           and 512*n*n<=max_workspace_mb*1024**2)
+                workspace=max(workspace,16*(4*m*n if not streaming else 32*n*n+m*n/2))
+            if stored+workspace>max_workspace_mb*1024**2:
                 raise MemoryError('factor SVD workspace exceeds max_workspace_mb')
-        self.tolerance=settings
+        self.tolerance=None
         self._absorbed_attempted=False
         self._absorbed_action=None
+        self._compact_attempted=False
+        self._compact_action=None
         self._block_preconditioner=None
         self._correction_maps=None
         factors=[];largest=0.
+        self.overlap_report=[]
         for sl,factor_map in self.blocks:
+            rows=factor_map.left.shape[0]*factor_map.nphysical*factor_map.right.shape[0]
+            stream_workspace=32. if max_workspace_mb is None else max_workspace_mb
+            if (stream_threshold>=0 and rows>8*factor_map.size and
+                    16*rows*factor_map.size>stream_threshold and
+                    512*factor_map.size**2<=stream_workspace*1024**2):
+                from .streamed_overlap import streamed_svd
+                roots,u,s,vh=streamed_svd((rows,factor_map.size),factor_map.rows,
+                    workspace_mb=stream_workspace)
+                inv=np.divide(1.,roots,out=np.zeros_like(roots),where=roots>0.)
+                largest=max(largest,float(s.max(initial=0.)))
+                factors.append((sl,roots,inv,s,vh,u))
+                self.overlap_report.append(dict(rows=rows,columns=factor_map.size,method='tsqr'))
+                continue
             F=factor_map.dense()
             roots=np.linalg.norm(F,axis=0)
             inv=np.divide(1.,roots,out=np.zeros_like(roots),where=roots>0.)
@@ -235,6 +276,7 @@ class ReducedLocalCoordinates:
             del normalized
             largest=max(largest,float(s.max(initial=0.)))
             factors.append((sl,roots,inv,s,vh,u))
+            self.overlap_report.append(dict(rows=rows,columns=factor_map.size,method='svd'))
         cutoff=largest*np.sqrt(max(tolerance,np.finfo(float).eps*self.dimension))
         self.maps=[];self.spectral_images=[];self.support=[];offset=0
         for i in range(len(factors)):
@@ -276,6 +318,7 @@ class ReducedLocalCoordinates:
         # bounds amplification of the transformed residual in raw coordinates.
         self.residual_amplification=max((float(np.sqrt(sum(sj*sj*np.vdot(row*roots,row*roots).real
             for sj,row in zip(s,vh)))) for _,_,inv,s,vh,roots in self.maps),default=1.)
+        self.tolerance=settings
     def expand(self,z):
         out=np.zeros(self.dimension,dtype=np.result_type(z,complex))
         for sl,small,inv,s,vh,roots in self.maps:out[sl]=inv*(vh.conj().T@(z[small]/s))
@@ -388,6 +431,21 @@ class ReducedLocalCoordinates:
 
     def apply(self,vector):
         import os
+        compact_budget=int(os.environ.get('PYQED_COMPACT_H_MB','0'))*1024**2
+        if compact_budget<0:raise ValueError('PYQED_COMPACT_H_MB must be nonnegative')
+        if compact_budget and not getattr(self,'_compact_attempted',False):
+            from .compact_hamiltonian import CompactHamiltonian,AssemblyWorkLimit
+            self._compact_attempted=True
+            try:
+                self._compact_action=CompactHamiltonian(self,budget=compact_budget,
+                    workspace=int(os.environ.get('PYQED_COMPACT_WORKSPACE_MB','64'))*1024**2,
+                    max_mac=int(os.environ.get('PYQED_COMPACT_H_MAX_MAC','2000000000')),
+                    max_equivalent_actions=float(os.environ.get('PYQED_COMPACT_MAX_ACTIONS','0')))
+                self.compact_report=self._compact_action.report
+            except (MemoryError,AssemblyWorkLimit,TypeError) as error:
+                self.compact_report=dict(selected=False,reason=str(error),**getattr(error,'report',{}))
+        if compact_budget and getattr(self,'_compact_action',None) is not None:
+            return self._compact_action(vector)
         budget=int(os.environ.get('PYQED_QR_ABSORBED_MB','0'))*1024**2
         if budget<0:raise ValueError('PYQED_QR_ABSORBED_MB must be nonnegative')
         if budget and not getattr(self,'_absorbed_attempted',False):
@@ -411,12 +469,20 @@ class ReducedLocalCoordinates:
         return self.orthogonal_adjoint(acted)
 
     def preconditioned_residual(self,residual,energy):
-        action=getattr(self,'_absorbed_action',None)
-        if action is None:return residual
         if self._block_preconditioner is None:
-            from .local_preconditioner import coordinate_blocks
-            try:self._block_preconditioner,self.preconditioner_report=coordinate_blocks(action)
-            except MemoryError:self._block_preconditioner=False
+            import os
+            from .compact_hamiltonian import CompactHamiltonian,AssemblyWorkLimit
+            try:
+                action=getattr(self,'_compact_action',None)
+                if action is None:
+                    action=CompactHamiltonian(self,diagonal=True,
+                        budget=int(os.environ.get('PYQED_PRECONDITIONER_MB','64'))*1024**2,
+                        max_mac=int(os.environ.get('PYQED_PRECONDITIONER_MAX_MAC','1000000000')))
+                self._block_preconditioner=action.preconditioner()
+                self.preconditioner_report=dict(action.report)
+            except (MemoryError,AssemblyWorkLimit,TypeError) as error:
+                self._block_preconditioner=False
+                self.preconditioner_report=dict(selected=False,reason=str(error))
         if self._block_preconditioner is False:return residual
         return self._block_preconditioner(residual,energy)
 

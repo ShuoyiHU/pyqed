@@ -24,6 +24,10 @@ def test_cached_local_updates_match_fresh_contractions(complex_values, monkeypat
     fresh_count = len(calls)
     calls.clear()
     cache = solver.StableEnergyCache(ham)
+    # A moving sweep already knows the incumbent energy. Reuse that value,
+    # while the changed candidate still needs an independent contraction.
+    cache(cached)
+    calls.clear()
     actual = solver.optimize_reduced_site(cached, ham, 1, options, energy_cache=cache)
     assert len(calls) < fresh_count
     assert actual.energy == expected.energy
@@ -45,7 +49,7 @@ def test_cbe_update_matches_without_energy_reuse(monkeypatch):
     cached, fresh = state.copy(), state.copy()
     actual = reduced_cbe_site(cached, ham, 0, 'lr', 3, controls())
     monkeypatch.setattr(solver, 'StableEnergyCache',
-        lambda h: lambda s: solver._energy(s, h, stable=True))
+        lambda h: lambda s, **kw: solver._energy(s, h, stable=True, **kw))
     expected = reduced_cbe_site(fresh, ham, 0, 'lr', 3, controls())
     for field in ('energy', 'accepted', 'cbe_baseline_selected', 'cbe_fallback',
                   'cbe_expansion_dimension'):

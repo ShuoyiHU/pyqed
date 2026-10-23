@@ -30,6 +30,20 @@ def _overlap_factors(factor, tolerance):
     return inverse, root, unitary[:, keep]
 
 
+def pair_metric_root(problem, state, tolerance):
+    """Reuse value-validated QR/SVD maps within one immutable pair problem."""
+    from .._letta_one_site_opt.frontier_contraction import state_signature
+    key = (state_signature(state), float(tolerance))
+    cache = getattr(problem, 'prepared_cache', None)
+    if cache is None:
+        return ReducedPairMetricRoot(problem, state, tolerance)
+    saved = cache.get('metric_root')
+    if saved is None or saved[0] != key:
+        saved = (key, ReducedPairMetricRoot(problem, state, tolerance))
+        cache['metric_root'] = saved
+    return saved[1]
+
+
 class ReducedPairMetricRoot:
     """Reduced QR overlap maps and SVD inverse-support coordinates.
 
@@ -55,6 +69,7 @@ class ReducedPairMetricRoot:
         else:
             sites = problem.frontier.to_mps(state, compact=True)
             self.canonical_sites, full_left, full_right = _canonical_sites(sites, i, last_center=i+1)
+        self.boundary_seeds=((i,full_left),(i+2,full_right))
         left = {q: _overlap_factors(r, tolerance) for q, r in full_left.items()}
         right = {q: _overlap_factors(r, tolerance) for q, r in full_right.items()}
         scale = 1.
@@ -220,7 +235,8 @@ def _factor_coordinates(state, problem, root, le, re, left, right, retained, sid
         current[index]=shallow_site(current[index])
         current[index].data=scatter_blocks(embedding,embedding.unpack_source(vector))
     embedding = le if side == 0 else re
-    coordinates = ReducedLocalCoordinates(current, embedding, site+side, retain_outer=False)
+    coordinates = ReducedLocalCoordinates(current, embedding, site+side, retain_outer=False,
+        boundary_seeds=root.boundary_seeds)
     coordinates.restrict(_active_source_indices(embedding, retained, 'left' if side == 0 else 'right'))
     coordinates.prepare(0., singular_tolerance=options.pinv_tolerance,
                         max_workspace_mb=options.max_workspace_mb)
@@ -295,8 +311,9 @@ def compress_reduced_pair(target, problem, state, left, right, retained, *, opti
     left[np.setdiff1d(np.arange(left.size), li)] = 0
     right[np.setdiff1d(np.arange(right.size), ri)] = 0
     merge = lambda a, b: _pair_vector_from_sources(problem.layout, le, re, a, b)
-    root = root if root is not None else ReducedPairMetricRoot(problem, state, metric_tolerance)
-    physical_target = root.physical_layout.unpack(root.physical_apply(target))
+    root = root if root is not None else pair_metric_root(problem, state, metric_tolerance)
+    target_vector = root.physical_apply(target)
+    physical_target = root.physical_layout.unpack(target_vector)
     physical_error = root.physical_layout.unpack(root.physical_apply(merge(left, right)-target))
     target_norm = sum(np.linalg.norm(v)**2 for v in physical_target.values())
     lower_bound = sum(np.linalg.norm(v)**2 for key, v in physical_target.items()
@@ -327,7 +344,7 @@ def compress_reduced_pair(target, problem, state, left, right, retained, *, opti
                                                             a,b,retained,side,options,sites=factor_sites)
         except MemoryError as error:
             return None,dict(fallback_reason=str(error))
-        rhs=root.physical_apply(target)
+        rhs=target_vector
         old = a if side == 0 else b
         # Preserve invisible source entries so the next ALS half-step can use them.
         try:
@@ -383,6 +400,9 @@ def fit_metric_factors(target, metric, left, right, *, merge, root, adjoint,
     forward_root = getattr(root, "physical_apply", root.apply)
     adjoint_root = getattr(root, "physical_adjoint", root.adjoint)
     rhs = np.asarray(forward_root(target), dtype=dtype)
+    # Some callers use a cutoff square root but a full metric for the physical
+    # stationarity guard. Cache the original metric action, not a projected one.
+    target_metric = metric@target
     reports = []
     als_info = {}
 
@@ -439,7 +459,6 @@ def fit_metric_factors(target, metric, left, right, *, merge, root, adjoint,
             if candidate <= value:
                 b, value = bb, candidate
             residual = metric@(merge(a, b)-target)
-            target_metric = metric@target
             stationarity = max(np.linalg.norm(adjoint(side, a, b, residual)) /
                 max(np.linalg.norm(adjoint(side, a, b, target_metric)), np.finfo(float).tiny)
                 for side in (0, 1))
@@ -456,7 +475,8 @@ def fit_metric_factors(target, metric, left, right, *, merge, root, adjoint,
 
     result = compress_factors(target, metric, left, right, options=options, fallback=fallback,
         metric_tolerance=metric_tolerance, layout=SimpleNamespace(merge=merge),
-        left_indices=li, right_indices=ri, gauge_blocks=groups, square_root=root)
+        left_indices=li, right_indices=ri, gauge_blocks=groups, square_root=root,
+        factor_adjoint=adjoint)
     if result.diagnostics['used_solver'] == 'als':
         result = replace(result, diagnostics={**result.diagnostics, **als_info})
     return result
