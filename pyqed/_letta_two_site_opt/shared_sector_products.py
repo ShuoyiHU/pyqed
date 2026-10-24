@@ -8,6 +8,7 @@ from contextlib import ExitStack
 import os
 import tempfile
 import time
+import threading
 import numpy as np
 
 
@@ -17,6 +18,8 @@ class SharedSectorProducts:
         # The operator owns this schedule. A strong back-reference retains
         # its large boundary arrays until cyclic GC after a site is discarded.
         self.operator = weakref.proxy(operator)
+        self._scratch = threading.local()
+        self._compiled_plans = {}
         self.keys = []
         self.rows = {}
         groups = defaultdict(list)
@@ -54,6 +57,14 @@ class SharedSectorProducts:
                 self.tasks.append((indices, start, min(a, start+tile)))
 
     def apply(self, vector, workers, pool):
+        backend = os.environ.get('PYQED_SHARED_PRODUCT_BACKEND', 'compiled')
+        if backend not in {'compiled', 'python'}:
+            raise ValueError('PYQED_SHARED_PRODUCT_BACKEND must be compiled or python')
+        if backend == 'compiled' and not self.disk_elements:
+            return self._apply_compiled(vector, workers, pool)
+        return self._apply_python(vector, workers, pool)
+
+    def _apply_python(self, vector, workers, pool):
         op = self.operator
         dtype = np.result_type(vector, op.dtype)
         result = np.zeros(op.layout.size, dtype=dtype)
@@ -106,3 +117,109 @@ class SharedSectorProducts:
             shared_ram_bytes=self.ram_elements*np.dtype(dtype).itemsize,
             shared_disk_bytes=self.disk_elements*np.dtype(dtype).itemsize,
             shared_products=len(self.ram)+len(self.disk))
+
+
+    def _compiled_plan(self, workers):
+        """Collapse operator/sector work into cost-balanced, prepared C batches."""
+        if workers in self._compiled_plans:
+            return self._compiled_plans[workers]
+        op = self.operator
+        def balance(items, cost):
+            if not items:
+                return []
+            bins = [[] for _ in range(min(workers, len(items)))]; loads = [0]*len(bins)
+            for item in sorted(items, key=cost, reverse=True):
+                i = min(range(len(bins)), key=loads.__getitem__)
+                bins[i].append(item); loads[i] += cost(item)
+            return [bucket for bucket in bins if bucket]
+        special = {}
+        for key in self.ram:
+            lo,ro,_,_,l,r,a,b,*_ = self.rows[key]
+            matrix = (op.left[lo:lo+a*l].reshape(a,l) if key[0] else
+                      op.right[ro:ro+b*r].reshape(b,r))
+            spec = (0,0,0)
+            if matrix.size:
+                nonzero = np.count_nonzero(matrix)
+                if matrix.shape[0] == matrix.shape[1] and (nonzero == 0 or
+                        (nonzero == matrix.shape[0] and np.all(matrix.diagonal() == matrix[0,0]) and matrix[0,0] != 0)):
+                    spec = (1,0,0)
+                elif nonzero==1:
+                    row,col=np.unravel_index(np.flatnonzero(matrix)[0],matrix.shape)
+                    spec = (2,int(row),int(col))
+            special[key] = spec
+        def first_cost(key):
+            _,_,_,_,l,r,a,b,*_ = self.rows[key]
+            if special[key][0]==1:return l*r
+            if special[key][0]==2:return r if key[0] else l
+            return a*l*r if key[0] else l*r*b
+        first = []
+        for keys in balance(list(self.ram), first_cost):
+            first.append((np.asarray([self.rows[k] for k in keys],dtype=np.int64).reshape(-1,12),
+                          np.asarray([self.ram[k][0] for k in keys],dtype=np.int64),
+                          np.asarray([special[k] for k in keys],dtype=np.int64).reshape(-1,3)))
+        def task_cost(task):
+            indices, start, stop = task
+            work = 0
+            for i in indices:
+                l,r,a,b = map(int,op.routes[i,4:8]); key = self.keys[i]
+                work += (stop-start)*b*(r if key[0] else l)
+                if key not in self.ram:
+                    work += a*l*r if key[0] else l*r*b
+            return work
+        second = []
+        loads = []
+        for tasks in balance(self.tasks, task_cost):
+            ids=[];tiles=[];offsets=[]
+            for indices,start,stop in tasks:
+                # Keep all contributions to a given output tile in original
+                # order; only independent tiles may execute in another order.
+                ids.extend(indices);tiles.extend([(start,stop)]*len(indices))
+                offsets.extend(self.ram.get(self.keys[i],(-1,0))[0] for i in indices)
+            ids=np.asarray(ids,dtype=np.int64)
+            second.append((np.ascontiguousarray(op.routes[ids]),
+                           np.ascontiguousarray(op.coefficients[ids]),
+                           np.asarray(tiles,dtype=np.int64).reshape(-1,2),
+                           np.asarray(offsets,dtype=np.int64)))
+            loads.append(sum(task_cost(t) for t in tasks))
+        report = dict(first_product_MAC=sum(first_cost(k) for k in self.ram),
+                      second_phase_MAC=sum(loads),second_worker_MAC=loads,
+                      first_batches=len(first),second_batches=len(second),
+                      output_tiles=len(self.tasks),special_first_products=sum(s[0]!=0 for s in special.values()))
+        self._compiled_plans[workers]=(first,second,report)
+        return first,second,report
+
+    def _apply_compiled(self, vector, workers, pool):
+        from .pair_metric import _engine
+        op=self.operator; started=time.perf_counter()
+        dtype=np.dtype(np.complex128 if op.dtype.kind=='c' or np.iscomplexobj(vector) else np.float64)
+        vector=np.ascontiguousarray(vector,dtype=dtype)
+        result=np.zeros(op.layout.size,dtype=dtype)
+        first,second,work_report=self._compiled_plan(workers)
+        # Each calling thread owns its product arena; it is refilled on every
+        # action. No vector-dependent values survive as valid cached products.
+        if getattr(self._scratch,'arena_dtype',None)!=dtype.str:
+            self._scratch.arena=np.empty(self.ram_elements,dtype=dtype)
+            self._scratch.arena_dtype=dtype.str
+        products=self._scratch.arena
+        left=np.asarray(op.left,dtype=dtype);right=np.asarray(op.right,dtype=dtype)
+        engine=_engine()
+        def workspace():
+            if getattr(self._scratch,'work_dtype',None)!=dtype.str:
+                self._scratch.work=np.empty(op.workspace_size,dtype=dtype)
+                self._scratch.work_dtype=dtype.str
+            return self._scratch.work
+        def execute(fn,tasks):
+            if len(tasks)<2 or workers==1:
+                for task in tasks:fn(task)
+            else:
+                # This barrier finishes every first product before consumers run.
+                for _ in pool.map(fn,tasks):pass
+        planned=time.perf_counter()
+        execute(lambda task:engine.sector_first_products(task[0],task[1],task[2],left,right,vector,products,workspace()),first)
+        first_done=time.perf_counter()
+        execute(lambda task:engine.sector_shared_action(task[0],np.asarray(task[1],dtype=dtype),
+                task[2],task[3],left,right,vector,products,result,workspace()),second)
+        done=time.perf_counter();result*=op.scale
+        return result,dict(work_report,backend='compiled',shared_plan_seconds=planned-started,
+            shared_first_seconds=first_done-planned,shared_second_seconds=done-first_done,
+            shared_ram_bytes=products.nbytes,shared_disk_bytes=0,shared_products=len(self.ram))

@@ -135,3 +135,87 @@ def overlap_matrix(const scalar[:, ::1] left, const scalar[:, ::1] right,
                 for b in range(right.shape[0]):
                     if right[b,r] != 0:
                         output[a,p,b,col]+=scaled*right[b,r]
+
+
+def sector_first_products(const int64_t[:, ::1] routes, const int64_t[::1] offsets,
+                          const int64_t[:, ::1] special,
+                          scalar[::1] left, scalar[::1] right, scalar[::1] vector,
+                          scalar[::1] products, scalar[::1] workspace):
+    """Produce unique first GEMMs into disjoint shared slots, once per vector."""
+    cdef Py_ssize_t i,j,k
+    cdef int64_t lo,ro,xo,target
+    cdef int l,r,a,b,ip,np_,kind,row,col
+    cdef bint first_left
+    cdef scalar factor
+    cdef char normal=78, transpose=84
+    cdef scalar one=1
+    with nogil:
+        for i in range(routes.shape[0]):
+            lo,ro,xo=routes[i,0],routes[i,1],routes[i,2]
+            l,r,a,b=routes[i,4],routes[i,5],routes[i,6],routes[i,7]
+            ip,np_=routes[i,8],routes[i,10]
+            if l==0 or r==0 or a==0 or b==0:continue
+            target=offsets[i];kind=special[i,0];row=special[i,1];col=special[i,2]
+            first_left=<double>a*l*r+<double>a*r*b<=<double>l*r*b+<double>a*l*b
+            if kind==1:
+                factor=left[lo] if first_left else right[ro]
+                for j in range(l):
+                    for k in range(r):products[target+j*r+k]=factor*vector[xo+(j*np_+ip)*r+k]
+                continue
+            if kind==2:
+                if first_left:
+                    for j in range(<int64_t>a*r):products[target+j]=0
+                    factor=left[lo+<int64_t>row*l+col]
+                    for k in range(r):products[target+<int64_t>row*r+k]=factor*vector[xo+(col*np_+ip)*r+k]
+                else:
+                    for j in range(<int64_t>l*b):products[target+j]=0
+                    factor=right[ro+<int64_t>row*r+col]
+                    for j in range(l):products[target+j*b+row]=factor*vector[xo+(j*np_+ip)*r+col]
+                continue
+            for j in range(l):
+                for k in range(r):workspace[j*r+k]=vector[xo+(j*np_+ip)*r+k]
+            target=offsets[i]
+            if <double>a*l*r+<double>a*r*b<=<double>l*r*b+<double>a*l*b:
+                multiply(normal,normal,r,a,l,one,&workspace[0],r,&left[lo],l,&products[target],r)
+            else:
+                multiply(transpose,normal,b,l,r,one,&right[ro],r,&workspace[0],r,&products[target],b)
+
+
+def sector_shared_action(const int64_t[:, ::1] routes, scalar[::1] coefficients,
+                         const int64_t[:, ::1] tiles, const int64_t[::1] offsets,
+                         scalar[::1] left, scalar[::1] right, scalar[::1] vector,
+                         scalar[::1] products, scalar[::1] result, scalar[::1] workspace):
+    """Consume prepared products; each output row tile has exactly one owner."""
+    cdef Py_ssize_t i,j,k
+    cdef int64_t lo,ro,xo,yo,offset,delta,slot
+    cdef int l,r,a,b,ip,op,np_,no,start,stop,rows
+    cdef char normal=78, transpose=84
+    cdef scalar one=1
+    cdef scalar *middle
+    cdef bint first_left
+    with nogil:
+        for i in range(routes.shape[0]):
+            lo,ro,xo,yo=routes[i,0],routes[i,1],routes[i,2],routes[i,3]
+            l,r,a,b=routes[i,4],routes[i,5],routes[i,6],routes[i,7]
+            ip,op,np_,no=routes[i,8],routes[i,9],routes[i,10],routes[i,11]
+            start,stop=tiles[i,0],tiles[i,1];rows=stop-start
+            if l==0 or r==0 or rows==0 or b==0:continue
+            first_left=<double>a*l*r+<double>a*r*b<=<double>l*r*b+<double>a*l*b
+            offset=<int64_t>l*r;slot=offsets[i]
+            if slot<0:
+                for j in range(l):
+                    for k in range(r):workspace[j*r+k]=vector[xo+(j*np_+ip)*r+k]
+                middle=&workspace[offset]
+                if first_left:
+                    multiply(normal,normal,r,a,l,one,&workspace[0],r,&left[lo],l,middle,r)
+                else:
+                    multiply(transpose,normal,b,l,r,one,&right[ro],r,&workspace[0],r,middle,b)
+            else:middle=&products[slot]
+            delta=offset+(<int64_t>a*r if first_left else <int64_t>l*b)
+            if first_left:
+                multiply(transpose,normal,b,rows,r,one,&right[ro],r,middle+<int64_t>start*r,r,&workspace[delta],b)
+            else:
+                multiply(normal,normal,b,rows,l,one,middle,b,&left[lo+<int64_t>start*l],l,&workspace[delta],b)
+            for j in range(rows):
+                for k in range(b):
+                    result[yo+((start+j)*no+op)*b+k]+=coefficients[i]*workspace[delta+j*b+k]
