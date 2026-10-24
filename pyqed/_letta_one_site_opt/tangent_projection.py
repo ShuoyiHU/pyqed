@@ -19,20 +19,31 @@ def _factor_tangent_matrix(c,root,site,side,sector=None):
   rank=small.stop-small.start
   if not rank:continue
   selected=slice(offset,offset+rank);offset+=rank
+  # Project fixed exteriors first, avoiding rank-stacked full pair tensors.
   local=u.reshape(left.shape[1],len(up),right.shape[1],rank)
-  center=np.zeros((left.shape[0],nphysical,right.shape[0],rank),dtype=complex)
-  for j,physical in enumerate(up):center[:,physical,:,:]=np.einsum('al,lrk,br->abk',left,local[:,j,:,:],right)
   for pair_key in root.support_factors:
    lk,rk=pair_key[:3],pair_key[2:]
    if (lk if side==0 else rk)!=key:continue
-   if side==0:
-    block=np.einsum('lpmz,mqr->lpqrz',center,partner[rk])
-    block*=np.sqrt(_sector_irrep(pair_key[-1]).dim/_sector_irrep(pair_key[2]).dim)
-   else:block=np.einsum('lpm,mqrz->lpqrz',partner[lk],center)
    l,r=root.support_factors[pair_key]
-   projected=np.einsum('al,apqbz,br->lpqrz',l.conj(),block,r.conj(),optimize=True)
    lo,hi=root.output_layout.offsets[pair_key]
-   out[lo:hi,selected]+=projected.reshape(hi-lo,rank)
+   target=out[lo:hi,selected].reshape(root.output_layout.shapes[pair_key]+(rank,))
+   if side==0:
+    a=l.conj().T@left
+    other=partner[rk]
+    projected=(other.reshape(-1,other.shape[-1])@r.conj()).reshape(other.shape[:2]+(r.shape[1],))
+    b=right.T@projected.reshape(projected.shape[0],-1)
+    weight=np.sqrt(_sector_irrep(pair_key[-1]).dim/_sector_irrep(pair_key[2]).dim)
+    for j,physical in enumerate(up):
+     value=np.einsum('al,lrk,rb->abk',a,local[:,j],b,optimize=True)
+     target[:,physical,:,:,:]+=weight*value.reshape(l.shape[1],other.shape[1],r.shape[1],rank)
+   else:
+    other=partner[lk]
+    projected=(l.conj().T@other.reshape(other.shape[0],-1)).reshape((l.shape[1],)+other.shape[1:])
+    a=projected.reshape(-1,projected.shape[-1])@left
+    b=right.T@r.conj()
+    for j,physical in enumerate(up):
+     value=np.einsum('al,lrk,rb->abk',a,local[:,j],b,optimize=True)
+     target[:,:,physical,:,:]+=value.reshape(l.shape[1],other.shape[1],r.shape[1],rank)
  return out
 
 

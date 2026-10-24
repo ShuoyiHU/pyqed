@@ -250,10 +250,27 @@ def contract_block(block, left=None, right=None):
     """Preserve the established QR contraction order, one raw block at a time.
 
     Sparse BLAS changes cancellation in rank-deficient QR frames enough to
-    alter capped nonlinear compression. For large compact right contractions,
-    omit empty output rows but retain the complete contracted axis and the
+    alter capped nonlinear compression. For large compact contractions,
+    omit empty output rows or columns but retain the complete contracted axis and the
     original einsum reduction. Other layouts retain the established path.
     """
+    if (isinstance(block,ScatterBlock) and right is None and left is not None
+            and block.size>=200000 and block.shape[0]>0
+            and block.dtype in (np.dtype('float64'),np.dtype('complex128'))
+            and left.dtype in (np.dtype('float64'),np.dtype('complex128'))
+            and np.all(np.isfinite(left))):
+        # Keep the complete contracted axis and its original reduction order.
+        # Only output columns with exact nonzero source support need evaluation.
+        width=block.shape[1]*block.shape[2]
+        occupied=block.values!=0
+        indices=block.indices[occupied];values=block.values[occupied]
+        columns,inverse=np.unique(indices%width,return_inverse=True)
+        if 2*len(columns)<=width:
+            selected=np.zeros((block.shape[0],1,len(columns)),dtype=block.dtype)
+            selected[:,0,:][indices//width,inverse]=values
+            out=np.zeros((left.shape[0],width),dtype=np.result_type(block.dtype,left.dtype))
+            out[:,columns]=np.einsum('kl,lpr->kpr',left,selected)[:,0,:]
+            return out.reshape((left.shape[0],)+block.shape[1:])
     if (isinstance(block,ScatterBlock) and left is None and right is not None
             and block.size>=200000 and block.shape[-1]>0
             and block.dtype in (np.dtype('float64'),np.dtype('complex128'))

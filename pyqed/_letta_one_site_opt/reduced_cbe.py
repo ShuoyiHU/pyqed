@@ -287,8 +287,7 @@ def _tangent_coordinates(scaffold, problem, embeddings, old, options):
     for side, embedding in enumerate(embeddings):
         active = _active_source_indices(embedding, old, 'left' if side == 0 else 'right')
         coordinates = ReducedLocalCoordinates(sites, embedding, problem.left_site+side, retain_outer=False,
-            boundary_seeds=root.boundary_seeds,factor_only=True)
-        coordinates.restrict(active)
+            boundary_seeds=root.boundary_seeds,factor_only=True,active_indices=active)
         coordinates.prepare(options.metric_tolerance)
         result.append(coordinates)
     return result

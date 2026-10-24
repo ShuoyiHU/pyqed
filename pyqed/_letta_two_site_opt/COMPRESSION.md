@@ -87,8 +87,9 @@ X_{k+1}=\arg\min_X\mathcal L(X,T_k),\qquad
 T_{k+1}=\arg\min_T\mathcal L(X_{k+1},T).
 $$
 
-The existing matrix-free LSMR implementation remains the default and fallback.
-Its outer budget normally comes from `cbe_refinement_max_iterations` (CBE) or
+Reduced open-chain fits first use QR/SVD coordinates for each linear solve;
+matrix-free LSMR remains the fallback when workspace or stationarity checks
+require it. The outer budget normally comes from `cbe_refinement_max_iterations` (CBE) or
 `truncation_max_iterations` (two-site). Explicit common overrides are available:
 
 ```python
@@ -101,6 +102,32 @@ The same overrides apply when a nonlinear method falls back to ALS. Without
 an override, CBE uses 40 LSMR iterations per linear subproblem; two-site uses
 its existing size-dependent 50–1000 iteration cap. ALS can stop at a stationary
 point where improving both factors together would help.
+
+### Exact reduction of factor-coordinate work
+
+Both CBE tangent selection and two-site compression select their active source
+indices **before** the overlap QR/SVD. Unused columns belonging to the expanded
+bond must not enlarge a fixed-allocation linear subproblem. The source index
+space remains the original embedding space; excluded entries are omitted from
+its factor maps. This is not a smaller retained physical variational space.
+
+The partner QR uses disconnected exact nonzero support, including removal of
+all-zero rows/columns left by a discarded sector. For an already formed factor,
+restriction uses an exact selected-column QR and absorbs its isometry into the
+outer image. These are algebraic QR reorganizations (Trefethen and Bau,
+*Numerical Linear Algebra*, SIAM 1997, DOI:10.1137/1.9780898719574), with no new
+numerical rank threshold. Existing singular-value cutoffs, ALS budgets, physical
+stationarity checks, and energy acceptance checks remain in force.
+
+Direct CBE tangent assembly also contracts the pair-support factors and fixed
+partner before forming rank-stacked outputs. It represents the same tangent
+map and adjoint without expanding a full rank-stacked canonical pair first.
+Sparse left-boundary contractions likewise evaluate only columns containing
+exact nonzero source entries. The contracted axis and the original einsum
+reduction are retained, avoiding the cancellation change of switching to a
+sparse BLAS kernel in sensitive factor fits. No small nonzero entries are
+removed. Speed gains depend on unused support and contraction shapes; they
+are not a whole-sweep convergence guarantee.
 
 ## Joint-factor least squares: `joint-ls`
 

@@ -235,9 +235,9 @@ def _factor_coordinates(state, problem, root, le, re, left, right, retained, sid
         current[index]=shallow_site(current[index])
         current[index].data=scatter_blocks(embedding,embedding.unpack_source(vector))
     embedding = le if side == 0 else re
+    active=_active_source_indices(embedding,retained,'left' if side==0 else 'right')
     coordinates = ReducedLocalCoordinates(current, embedding, site+side, retain_outer=False,
-        boundary_seeds=root.boundary_seeds,factor_only=True)
-    coordinates.restrict(_active_source_indices(embedding, retained, 'left' if side == 0 else 'right'))
+        boundary_seeds=root.boundary_seeds,factor_only=True,active_indices=active)
     coordinates.prepare(0., singular_tolerance=options.pinv_tolerance,
                         max_workspace_mb=options.max_workspace_mb)
     forward,pullback=_physical_factor_map(coordinates,root,site,side)

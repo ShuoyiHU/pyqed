@@ -159,11 +159,13 @@ class ReducedLocalCoordinates:
     route. This is an experimental local-action optimization, not a new rank
     truncation. The budget excludes original operators and packing temporaries.
     """
-    def __init__(self,sites,embedding,site, *, mpo=None, retain_outer=True, boundary_cache=None, action_only=False, structured=False, boundary_seeds=None, factor_only=False):
+    def __init__(self,sites,embedding,site, *, mpo=None, retain_outer=True, boundary_cache=None, action_only=False, structured=False, boundary_seeds=None, factor_only=False, active_indices=None):
         """With factor_only, retain canonical partners but omit the unused center.
 
         Source-to-physical maps use the exterior factors, independently of the
-        incumbent active tensor. All QR and SVD operations remain unchanged.
+        incumbent active tensor. Factor maps omit only exact disconnected zero
+        support in the partner QR. active_indices selects the source domain
+        before QR; SVD thresholds and the physical map are unchanged.
         """
         if factor_only and mpo is not None:
             raise ValueError('Factor-only coordinates do not prepare a Hamiltonian')
@@ -185,7 +187,8 @@ class ReducedLocalCoordinates:
         else:
             self.sites,self.left,self.right=_canonical_sites(sites,site,
                 keep_indices=None if retain_outer else {site-1,site,site+1},
-                boundary_seeds=boundary_seeds,transform_active=not factor_only)
+                boundary_seeds=boundary_seeds,transform_active=not factor_only,
+                structured=structured or factor_only)
             if factor_only:
                 # Factor maps need the boundaries and canonical partner, never
                 # the incumbent active tensor. Do not expose it as canonical.
@@ -195,6 +198,17 @@ class ReducedLocalCoordinates:
         left_factors={};right_factors={}
         self.factorization_counts=dict(routes=len(emb.coordinate_routes),left=0,right=0)
         for key,indices,source,ul,lmap,up,pmap,ur,rmap,nphysical in emb.coordinate_routes:
+            # Select the exact source domain before QR; discarded bond columns
+            # must not inflate the subsequent overlap SVD. No rank cutoff here.
+            if active_indices is not None:
+                take=np.flatnonzero(np.isin(indices,active_indices))
+                if not len(take):continue
+                inverse=np.full(len(indices),-1,dtype=int);inverse[take]=np.arange(len(take))
+                keep=inverse[source]>=0
+                indices,source=indices[take],inverse[source[keep]]
+                ul,lmap=np.unique(np.asarray(ul)[lmap[keep]],return_inverse=True)
+                up,pmap=np.unique(np.asarray(up)[pmap[keep]],return_inverse=True)
+                ur,rmap=np.unique(np.asarray(ur)[rmap[keep]],return_inverse=True)
             # Only geometry is cached. QR factors must follow the current state.
             left_key=(key[0],tuple(ul));right_key=(key[2],tuple(ur))
             if left_key not in left_factors:
@@ -217,15 +231,33 @@ class ReducedLocalCoordinates:
     def restrict(self,active):
         """Restrict the source domain before forming any dense SVD blocks."""
         blocks,images=[],[]
+        left_cache,right_cache={},{}
+        def compact(matrix, outer, used, cache):
+            key=(id(matrix),id(outer),tuple(used))
+            if key not in cache:
+                if len(used)==matrix.shape[1]:
+                    cache[key]=(matrix,outer)
+                else:
+                    q,r=np.linalg.qr(matrix[:,used],mode='reduced')
+                    cache[key]=(r,outer@q)
+            return cache[key]
         for (indices,factor),image in zip(self.blocks,self.images):
             take=np.flatnonzero(np.isin(indices,active))
             if not len(take):continue
             inverse=np.full(len(indices),-1,dtype=int);inverse[take]=np.arange(len(take))
             keep=inverse[factor.source]>=0
-            blocks.append((indices[take],_OverlapFactor(factor.left,factor.right,
-                inverse[factor.source[keep]],factor.lmap[keep],factor.pmap[keep],
-                factor.rmap[keep],factor.nphysical,len(take),factor.weight)))
-            images.append(image)
+            # Restriction can leave most expanded-bond columns unused. Move
+            # their selected-column QR isometries into the exterior images;
+            # the physical map is unchanged, while the SVD has fewer rows.
+            ul,lmap=np.unique(factor.lmap[keep],return_inverse=True)
+            ur,rmap=np.unique(factor.rmap[keep],return_inverse=True)
+            up,pmap=np.unique(factor.pmap[keep],return_inverse=True)
+            key,physical,left_image,right_image,nphysical=image
+            left,left_image=compact(factor.left,left_image,ul,left_cache)
+            right,right_image=compact(factor.right,right_image,ur,right_cache)
+            blocks.append((indices[take],_OverlapFactor(left,right,
+                inverse[factor.source[keep]],lmap,pmap,rmap,len(up),len(take),factor.weight)))
+            images.append((key,np.asarray(physical)[up],left_image,right_image,nphysical))
         self.blocks,self.images=blocks,images
         self.stored_elements=sum(f.stored_elements for _,f in blocks)
         self.tolerance=None
