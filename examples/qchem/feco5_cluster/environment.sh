@@ -7,6 +7,9 @@ fi
 export LETTA_PYTHON
 export PYTHONPATH="$FECO_ROOT/source:$FECO_ROOT/vendor${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+# Persist compiled chemistry MPOs across MPS D values and LETTA jobs.
+# Set PYQED_QC_MPO_CACHE="" explicitly to disable. No local library default.
+export PYQED_QC_MPO_CACHE="${PYQED_QC_MPO_CACHE-$FECO_ROOT/build/qc_mpo}"
 export PYQED_SWEEP_CACHE="$FECO_ROOT/build/sweeps"
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 NUMEXPR_NUM_THREADS=1
 export MPLCONFIGDIR="${TMPDIR:-/tmp}/feco5_mpl_${USER:-user}_${SLURM_JOB_ID:-local}_${SLURM_ARRAY_TASK_ID:-0}"

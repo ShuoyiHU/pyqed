@@ -99,6 +99,35 @@ def _layout(multiplicities):
     return offsets, cursor
 
 
+def _contract_operator_suffix(core, transfer, transform, d):
+    """Exact local contraction, using sparse magnetic channel blocks if present.
+
+    The output has W_left * d**2 * suffix_rank entries. In particular, no
+    W_left * W_right * d**2 component core is required for RankCoupledMPO.
+    This changes contraction order only, not a rank/truncation threshold.
+    """
+    from pyqed.mps.nonabelian.mpo import RankCoupledMPO
+    if isinstance(core, RankCoupledMPO):
+        if (core.phys_out_leg.total_dim != d or core.phys_in_leg.total_dim != d
+                or core.right_dim != transfer.shape[0]):
+            raise ValueError('MPO core does not match physical basis or suffix')
+        values = np.zeros((core.left_dim, d, d, transfer.shape[1]),
+                          dtype=np.result_type(core.dtype, transfer.dtype))
+        left, right = core._left_slices(), core._right_slices()
+        out, inp = core.phys_out_leg.slices(), core.phys_in_leg.slices()
+        for qo, so in out.items():
+            for qi, si in inp.items():
+                for (l, r), block in core.reduced_block(qo, qi).items():
+                    values[left[l], so, si, :] += np.einsum(
+                        'aboi,br->aoir', block, transfer[right[r]])
+        return np.einsum('aoir,oip->apr', values, transform.conj().reshape(d, d, -1))
+    w = np.asarray(core.as_dense() if hasattr(core, 'as_dense') else core)
+    if w.ndim != 4 or w.shape[2:] != (d, d) or w.shape[1] != transfer.shape[0]:
+        raise ValueError('MPO core does not match physical basis or suffix')
+    values = np.tensordot(w, transfer, axes=(1, 0))
+    return np.einsum('aoir,oip->apr', values, transform.conj().reshape(d, d, -1))
+
+
 @dataclass(frozen=True)
 class SpinTensorMPO:
     """Reduced MPO cores in an orthonormal irreducible local operator basis."""
@@ -114,23 +143,21 @@ class SpinTensorMPO:
         if not 0 < tolerance < 1:
             raise ValueError('MPO compilation tolerance must be between zero and one')
         op_basis, channels, transform = operator_basis(physical_basis)
-        cores = []
-        for w in factors:
-            w = np.asarray(w.as_dense() if hasattr(w, 'as_dense') else w)
-            if w.ndim != 4 or w.shape[2:] != (physical_basis.dense_dim,)*2:
-                raise ValueError('MPO core does not match the physical basis')
-            # The local operator transform is unitary; this is not a global
-            # variational projection. Preserve even non-Hermitian scalars.
-            cores.append(np.einsum('aboi,oip->apb', w,
-                         transform.conj().reshape(w.shape[2:]+(-1,))))
-        if not cores or cores[0].shape[0] != 1 or cores[-1].shape[-1] != 1:
+        # Contract each original core with the suffix transfer before expanding
+        # the physical operator basis. Never retain the full dense input chain.
+        cores = [None] * len(factors)
+        transfer = np.ones((1, 1))
+        for i in range(len(factors)-1, -1, -1):
+            a = _contract_operator_suffix(factors[i], transfer, transform,
+                                          physical_basis.dense_dim)
+            if i:
+                q, r = np.linalg.qr(a.reshape(a.shape[0], -1).T, mode='reduced')
+                cores[i] = q.T.reshape(q.shape[1], a.shape[1], a.shape[2])
+                transfer = r.T
+            else:
+                cores[0] = a
+        if not cores or cores[0].shape[0] != 1:
             raise ValueError('scalar MPO must have unit open boundaries')
-        # Make suffix states orthonormal before assigning spin Schmidt spaces.
-        for i in range(len(cores)-1, 0, -1):
-            a = cores[i]
-            q, r = np.linalg.qr(a.reshape(a.shape[0], -1).T, mode='reduced')
-            cores[i] = q.T.reshape(q.shape[1], a.shape[1], a.shape[2])
-            cores[i-1] = np.tensordot(cores[i-1], r.T, axes=(2, 0))
         scalar = _operator_sector(physical_basis.sectors[0], physical_basis.sectors[0], SU2Irrep(0))
         if np.linalg.norm(cores[0]) == 0:
             # Retain a scalar identity channel with zero amplitude at site 0.

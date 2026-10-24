@@ -34,7 +34,8 @@ def compact_hamiltonian(hamiltonian, basis):
     available for reference contractions.
     """
     mpo=hamiltonian.native_mpo(basis)
-    compact=ReducedMPOHamiltonian(None,mpo.component_factors(),name=hamiltonian.name,
+    from .qchem_mpo_cache import ComponentReference
+    compact=ReducedMPOHamiltonian(None,tuple(ComponentReference(mpo,i) for i in range(len(mpo.sites))),name=hamiltonian.name,
                                   contraction_backend=hamiltonian.contraction_backend)
     object.__setattr__(compact,'_native_mpo_cache',{basis:mpo})
     return compact

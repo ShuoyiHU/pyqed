@@ -174,7 +174,7 @@ def test_growth_padding_preserves_incumbent_and_rejection_restores_bond(monkeypa
     trial = rs._optimize_allocated_reduced_pair(state.copy(), p.su2_mpo(), 1, 'lr', 5,
         LETTATwoSiteOptions(split_method='conditional-svd'))
     monkeypatch.setattr(rs, '_optimize_allocated_reduced_pair',
-                        lambda *a: replace(trial, accepted=False))
+                        lambda *a, **kwargs: replace(trial, accepted=False))
     baseline = state.copy()
     from pyqed._letta_one_site_opt.reduced_solver import optimize_reduced_site
     from pyqed._letta_one_site_opt.reduced_updates import one_site_options

@@ -866,37 +866,38 @@ class RankCoupledMPO:
                     if hasattr(term.reduced_operator, "base_operator")
                     else term.reduced_operator.rank_irrep
                 )
-            for i, left_irrep in enumerate(self.left_channel_irreps):
+            # Dense coefficient arrays contain mostly structural zeros. Only
+            # occupied virtual transitions require magnetic recoupling.
+            for i, j in zip(*np.nonzero(coeffs)):
+                left_irrep = self.left_channel_irreps[i]
+                right_irrep = self.right_channel_irreps[j]
                 left_ms = ordered_two_m_values(left_irrep)
-                for j, right_irrep in enumerate(self.right_channel_irreps):
-                    coeff = coeffs[i, j]
-                    if coeff == 0:
-                        continue
-                    if term.use_cg_coupling and right_irrep not in left_or_right_fusion(left_irrep, rank_irrep):
-                        continue
-                    right_ms = ordered_two_m_values(right_irrep)
-                    for row, two_m_left in enumerate(left_ms):
-                        for col, two_m_right in enumerate(right_ms):
-                            cg_coeff = 1.0
-                            if term.use_cg_coupling:
-                                component = two_m_right - two_m_left
-                                cg_coeff = clebsch_gordan(
-                                    left_irrep,
-                                    rank_irrep,
-                                    right_irrep,
-                                    two_m_left,
-                                    component,
-                                    two_m_right,
-                                )
-                                if not cg_coeff:
-                                    continue
-                            elif left_irrep.two_j == 0 and right_irrep.two_j != 0:
-                                component = two_m_right
-                            elif right_irrep.two_j == 0 and left_irrep.two_j != 0:
-                                component = two_m_left
-                            else:
-                                component = two_m_right - two_m_left
-                            actions.append((term.reduced_operator, i, j, row, col, int(component), coeff * cg_coeff))
+                coeff = coeffs[i, j]
+                if term.use_cg_coupling and right_irrep not in left_or_right_fusion(left_irrep, rank_irrep):
+                    continue
+                right_ms = ordered_two_m_values(right_irrep)
+                for row, two_m_left in enumerate(left_ms):
+                    for col, two_m_right in enumerate(right_ms):
+                        cg_coeff = 1.0
+                        if term.use_cg_coupling:
+                            component = two_m_right - two_m_left
+                            cg_coeff = clebsch_gordan(
+                                left_irrep,
+                                rank_irrep,
+                                right_irrep,
+                                two_m_left,
+                                component,
+                                two_m_right,
+                            )
+                            if not cg_coeff:
+                                continue
+                        elif left_irrep.two_j == 0 and right_irrep.two_j != 0:
+                            component = two_m_right
+                        elif right_irrep.two_j == 0 and left_irrep.two_j != 0:
+                            component = two_m_left
+                        else:
+                            component = two_m_right - two_m_left
+                        actions.append((term.reduced_operator, i, j, row, col, int(component), coeff * cg_coeff))
         cached = tuple(actions)
         object.__setattr__(self, "_reduced_action_cache", cached)
         return cached

@@ -130,7 +130,24 @@ class ElectronicProblem:
                 target_charge=na+nb, target_two_j=two_s, name='U(1) N x SU(2)')
         raise ValueError('symmetry must be n, n_sz, nalpha_nbeta, or su2')
 
-    def su2_mpo(self, *, cutoff=0.):
+    def su2_mpo(self, *, cutoff=0., cache_dir=None):
+        """Build an SU(2) chemistry MPO, optionally reusing a compiled disk cache.
+
+        ``cache_dir=None`` reads PYQED_QC_MPO_CACHE (unset means no disk I/O).
+        Pass False to disable caching explicitly. Cache directories must be
+        trusted: entries contain Python pickles. Cluster launchers can share
+        one directory across bond dimensions and LETTA restarts.
+        """
+        import os
+        if not np.isfinite(cutoff) or cutoff < 0:
+            raise ValueError('cutoff must be finite and nonnegative')
+        directory = os.environ.get('PYQED_QC_MPO_CACHE') if cache_dir is None else cache_dir
+        if directory:
+            from .qchem_mpo_cache import cached_hamiltonian
+            return cached_hamiltonian(self, cutoff, directory)
+        return self._build_su2_mpo(cutoff=cutoff)
+
+    def _build_su2_mpo(self, *, cutoff=0.):
         """Chemistry MPO for exact reduced-spin LETTA states.
 
         Onsite Hubbard interactions use explicit sparse reduced channels.

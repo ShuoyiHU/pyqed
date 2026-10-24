@@ -131,3 +131,55 @@ estimate approaching O(n^7). Calibrating against CAS12 gives an estimated
 measured completed-job peak memory. These ranges are extrapolations, not bounds.
 The requests add roughly 40–60% headroom to the conservative estimates. No
 operator terms, sectors, bond dimensions, or local solver tolerances are removed.
+
+### Compiled chemistry Hamiltonian reuse
+
+`environment.sh` enables `PYQED_QC_MPO_CACHE=$FECO_ROOT/build/qc_mpo` by
+default. Jobs using the same integrals, orbital order, electron sector, scalar
+offset, cutoff and implementation share one compiled SU(2) Hamiltonian across
+MPS bond dimensions and LETTA restarts. The campaign already passes zero core
+offset to both solvers, adding it once in the reported energies.
+
+The Python library creates **no disk cache by default locally**. Opt in with
+`problem.su2_mpo(cache_dir='/path/to/trusted/cache')` or set the environment
+variable. Pass `cache_dir=False` to override the environment; set the variable
+to an empty string to disable it in the cluster launcher. Cache entries are
+trusted Python pickles, written atomically under a per-key `flock`; waiting
+jobs load the completed file instead of duplicating construction. Source and
+integral hashes prevent reuse after relevant Python implementation or input
+changes. Keep the cache on a shared filesystem supporting `flock`. Obsolete
+entries may be deleted when no jobs are using that cache directory.
+
+Compilation contracts sparse magnetic channel blocks with the right suffix
+before expanding physical operator coordinates. It keeps the same QR/SVD
+thresholds and full intended operator. Reference component cores are expanded
+lazily; reduced sweeps use the compiled representation directly. This path
+also operates locally, with no disk storage required.
+
+A six-orbital synthetic test (seed 431, three symmetric integral factors,
+float64, one BLAS thread, macOS, Python 3.13) measured:
+
+| Stage | Before | Streamed sparse contraction |
+| --- | ---: | ---: |
+| Builder | 2.281 s | 2.298 s |
+| Native compilation | 0.555 s | 0.213 s |
+| Peak process RSS | 719 MB | 564 MB |
+| Stored native coefficients | 5372 | 5372 |
+
+The same test with disk caching took 2.529 s on the cold call and 0.0045 s
+on a fresh-process warm call, with a 66,238-byte cache file and 252 MB warm
+peak process RSS (including Python imports).
+
+These are single small-case measurements, not predictions for CAS16. Original
+channel dimensions were 1, 57, 131, 277, 505, 705, 1. The builder still allocates
+some dense virtual coefficient arrays; this change does not eliminate its
+first-build peak memory. Cache hits skip both the builder and compilation,
+but do not cache the C++ solver's moving environments or local solves.
+
+Reproduce preparation measurements with `examples/qchem/benchmark_mpo_preparation.py
+--orbitals 6` under `PYTHONPATH=.` and single-thread BLAS settings. Add
+`--cache-dir /path/to/cache` and run twice in separate processes to measure
+cold and warm preparation. `su2_mpo_seconds` includes compilation on a cache
+miss; `native_mpo_seconds` is then a memory lookup. No solver time is included.
+Existing deployed, signature-checked campaigns must use a new source bundle
+to adopt these changes; do not overwrite a bundle serving running jobs.
