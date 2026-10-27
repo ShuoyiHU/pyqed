@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 import numpy as np
-from scipy.linalg import svd
+from scipy.linalg import qr as scipy_qr, svd
 
 from pyqed.mps.su2 import SU2Irrep
 from pyqed.mps.symmetry import Sector
@@ -151,7 +151,11 @@ class SpinTensorMPO:
             a = _contract_operator_suffix(factors[i], transfer, transform,
                                           physical_basis.dense_dim)
             if i:
-                q, r = np.linalg.qr(a.reshape(a.shape[0], -1).T, mode='reduced')
+                # This contraction temporary is dead after QR. LAPACK may
+                # overwrite it rather than retaining NumPy's extra full-size
+                # working copies; the full economy rank is unchanged.
+                q, r = scipy_qr(a.reshape(a.shape[0], -1).T, mode='economic',
+                          overwrite_a=True, check_finite=False)
                 cores[i] = q.T.reshape(q.shape[1], a.shape[1], a.shape[2])
                 transfer = r.T
             else:

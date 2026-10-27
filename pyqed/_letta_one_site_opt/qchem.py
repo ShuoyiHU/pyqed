@@ -186,6 +186,16 @@ class ElectronicProblem:
                                            name='Sparse SU(2) Hubbard Hamiltonian')
             object.__setattr__(result, '_native_mpo_cache', {direct.physical_basis: direct})
             return result
+        storage = os.environ.get('PYQED_QC_SYMBOLIC_STORAGE', 'sparse')
+        if storage not in {'sparse', 'dense'}:raise ValueError('Invalid QC symbolic storage')
+        sparse = storage == 'sparse'
+        layout = os.environ.get('PYQED_QC_AUTOMPO_LAYOUT', 'balanced')
+        if layout not in {'prefix', 'balanced'}:
+            raise ValueError('QC AutoMPO layout must be prefix or balanced')
+        balanced = layout == 'balanced'
+        if sparse:
+            from pyqed.mps.nonabelian.sparse_symbolic_mpo import sum_sparse_chains
+            sum_mpo_chains = sum_sparse_chains
         leg = physical_leg_from_reduced_basis(ReducedPhysicalBasis.spatial_orbital(),
                                              fully_reduced=False)
         if self.norb == 1:
@@ -202,8 +212,8 @@ class ElectronicProblem:
             auto = AutoMPO([leg]*self.norb)
             add_spatial_one_body_terms(auto, self.h1, cutoff=cutoff)
             eri_factors = SpatialSpinFreeERIBuilder(
-                [leg]*self.norb, self.eri, cutoff=cutoff).build()
-            factors = sum_mpo_chains(auto.build(), eri_factors, phys_leg=leg)
+                [leg]*self.norb, self.eri, cutoff=cutoff).build(sparse=sparse, balanced=balanced)
+            factors = sum_mpo_chains(auto.build(sparse=sparse, balanced=balanced), eri_factors, phys_leg=leg)
             if self.ecore or not factors:
                 scalar = [MPO.from_site_operator(identity_operator(leg)) for _ in range(self.norb)]
                 local = self.ecore*np.eye(4)

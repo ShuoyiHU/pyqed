@@ -717,28 +717,56 @@ def build_spatial_one_body_reduced_mpo(sites_or_legs, h1e, *, cutoff=1.0e-12):
     return autompo.build()
 
 
-def _canonical_spatial_jw_site_operators(operators, sites, *, phys_leg, dtype, cutoff):
+def _canonical_spatial_jw_site_operators(operators, sites, *, phys_leg, dtype, cutoff, cache=None):
     """
     Convert a global spatial-fermion string into ordered local site operators.
+
+    A supplied cache is private to one build with read-only input operators.
+    It shares only the fixed local algebra, never integral coefficients.
     """
-    parity = spatial_parity(dtype=dtype)
-    identity = np.eye(phys_leg.total_dim, dtype=dtype)
+    # Materialize each tiny local matrix once.  A fermion string repeats the
+    # same parity-only products at many sites; rebuilding their sector blocks
+    # and converting them back to dense form is unnecessary.
+    if cache is None:
+        cache = {}
+    configuration = (phys_leg, np.dtype(dtype).str, float(cutoff))
+    if 'configuration' not in cache:
+        cache.update(configuration=configuration,
+                     parity=spatial_parity(dtype=dtype).as_dense(),
+                     identity=np.eye(phys_leg.total_dim, dtype=dtype),
+                     dense_operators={}, products={})
+    elif cache['configuration'] != configuration:
+        raise ValueError('Local fermion cache configuration changed')
+    parity, identity = cache['parity'], cache['identity']
+    dense_operators = []
+    for operator in operators:
+        key = id(operator)
+        if key not in cache['dense_operators']:
+            # Strong references prevent object-ID reuse during this build.
+            cache['dense_operators'][key] = (operator, operator.as_dense())
+        dense_operators.append(cache['dense_operators'][key][1])
+    products = cache['products'].setdefault(tuple(id(op) for op in operators), {})
     grouped = {}
-    for operator, site in zip(operators, sites):
+    for index, site in enumerate(sites):
         site = int(site)
         for parity_site in range(site):
-            grouped.setdefault(parity_site, []).append(parity)
-        grouped.setdefault(site, []).append(operator)
+            grouped.setdefault(parity_site, []).append(-1)
+        grouped.setdefault(site, []).append(index)
 
     site_operators = []
     for site in sorted(grouped):
-        local_operator = compose_site_operators(*grouped[site])
-        dense = local_operator.as_dense()
-        if np.linalg.norm(dense.reshape(-1)) <= cutoff:
-            return ()
-        if np.allclose(dense, identity, atol=cutoff, rtol=0.0):
-            continue
-        site_operators.append((site, local_operator))
+        pattern = tuple(grouped[site])
+        if pattern not in products:
+            dense = identity.copy()
+            for index in pattern:
+                dense = dense @ (parity if index == -1 else dense_operators[index])
+            if np.linalg.norm(dense.reshape(-1)) <= cutoff:
+                return ()
+            products[pattern] = None if np.allclose(dense, identity, atol=cutoff, rtol=0.0) else SiteOperator.from_dense(
+                dense, phys_out_leg=phys_leg, phys_in_leg=phys_leg)
+        local_operator = products[pattern]
+        if local_operator is not None:
+            site_operators.append((site, local_operator))
     return tuple(site_operators)
 
 
@@ -1188,19 +1216,33 @@ def _site_operator_signature(site_operator, *, cutoff):
     return dense.shape, dense.tobytes()
 
 
-def _scalar_product_key(site_ops, *, cutoff):
+def _scalar_product_key(site_ops, *, cutoff, cache=None):
+    if cache is not None:
+        signatures = cache.setdefault('scalar_signatures', {})
+        result = []
+        for site, operator in site_ops:
+            key = id(operator)
+            if key not in signatures:
+                signatures[key] = (operator, _site_operator_signature(operator, cutoff=cutoff))
+            result.append((int(site), signatures[key][1]))
+        return tuple(result)
     return tuple(
         (int(site), _site_operator_signature(operator, cutoff=cutoff))
         for site, operator in site_ops
     )
 
 
-def _accumulate_spinfree_component_product_terms(pending_scalar, p, q, r, s, coeff, *, dtype, cutoff):
-    create_destroy = (
-        (spatial_create_up(dtype=dtype), spatial_annihilate_up(dtype=dtype)),
-        (spatial_create_down(dtype=dtype), spatial_annihilate_down(dtype=dtype)),
-    )
-    canonical_leg = physical_leg_from_spatial_orbital()
+def _accumulate_spinfree_component_product_terms(pending_scalar, p, q, r, s, coeff, *, dtype, cutoff, cache=None):
+    if cache is None:
+        cache = {}
+    if 'spin_operators' not in cache:
+        cache['spin_operators'] = (
+            (spatial_create_up(dtype=dtype), spatial_annihilate_up(dtype=dtype)),
+            (spatial_create_down(dtype=dtype), spatial_annihilate_down(dtype=dtype)),
+        )
+        cache['physical_leg'] = physical_leg_from_spatial_orbital()
+    create_destroy = cache['spin_operators']
+    canonical_leg = cache['physical_leg']
     count = 0
     for left_create, left_destroy in create_destroy:
         for right_create, right_destroy in create_destroy:
@@ -1209,11 +1251,11 @@ def _accumulate_spinfree_component_product_terms(pending_scalar, p, q, r, s, coe
                 (p, q, r, s),
                 phys_leg=canonical_leg,
                 dtype=dtype,
-                cutoff=cutoff,
+                cutoff=cutoff, cache=cache,
             )
             if not site_ops:
                 continue
-            key = _scalar_product_key(site_ops, cutoff=cutoff)
+            key = _scalar_product_key(site_ops, cutoff=cutoff, cache=cache)
             total, stored_site_ops = pending_scalar.get(key, (0.0, site_ops))
             total = total + coeff
             if abs(total) <= cutoff:
@@ -1567,6 +1609,7 @@ class SpatialSpinFreeERIBuilder:
         one_body_correction = np.zeros((self.nsites, self.nsites), dtype=dtype)
         pending_we = {}
         pending_scalar = {}
+        component_cache = {}
         for p, q, r, s in np.argwhere(np.abs(values) > cutoff):
             val = values[p, q, r, s]
             fully_reduced_diagonal_density = (
@@ -1680,7 +1723,7 @@ class SpatialSpinFreeERIBuilder:
                     s,
                     val,
                     dtype=dtype,
-                    cutoff=cutoff,
+                    cutoff=cutoff, cache=component_cache,
                 )
                 scalar_product_terms += added
 
@@ -1726,7 +1769,7 @@ class SpatialSpinFreeERIBuilder:
         }
         return info if return_info else info["total_terms"]
 
-    def build(self, *, return_info=False):
+    def build(self, *, return_info=False, sparse=False, balanced=False):
         """
         Build the reduced MPO chain for the ERI contribution only.
 
@@ -1735,7 +1778,7 @@ class SpatialSpinFreeERIBuilder:
         """
         autompo = AutoMPO(self.site_legs)
         info = self.add_to(autompo, return_info=True)
-        factors = autompo.build() if info["total_terms"] else []
+        factors = autompo.build(sparse=sparse, balanced=balanced) if info["total_terms"] else []
         if return_info:
             return factors, info
         return factors

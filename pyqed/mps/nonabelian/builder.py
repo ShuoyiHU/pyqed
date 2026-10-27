@@ -584,7 +584,7 @@ class AutoMPO:
             Sequence of ``(site, operator)`` pairs. Sites may be supplied in any
             order; they are stored in ascending site order.
         coeff
-            Scalar coefficient attached to the first operator insertion channel.
+            Scalar multiplying this product; ``build`` selects its path placement.
         """
         if not site_operators:
             raise ValueError("add_term requires at least one (site, operator) pair.")
@@ -810,7 +810,43 @@ class AutoMPO:
         )
         return self
 
-    def build(self):
+    def build(self, *, sparse=False, balanced=False):
+        """Build exact paths, optionally sharing both prefixes and suffixes.
+
+        ``balanced`` moves each coefficient near the middle of its nontrivial
+        local operators. Diagonal unit-magnitude strings (identity/parity)
+        do not count toward that placement heuristic; they remain in full.
+        ``sparse`` controls storage only, independently of the path layout.
+        """
+        # The sparse graph uses exact interned operator labels. Hashing a full
+        # physical-leg/operator signature at every path prefix is redundant.
+        # Keep strong references: object IDs cannot be recycled during a build.
+        # Operators are read-only during this build. Keep strong references
+        # alongside cached charges so object IDs cannot be recycled.
+        charge_delta = globals()['_operator_charge_delta']
+        charge_cache = {}
+        def _operator_charge_delta(operator):
+            key = id(operator)
+            if key not in charge_cache:
+                charge_cache[key] = (operator, charge_delta(operator))
+            return charge_cache[key][1]
+
+        _site_operator_signature = globals()['_site_operator_signature']
+        _reduced_operator_signature = globals()['_reduced_operator_signature']
+        if sparse:
+            interned = {}
+            operator_signatures = {}
+            def cached_signature(operator, kind, make_signature):
+                key = (kind, id(operator))
+                if key not in operator_signatures:
+                    signature = make_signature(operator)
+                    index = interned.setdefault(signature, len(interned))
+                    operator_signatures[key] = (operator, index)
+                return operator_signatures[key][1]
+            site_signature = _site_operator_signature
+            reduced_signature = _reduced_operator_signature
+            _site_operator_signature = lambda op: cached_signature(op, 'site', site_signature)
+            _reduced_operator_signature = lambda op: cached_signature(op, 'reduced', reduced_signature)
         if not self._terms:
             return []
         dtype = np.result_type(
@@ -925,8 +961,70 @@ class AutoMPO:
             old_coeff, stored_operator = reduced_transitions[int(site)].get(key, (0.0, operator))
             reduced_transitions[int(site)][key] = (old_coeff + coeff, stored_operator)
 
+        # Exact prefix/suffix representation: each term's scalar coefficient
+        # occurs once on the bridge. Unit-weight shared edges are inserted
+        # once, while bridge weights accumulate. No operator rank is dropped.
+        balanced_paths = balanced
+        balanced_neutral = {}
+        balanced_identities = tuple(identity_operator(leg, dtype=dtype) for leg in self.site_legs) if balanced_paths else ()
+        def insert_balanced_path(steps, coeff, *, family=None):
+            family_key = ((family,) if isinstance(family, str) else
+                          tuple(str(item) for item in (family or ()) if item is not None))
+            by_site = {int(step['site']): step for step in steps}
+            complete = []
+            labels = []
+            irrep, charge = scalar, 0
+            boundaries = [(irrep, charge)]
+            meaningful = []
+            for site, leg in enumerate(self.site_legs):
+                step = by_site.get(site)
+                if step is None:
+                    step = dict(site=site, kind='dense', operator=balanced_identities[site],
+                                next_irrep=irrep, charge_delta=0)
+                complete.append(step)
+                if step['kind'] == 'dense':
+                    signature = _site_operator_signature(step['operator'])
+                    if signature not in balanced_neutral:
+                        matrix = step['operator'].as_dense()
+                        diagonal = np.diag(matrix)
+                        balanced_neutral[signature] = (
+                            np.array_equal(matrix, np.diag(diagonal))
+                            and np.all(np.abs(diagonal) == 1))
+                    active = not balanced_neutral[signature]
+                else:
+                    signature = (_reduced_operator_signature(step['operator']),
+                                 bool(step.get('use_cg_coupling', False)))
+                    active = True
+                if active:
+                    meaningful.append(site)
+                irrep = step['next_irrep']
+                charge += int(step['charge_delta'])
+                boundaries.append((irrep, charge))
+                labels.append((site, step['kind'], signature, irrep, charge))
+            anchor = meaningful[len(meaningful)//2] if meaningful else self.nsites//2
+            states = [start_state]
+            for cut in range(1, self.nsites):
+                if cut <= anchor:
+                    key = ('balanced-prefix', family_key, tuple(labels[:cut]))
+                else:
+                    key = ('balanced-suffix', family_key, boundaries[cut], tuple(labels[cut:]))
+                states.append(get_prefix_state(key, *boundaries[cut]))
+            states.append(final_state)
+            for site, step in enumerate(complete):
+                weight = coeff if site == anchor else 1.0
+                if step['kind'] == 'dense':
+                    add_dense_transition(site, states[site], states[site+1], step['operator'],
+                                         weight, accumulate=site == anchor, family=family)
+                else:
+                    add_reduced_transition(site, states[site], states[site+1], step['operator'],
+                        weight, use_cg_coupling=step.get('use_cg_coupling', False),
+                        accumulate=site == anchor, family=family)
+
         def insert_path(steps, coeff, *, family=None):
             if not steps:
+                return
+            if balanced_paths:
+                insert_balanced_path(steps, coeff, family=family)
                 return
             prefix = []
             # Transitions with different family metadata are distinct additive
@@ -1274,12 +1372,22 @@ class AutoMPO:
             )
             for state in range(nstates)
         }
+        # Intern suffix equivalence classes at each cut. Nested signatures
+        # otherwise re-hash/repr the entire remaining graph for every prefix.
+        # Exact tuples remain the interning keys: no probabilistic digest or
+        # tolerance is used, and downstream class ordering is unchanged.
+        terminal_classes = {}
+        suffix_signatures[self.nsites] = {
+            state: terminal_classes.setdefault(signature, len(terminal_classes))
+            for state, signature in suffix_signatures[self.nsites].items()
+        }
         for site in range(self.nsites - 1, -1, -1):
             next_signatures = suffix_signatures[site + 1]
             by_left = {}
             for record in transition_records[site]:
                 by_left.setdefault(record["left"], []).append(record)
             signatures = {}
+            suffix_classes = {}
             for state in range(nstates):
                 outgoing = tuple(
                     sorted(
@@ -1293,7 +1401,8 @@ class AutoMPO:
                         key=repr,
                         )
                 )
-                signatures[state] = (state_irreps[state], state_charges[state], outgoing)
+                signature = (state_irreps[state], state_charges[state], outgoing)
+                signatures[state] = suffix_classes.setdefault(signature, len(suffix_classes))
             suffix_signatures[site] = signatures
 
         class_maps = []
@@ -1329,6 +1438,21 @@ class AutoMPO:
             right_map = class_maps[site + 1]
             d_left = len(class_irreps[site])
             d_right = len(class_irreps[site + 1])
+            if sparse:
+                from .sparse_symbolic_mpo import SparseSymbolicMPO
+                records=[];seen=set()
+                for record in transition_records[site]:
+                    if record['left'] not in left_map or record['right'] not in right_map:continue
+                    left=left_map[record['left']];right=right_map[record['right']]
+                    key=(left,right,record['label'])
+                    if key in seen:continue
+                    seen.add(key)
+                    records.append((record['kind'],left,right,record['coeff'],record['operator'],record.get('use_cg_coupling',False)))
+                mpo.append(SparseSymbolicMPO(phys_leg=phys_leg,
+                    left_irreps=class_irreps[site],right_irreps=class_irreps[site+1],
+                    left_charges=class_charges[site],right_charges=class_charges[site+1],
+                    transitions=records,dtype=dtype))
+                continue
             visible_blocks = {}
             reduced_blocks = {}
             seen = set()

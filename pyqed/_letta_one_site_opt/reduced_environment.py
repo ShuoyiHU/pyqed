@@ -67,8 +67,10 @@ def compile_transfers(site, mpo_site, channels):
                 if abs(coefficient) < 1e-14:
                     continue
                 key = (bra_key, ket_key, (wl, lb, lk), (wr, rb, rk))
-                kernel = kernels.setdefault(key, np.zeros(
-                    (w.shape[0], w.shape[2], bra.shape[1], ket.shape[1]), dtype=w.dtype))
+                if key not in kernels:
+                    kernels[key] = np.zeros(
+                        (w.shape[0], w.shape[2], bra.shape[1], ket.shape[1]), dtype=w.dtype)
+                kernel = kernels[key]
                 for channel in local_channels:
                     kernel[:, :, channel.output_copy, channel.input_copy] += coefficient*w[:, channel.copy, :]
     return tuple(ReducedTransfer(*key, value) for key, value in kernels.items()

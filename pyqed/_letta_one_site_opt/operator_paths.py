@@ -72,35 +72,58 @@ def prune_conditioned_transfers(sites,transfers,left_keys,right_keys,*,max_edges
     return tuple(output),dict(conditional_edges=count,conditional_routes_removed=int(before-after),conditional_fallback=None)
 
 
-def prune_transfers(transfers,left_keys,right_keys):
-    reachable=[{(key,0) for key in left_keys}]
-    edges=[]
+def prune_transfers(transfers, left_keys, right_keys):
+    """Exact channel reachability without per-route Python graph objects."""
+    reachable = {key: np.ones(1, dtype=bool) for key in left_keys}
+    candidates = []
+    before = 0
     for local in transfers:
-        step=[];following=set()
-        for i,t in enumerate(local):
-            for x,y in np.argwhere(np.any(t.kernel!=0,axis=(2,3))):
-                a=(t.left_key,int(x));b=(t.right_key,int(y))
-                if a in reachable[-1]:
-                    step.append((i,int(x),int(y),a,b));following.add(b)
-        edges.append(step);reachable.append(following)
-    reachable[-1].intersection_update({(key,0) for key in right_keys})
-    keep=[None]*len(edges)
-    for i in range(len(edges)-1,-1,-1):
-        keep[i]=[e for e in edges[i] if e[-1] in reachable[i+1]]
-        reachable[i]={e[-2] for e in keep[i]}
-    output=[];before=after=0
-    for local,selected in zip(transfers,keep):
-        masks={}
-        for i,x,y,*_ in selected:
-            masks.setdefault(i,np.zeros(local[i].kernel.shape[:2],dtype=bool))[x,y]=True
-        row=[]
-        for i,t in enumerate(local):
-            live=np.any(t.kernel!=0,axis=(2,3));before+=int(live.sum())
-            mask=masks.get(i)
-            if mask is None:continue
-            after+=int(mask.sum())
-            row.append(t if np.array_equal(mask,live) else
-                       replace(t,kernel=t.kernel*mask[:,:,None,None]))
-        output.append(tuple(row))
-    return tuple(output),dict(channel_routes_before=before,channel_routes_after=after,
-                              removed_channel_routes=before-after)
+        row = []
+        following = {}
+        for transfer in local:
+            live = np.any(transfer.kernel != 0, axis=(2, 3))
+            before += int(live.sum())
+            left = reachable.get(transfer.left_key)
+            if left is None:
+                continue
+            if len(left) != live.shape[0]:
+                left = np.pad(left, (0, live.shape[0]-len(left)))
+            mask = live & left[:, None]
+            right = np.any(mask, axis=0)
+            if not np.any(right):
+                continue
+            row.append((transfer, live, mask))
+            if transfer.right_key not in following:
+                following[transfer.right_key] = right
+            else:
+                following[transfer.right_key] |= right
+        candidates.append(row)
+        reachable = following
+    productive = {key: np.ones(1, dtype=bool) for key in right_keys}
+    output = [None] * len(candidates)
+    after = 0
+    for i in range(len(candidates)-1, -1, -1):
+        row = []
+        previous = {}
+        for transfer, live, mask in candidates[i]:
+            right = productive.get(transfer.right_key)
+            if right is None:
+                continue
+            if len(right) != mask.shape[1]:
+                right = np.pad(right, (0, mask.shape[1]-len(right)))
+            keep = mask & right[None, :]
+            if not np.any(keep):
+                continue
+            after += int(keep.sum())
+            left = np.any(keep, axis=1)
+            if transfer.left_key not in previous:
+                previous[transfer.left_key] = left
+            else:
+                previous[transfer.left_key] |= left
+            row.append(transfer if np.array_equal(keep, live) else
+                       replace(transfer, kernel=transfer.kernel*keep[:, :, None, None]))
+        output[i] = tuple(row)
+        productive = previous
+    return tuple(output), dict(channel_routes_before=before,
+                               channel_routes_after=after,
+                               removed_channel_routes=before-after)

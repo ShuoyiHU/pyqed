@@ -25675,6 +25675,10 @@ bool MovingEnvironment::try_activate_reduced_contextual_factor_routes(
     const bool specialize_scales = specialize_pivot_scale_refresh();
     const double started = wall_seconds();
     auto fail = [this, started](std::int32_t reason) {
+        // A failed next-bond refresh still owns the previous active schedule.
+        // Save its arenas before clearing them, or its cached plan becomes
+        // empty and forces another rebuild on the next visit.
+        stash_reduced_contextual_execution_schedule();
         reduced_contextual_routes_ = false;
         reduced_contextual_left_revision_source_ = nullptr;
         reduced_contextual_right_revision_source_ = nullptr;
