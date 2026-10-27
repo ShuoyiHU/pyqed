@@ -26175,6 +26175,77 @@ bool MovingEnvironment::try_activate_reduced_contextual_factor_routes(
             return &result;
         }
 
+        // A Gram matrix squares the pivot condition number. If its solve
+        // fails, try the same pivot span with reorthogonalized QR instead
+        // of rebuilding the entire operator route graph. Certify every
+        // reconstructed component before allowing reuse.
+        const auto qr_refresh = [&]() -> ContextualBoundaryDecomposition* {
+            std::vector<double> orthogonal(rank * slice_size, 0.0);
+            std::vector<double> triangular(rank * rank, 0.0);
+            std::vector<double> residual(slice_size);
+            double norm_squared = 0.0;
+            for (std::size_t component = 0; component < components; ++component)
+                for (std::size_t index = 0; index < slice_size; ++index) {
+                    const double value = source.values[component * slice_size + index];
+                    norm_squared += value * value;
+                }
+            const double rank_tolerance = 1.0e-28 * std::max(1.0, norm_squared);
+            for (std::size_t column = 0; column < rank; ++column) {
+                std::copy_n(pivot_matrix(column), slice_size, residual.data());
+                for (int pass = 0; pass < 2; ++pass)
+                    for (std::size_t row = 0; row < column; ++row) {
+                        const double* q = orthogonal.data() + row * slice_size;
+                        double projection = 0.0;
+                        for (std::size_t index = 0; index < slice_size; ++index)
+                            projection += q[index] * residual[index];
+                        triangular[row * rank + column] += projection;
+                        for (std::size_t index = 0; index < slice_size; ++index)
+                            residual[index] -= projection * q[index];
+                    }
+                double squared = 0.0;
+                for (const double value : residual) squared += value * value;
+                if (!std::isfinite(squared) || squared <= rank_tolerance)
+                    return nullptr;
+                const double norm = std::sqrt(squared);
+                triangular[column * rank + column] = norm;
+                for (std::size_t index = 0; index < slice_size; ++index)
+                    orthogonal[column * slice_size + index] = residual[index] / norm;
+            }
+            std::vector<double> coefficients(components * rank, 0.0);
+            double error_squared = 0.0;
+            for (std::size_t component = 0; component < components; ++component) {
+                const double* values = source.values + component * slice_size;
+                double* weights = coefficients.data() + component * rank;
+                for (std::size_t row = 0; row < rank; ++row)
+                    for (std::size_t index = 0; index < slice_size; ++index)
+                        weights[row] += orthogonal[row * slice_size + index] * values[index];
+                for (std::size_t row = rank; row-- > 0;) {
+                    for (std::size_t column = row + 1; column < rank; ++column)
+                        weights[row] -= triangular[row * rank + column] * weights[column];
+                    weights[row] /= triangular[row * rank + row];
+                }
+                for (std::size_t index = 0; index < slice_size; ++index) {
+                    double rebuilt = 0.0;
+                    for (std::size_t row = 0; row < rank; ++row)
+                        rebuilt += weights[row] * pivot_matrix(row)[index];
+                    const double error = values[index] - rebuilt;
+                    error_squared += error * error;
+                }
+            }
+            if (!std::isfinite(error_squared) || error_squared > rank_tolerance)
+                return nullptr;
+            for (std::size_t row = 0; row < rank; ++row) {
+                const std::size_t pivot = pivot_components[pivot_offset + row];
+                for (std::size_t column = 0; column < rank; ++column)
+                    coefficients[pivot * rank + column] = row == column ? 1.0 : 0.0;
+            }
+            result.component_offset = cache.component_values.size();
+            cache.component_values.insert(cache.component_values.end(),
+                coefficients.begin(), coefficients.end());
+            cache.ready[static_cast<std::size_t>(block)] = 1;
+            return &result;
+        };
+
         const std::size_t stride = 2 * rank;
         cache.square_scratch.assign(rank * stride, 0.0);
         const bool grouped_overlaps =
@@ -26279,7 +26350,7 @@ bool MovingEnvironment::try_activate_reduced_contextual_factor_routes(
                 std::abs(cache.square_scratch[pivot * stride + column])
                 <= tolerance
             ) {
-                return nullptr;
+                return qr_refresh();
             }
             if (pivot != column) {
                 for (std::size_t entry = 0; entry < stride; ++entry) {
