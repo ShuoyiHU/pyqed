@@ -52,16 +52,22 @@ def compile_transfers(site, mpo_site, channels):
     groups = defaultdict(list)
     for channel in channels:
         groups[channel.sector].append(channel)
+    # Physical channels are fixed for the MPO, independent of bra/ket virtual
+    # sectors. Index compatible blocks once instead of filtering them for
+    # every pair of site blocks. Preserve MPO/channel accumulation order.
+    compatible = defaultdict(list)
+    for (wl, wp, wr), w in mpo_site.data.items():
+        by_physical = defaultdict(list)
+        for channel in groups[wp]:
+            by_physical[channel.output_sector, channel.input_sector].append(channel)
+        for physical, local_channels in by_physical.items():
+            compatible[physical].append((wl, wp, wr, w, local_channels))
     kernels = {}
     for bra_key, bra in site.data.items():
         lb, pb, rb = bra_key
         for ket_key, ket in site.data.items():
             lk, pk, rk = ket_key
-            for (wl, wp, wr), w in mpo_site.data.items():
-                local_channels = [c for c in groups[wp]
-                                  if c.output_sector == pb and c.input_sector == pk]
-                if not local_channels:
-                    continue
+            for wl, wp, wr, w, local_channels in compatible.get((pb, pk), ()):
                 coefficient = spin_transfer(*map(_sector_irrep,
                     (lb, lk, pb, pk, rb, rk, wl, wp, wr)))
                 if abs(coefficient) < 1e-14:
