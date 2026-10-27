@@ -93,3 +93,19 @@ def test_cached_cpp_dmrg_matches_uncached(tmp_path, monkeypatch):
         solve = ReducedDMRG(p, sites, max_bond=4).run(max_sweeps=2)
         energies.append([row['energy'] for row in solve.history])
     np.testing.assert_allclose(energies[0], energies[1], atol=1e-11, rtol=0.)
+
+
+def test_cache_separates_construction_options(tmp_path, monkeypatch):
+    p = problem(3)
+    expected = determinant_hamiltonian(p)
+    keys = set()
+    for storage in ('dense', 'sparse'):
+        for layout in ('prefix', 'balanced'):
+            monkeypatch.setenv('PYQED_QC_SYMBOLIC_STORAGE', storage)
+            monkeypatch.setenv('PYQED_QC_AUTOMPO_LAYOUT', layout)
+            keys.add(_cache_key(p, 0.))
+            ham = p.su2_mpo(cache_dir=tmp_path)
+            np.testing.assert_allclose(dense_mpo(ham.canonical_factors),
+                                       expected, atol=2e-11, rtol=0.)
+    assert len(keys) == 4
+    assert len(list(tmp_path.glob('*.pkl'))) == 4

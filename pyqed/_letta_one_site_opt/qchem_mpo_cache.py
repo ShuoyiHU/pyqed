@@ -53,7 +53,9 @@ def _cache_key(problem, cutoff):
     digest = hashlib.sha256(_implementation_signature().encode())
     metadata = dict(cutoff=float(cutoff), ecore=float(problem.ecore),
                     order=list(problem.orbital_order), nelec=list(problem.nelec),
-                    hubbard=os.environ.get('PYQED_HUBBARD_MPO', 'sparse'))
+                    hubbard=os.environ.get('PYQED_HUBBARD_MPO', 'sparse'),
+                    symbolic_storage=os.environ.get('PYQED_QC_SYMBOLIC_STORAGE', 'sparse'),
+                    autompo_layout=os.environ.get('PYQED_QC_AUTOMPO_LAYOUT', 'balanced'))
     digest.update(json.dumps(metadata, sort_keys=True).encode())
     for array in (problem.h1, problem.eri):
         a = np.ascontiguousarray(array)
