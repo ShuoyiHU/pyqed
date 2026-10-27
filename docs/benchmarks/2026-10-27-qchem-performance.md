@@ -48,10 +48,10 @@ independent Python energy verification.
 
 | Case and scope | Reference | Updated |
 | --- | ---: | ---: |
-| H8 D40, four passes, total | 9.411 s | 2.512 s |
-| H8 D40, setup | 8.251 s | 1.824 s |
-| H8 D40, peak memory | 2.207 GB | 0.490 GB |
-| H8 D40, native sweep time | 0.402 s | 0.403 s |
+| H8 D40, four passes, total | 9.411 s | 2.535 s |
+| H8 D40, setup | 8.251 s | 1.842 s |
+| H8 D40, peak memory | 2.207 GB | 0.506 GB |
+| H8 D40, native sweep time | 0.402 s | 0.402 s |
 | FeCO5 def2-TZVP CAS(12,12) D30, prefix vs balanced setup | 76.835 s | 11.761 s |
 | Same CAS(12,12), total four passes | 83.130 s | 17.962 s |
 | Same CAS(12,12), peak memory | 4.804 GB | 1.480 GB |
@@ -75,6 +75,14 @@ initial preparation dominates this short run, limiting the whole-run reduction
 to about 6%.
 These timings exclude independent energy verification. Fifteen native solver
 regression tests passed with the fallback.
+
+CAS(18,18), D30, using saved MI-Fiedler-ordered FeCO5 def2-TZVP integrals,
+completes four adapter passes in 116.601 s with 93.465 s setup and 5.266 GB
+peak memory. All local residuals satisfy 1e-11. This is also a capacity check,
+not a before/after comparison; a short cache regression test overlapped the run.
+
+Persistent MPO cache keys now include symbolic storage and path layout, so
+switching a reference option cannot silently reuse another construction.
 
 ## Tied LETTA and orbital information
 
@@ -107,3 +115,11 @@ Larger bond dimensions and end-to-end LETTA performance with production
 chemistry tie selections still need broader study.
 Small tied-system validation confirms numerical consistency but does not prove
 large-system speedups.
+
+## Final verification
+
+The final combined regression run passed 82 tests covering exact fermion local
+products, balanced paths, sparse core construction, channel reachability, cache
+separation, real/complex packed actions, reduced local problems, and native DMRG.
+No temporary tracing instrumentation remains. These are targeted regressions,
+not a full-repository test run.
