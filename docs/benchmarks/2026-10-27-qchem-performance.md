@@ -76,6 +76,25 @@ to about 6%.
 These timings exclude independent energy verification. Fifteen native solver
 regression tests passed with the fallback.
 
+## Tied LETTA and orbital information
+
+FeCO5 def2-TZVP CAS(12,12), D8, two fixed diagnostic ties (zero-based
+3–7 and 4–8), four one-site passes, shared checkpoint: vectorized packing of
+nonzero kernel routes reduces unprofiled solve time from 17.596 to 17.259 s
+in one matched pair (about 2%). Packed arrays and energy histories are bitwise
+identical. Alternating old/new construction on the same 120 real operator inputs
+measures 3.096 versus 2.732 s for packing alone. Profiling exaggerates this gain,
+so the profiled 33.356 versus 29.275 s timings are not production speedup claims.
+The vectors, route order, matrix interning order and reuse schedules are unchanged.
+Sixty synthetic real/complex/zero/duplicate packing comparisons and 36 sector
+operator/reduced-MPO regression tests passed.
+
+For the measured CAS(16,16), D30 state, magnetic expansion takes 0.014 s and
+all 120 orbital-information pairs take 0.073 s including profiling overhead.
+The largest magnetic bond is 57 and the largest explicit transfer temporary is
+1.576 MB. This diagnostic is not a bottleneck at that size; no reduced-MI rewrite
+is justified by these measurements.
+
 ## Limits
 
 In the matched H8 fixed-pass comparison, Block2 native sweeps took 0.216 s.
@@ -84,7 +103,7 @@ state expectation differs by about 3 microhartree after four passes; its local
 pre-truncation energy is not the final-state energy. Python/BLAS runtimes also
 differ. A converged equal-accuracy timing study remains outstanding.
 
-Larger active spaces, reduced mutual-information diagnostics, and end-to-end
-LETTA performance with representative chemistry ties still need broader study.
+Larger bond dimensions and end-to-end LETTA performance with production
+chemistry tie selections still need broader study.
 Small tied-system validation confirms numerical consistency but does not prove
 large-system speedups.

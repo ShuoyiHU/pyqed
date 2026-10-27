@@ -62,16 +62,32 @@ class SectorOperator:
                 raise ValueError('operator kernel shape mismatch')
             if max(a,b,l,r,no,np_)>np.iinfo(np.int32).max:
                 raise OverflowError('operator block exceeds BLAS integer range')
-            for x,y,o,p in np.argwhere(kernel!=0):
-                lo=matrix_offset(0,left,int(x));ro=matrix_offset(1,right,int(y))
-                routes.append((lo,ro,self.layout.offsets[ket][0],self.layout.offsets[bra][0],l,r,a,b,p,o,np_,no))
+            x,y,o,p=np.nonzero(kernel)
+            if len(x):
+                # Intern only the used channel matrices, preserving their
+                # first-use order from the original C-order route traversal.
+                packed_offsets=[]
+                for side,array,indices in ((0,left,x),(1,right,y)):
+                    unique_indices,first=np.unique(indices,return_index=True)
+                    lookup=np.empty(array.shape[0],dtype=np.int64)
+                    for index in unique_indices[np.argsort(first)]:
+                        lookup[index]=matrix_offset(side,array,int(index))
+                    packed_offsets.append(lookup[indices])
+                batch=np.empty((len(x),12),dtype=np.int64)
+                batch[:,0],batch[:,1]=packed_offsets
+                batch[:,2]=self.layout.offsets[ket][0]
+                batch[:,3]=self.layout.offsets[bra][0]
+                batch[:,4:8]=(l,r,a,b)
+                batch[:,8],batch[:,9]=p,o
+                batch[:,10:12]=(np_,no)
+                routes.append(batch)
                 coefficients.append(kernel[x,y,o,p])
             middle=a*r if a*l*r+a*r*b<=l*r*b+a*l*b else l*b
             workspace=max(workspace,l*r+middle+a*b)
-        self.routes=np.asarray(routes,dtype=np.int64).reshape(-1,12)
-        self.coefficients=np.asarray(coefficients,dtype=self.dtype)
+        self.routes=np.concatenate(routes) if routes else np.empty((0,12),dtype=np.int64)
+        self.coefficients=np.concatenate(coefficients).astype(self.dtype,copy=False) if coefficients else np.empty(0,dtype=self.dtype)
         self.left,self.right=[np.concatenate(parts) if parts else np.empty(0,dtype=self.dtype) for parts in matrices]
-        self._prepare_routes(routes, workspace)
+        self._prepare_routes(self.routes.tolist(), workspace)
 
     def _prepare_routes(self, routes, workspace):
         self.workspace_size=workspace
