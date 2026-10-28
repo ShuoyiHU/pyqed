@@ -72,58 +72,64 @@ def prune_conditioned_transfers(sites,transfers,left_keys,right_keys,*,max_edges
     return tuple(output),dict(conditional_edges=count,conditional_routes_removed=int(before-after),conditional_fallback=None)
 
 
-def prune_transfers(transfers, left_keys, right_keys):
-    """Exact channel reachability without per-route Python graph objects."""
-    reachable = {key: np.ones(1, dtype=bool) for key in left_keys}
-    candidates = []
-    before = 0
+def _channel_reachability_values(keys,index,width,source):
+    values=np.zeros((len(keys),width),dtype=bool)
+    for key,array in source.items():
+        j=index.get(key)
+        if j is not None:
+            # Other keys in the previous layer can require wider padded rows.
+            count=min(width,len(array))
+            values[j,:count]=array[:count]
+    return values
+
+def prune_transfers(transfers,left_keys,right_keys):
+    """Exact channel reachability in bounded batches of equal kernel shape.
+
+    Propagate only structural nonzero channels. All branches at a cut are
+    combined by Boolean OR, then intersected with backward reachability. No
+    incumbent amplitudes or coefficient thresholds enter this graph. Packing
+    changes only the Boolean work; surviving transfer order is unchanged.
+    """
+    reachable={key:np.ones(1,dtype=bool) for key in left_keys}
+    layers=[];before=0
     for local in transfers:
-        row = []
-        following = {}
-        for transfer in local:
-            live = np.any(transfer.kernel != 0, axis=(2, 3))
-            before += int(live.sum())
-            left = reachable.get(transfer.left_key)
-            if left is None:
-                continue
-            if len(left) != live.shape[0]:
-                left = np.pad(left, (0, live.shape[0]-len(left)))
-            mask = live & left[:, None]
-            right = np.any(mask, axis=0)
-            if not np.any(right):
-                continue
-            row.append((transfer, live, mask))
-            if transfer.right_key not in following:
-                following[transfer.right_key] = right
-            else:
-                following[transfer.right_key] |= right
-        candidates.append(row)
-        reachable = following
-    productive = {key: np.ones(1, dtype=bool) for key in right_keys}
-    output = [None] * len(candidates)
-    after = 0
-    for i in range(len(candidates)-1, -1, -1):
-        row = []
-        previous = {}
-        for transfer, live, mask in candidates[i]:
-            right = productive.get(transfer.right_key)
-            if right is None:
-                continue
-            if len(right) != mask.shape[1]:
-                right = np.pad(right, (0, mask.shape[1]-len(right)))
-            keep = mask & right[None, :]
-            if not np.any(keep):
-                continue
-            after += int(keep.sum())
-            left = np.any(keep, axis=1)
-            if transfer.left_key not in previous:
-                previous[transfer.left_key] = left
-            else:
-                previous[transfer.left_key] |= left
-            row.append(transfer if np.array_equal(keep, live) else
-                       replace(transfer, kernel=transfer.kernel*keep[:, :, None, None]))
-        output[i] = tuple(row)
-        productive = previous
-    return tuple(output), dict(channel_routes_before=before,
-                               channel_routes_after=after,
-                               removed_channel_routes=before-after)
+        lk=list(dict.fromkeys(t.left_key for t in local));rk=list(dict.fromkeys(t.right_key for t in local))
+        li={k:j for j,k in enumerate(lk)};ri={k:j for j,k in enumerate(rk)}
+        mx=max((t.kernel.shape[0] for t in local),default=1);my=max((t.kernel.shape[1] for t in local),default=1)
+        left=_channel_reachability_values(lk,li,mx,reachable);following=np.zeros((len(rk),my),dtype=bool)
+        groups={}
+        for index,t in enumerate(local):groups.setdefault((t.kernel.shape,t.kernel.dtype.str),[]).append(index)
+        candidates=[]
+        for (shape,dtype),indices in groups.items():
+            nx,ny=shape[:2]
+            # Limit stacked kernel and comparison temporaries; one term may exceed it.
+            size=int(np.prod(shape))*np.dtype(dtype).itemsize
+            chunk=max(1,min(256,16*1024**2//max(1,2*size+3*nx*ny)))
+            for start in range(0,len(indices),chunk):
+                selected=np.asarray(indices[start:start+chunk]);ts=[local[j] for j in selected]
+                live=np.any(np.stack([t.kernel for t in ts])!=0,axis=(3,4))
+                counts=np.count_nonzero(live,axis=(1,2));before+=int(counts.sum())
+                a=np.asarray([li[t.left_key] for t in ts]);b=np.asarray([ri[t.right_key] for t in ts])
+                mask=live & left[a,:nx,None]
+                right=np.any(mask,axis=1)
+                np.logical_or.at(following[:,:ny],b,right)
+                active=np.flatnonzero(np.any(right,axis=1))
+                if active.size:
+                    candidates.append((selected[active],mask[active],counts[active],a[active],b[active],nx,ny))
+        layers.append((local,lk,rk,li,ri,mx,my,candidates))
+        reachable={rk[j]:following[j] for j in np.flatnonzero(np.any(following,axis=1))}
+    productive={key:np.ones(1,dtype=bool) for key in right_keys};output=[None]*len(layers);after=0
+    for i in range(len(layers)-1,-1,-1):
+        local,lk,rk,li,ri,mx,my,candidates=layers[i]
+        right=_channel_reachability_values(rk,ri,my,productive);previous=np.zeros((len(lk),mx),dtype=bool)
+        row=[None]*len(local)
+        for selected,mask,counts,a,b,nx,ny in candidates:
+            keep=mask & right[b,None,:ny]
+            kept=np.count_nonzero(keep,axis=(1,2));after+=int(kept.sum())
+            np.logical_or.at(previous[:,:nx],a,np.any(keep,axis=2))
+            for j in np.flatnonzero(kept):
+                index=selected[j];t=local[index]
+                row[index]=t if kept[j]==counts[j] else replace(t,kernel=t.kernel*keep[j,:,:,None,None])
+        output[i]=tuple(t for t in row if t is not None)
+        productive={lk[j]:previous[j] for j in np.flatnonzero(np.any(previous,axis=1))}
+    return tuple(output),dict(channel_routes_before=before,channel_routes_after=after,removed_channel_routes=before-after)

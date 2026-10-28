@@ -20,6 +20,7 @@ spatial-orbital sector structure that a later non-Abelian tensor layer can use.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cached_property
 
 
 @dataclass(frozen=True, order=True)
@@ -36,6 +37,20 @@ class SU2Irrep:
     def __post_init__(self):
         if int(self.two_j) != self.two_j or self.two_j < 0:
             raise ValueError(f"SU(2) irrep requires non-negative integer two_j, got {self.two_j!r}.")
+
+    @cached_property
+    def _cached_hash(self):
+        # Frozen labels are reused in millions of contraction dictionary lookups.
+        # Preserve the dataclass hash exactly, including dictionary/set ordering.
+        return hash((self.two_j,))
+
+    def __hash__(self):
+        return self._cached_hash
+
+    def __getstate__(self):
+        # Recompute derived hashes on load; old checkpoints need no migration.
+        return {key: value for key, value in self.__dict__.items()
+                if key != "_cached_hash"}
 
     @property
     def j(self) -> float:
@@ -86,6 +101,20 @@ class SpinChargeSector:
     def __post_init__(self):
         if int(self.charge) != self.charge or self.charge < 0:
             raise ValueError(f"Sector charge must be a non-negative integer, got {self.charge!r}.")
+
+    @cached_property
+    def _cached_hash(self):
+        # Frozen labels are reused in millions of contraction dictionary lookups.
+        # Preserve the dataclass hash exactly, including dictionary/set ordering.
+        return hash((self.charge, self.irrep))
+
+    def __hash__(self):
+        return self._cached_hash
+
+    def __getstate__(self):
+        # Recompute derived hashes on load; old checkpoints need no migration.
+        return {key: value for key, value in self.__dict__.items()
+                if key != "_cached_hash"}
 
     @property
     def two_j(self) -> int:

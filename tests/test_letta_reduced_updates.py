@@ -167,7 +167,7 @@ def test_ordinary_one_site_gain_is_preserved_when_pair_candidate_stalls(monkeypa
     cap = len(s.bond_sectors[1])
     actual = pair._optimize_allocated_reduced_pair(s.copy(), h, 1, 'lr', cap, options)
     before = _energy(s, h, stable=True)
-    def stationary(candidate, *args):
+    def stationary(candidate, *args, **kwargs):
         return replace(actual, energy=before, accepted=True)
     monkeypatch.setattr(pair, '_optimize_allocated_reduced_pair', stationary)
     baseline = s.copy()

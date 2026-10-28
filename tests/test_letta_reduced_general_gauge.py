@@ -34,7 +34,9 @@ def test_general_gauge_preserves_every_target_component_and_whitens_marginal(dir
     cut=2
     variables=reduced_gauge_variables(s,cut)
     assert variables==(1,)
-    frontier=ReducedFrontier.from_state(s)
+    # The reference below indexes Cartesian memory configurations explicitly.
+    # A pruned frontier no longer has that layout.
+    frontier=ReducedFrontier.from_state(s,prune=False)
     assert set(variables)<set(frontier.cuts[cut-1])
     chain=ReducedNormChain.build(frontier.to_mps(s))
     env=chain.left[cut] if direction=='lr' else chain.right[cut]

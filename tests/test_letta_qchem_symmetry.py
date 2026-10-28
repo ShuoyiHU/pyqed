@@ -196,3 +196,25 @@ def test_zero_hamiltonian_and_single_orbital_open_shell(n):
                        options=LETTADMROptions(max_sweeps=2))
     assert result.energy == pytest.approx(0., abs=1e-12)
     assert result.state.norm() == pytest.approx(1., abs=1e-12)
+
+
+def test_reduced_mpo_validation_does_not_expand_dense_cores(monkeypatch):
+    from pyqed._letta_one_site_opt.reduced_solver import _validate_reduced_mpo
+    from pyqed.mps.nonabelian.mpo import MPO, IrreducibleMPO, RankCoupledMPO
+    p = ElectronicProblem(*integrals(3), (2, 1))
+    state = ReducedLatticeLETTA.random((1, 3), symmetry=p.symmetry('su2'),
+        neighborhoods=((0,), (1,), (2,)), multiplets_per_sector=1, seed=71, real=True)
+    h = p.su2_mpo()
+    factors = tuple(h.factors or ()) + tuple(h.canonical_factors)
+    expected = [core.as_dense().shape for core in factors]
+    for core, shape in zip(factors, expected):
+        assert (core.left_dim, core.right_dim) == shape[:2]
+        if hasattr(core, '_block_cache'):
+            core._block_cache.clear()
+    def forbidden(*args, **kwargs):
+        raise AssertionError('shape validation must not densify MPO cores')
+    for cls in {type(core) for core in factors} | {MPO, IrreducibleMPO, RankCoupledMPO}:
+        monkeypatch.setattr(cls, 'as_dense', forbidden)
+    _validate_reduced_mpo(h, state)
+    for core in factors:
+        assert not getattr(core, '_block_cache', {})

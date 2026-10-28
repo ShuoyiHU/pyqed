@@ -4,7 +4,7 @@ Magnetic sums occur only in cached, state-independent structural coefficients.
 All variational tensors, boundary environments, and local actions are reduced.
 """
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 
 import numpy as np
@@ -47,6 +47,43 @@ class ReducedTransfer:
     kernel: np.ndarray
 
 
+@dataclass(frozen=True)
+class CompiledReducedTransfer(ReducedTransfer):
+    """Compiled, value-independent transfer with genuinely immutable storage.
+
+    A read-only owning ndarray can be made writable again. A bytes-backed
+    array cannot; aliases therefore cannot silently change a cached kernel.
+    Mutable ReducedTransfer instances remain supported and are hashed afresh.
+    """
+    _kernel_storage: bytes = field(init=False, repr=False, compare=False)
+    _kernel_digest: bytes = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self):
+        import hashlib
+        array = np.ascontiguousarray(self.kernel)
+        storage = array.tobytes()
+        kernel = np.frombuffer(storage,dtype=array.dtype).reshape(array.shape)
+        object.__setattr__(self,'kernel',kernel)
+        object.__setattr__(self,'_kernel_storage',storage)
+        object.__setattr__(self,'_kernel_digest',hashlib.blake2b(storage).digest())
+
+    def __reduce__(self):
+        # Re-enter the constructor on load: NumPy's default unpickling can
+        # otherwise restore a writable owning array and duplicate the bytes.
+        return (type(self),(self.bra_key,self.ket_key,self.left_key,self.right_key,self.kernel))
+
+    def immutable_digest(self):
+        # Shapes/dtypes are separately part of the cache's structural key.
+        # A noncontiguous reinterpretation still uses ordinary value hashing.
+        base = self.kernel
+        while isinstance(base,np.ndarray):
+            base = base.base
+        if (base is self._kernel_storage and self.kernel.flags.c_contiguous
+                and self.kernel.nbytes == len(self._kernel_storage)):
+            return self._kernel_digest
+        return None
+
+
 def compile_transfers(site, mpo_site, channels):
     """Compile immutable spin structure once for a fixed sector allocation."""
     groups = defaultdict(list)
@@ -79,7 +116,7 @@ def compile_transfers(site, mpo_site, channels):
                 kernel = kernels[key]
                 for channel in local_channels:
                     kernel[:, :, channel.output_copy, channel.input_copy] += coefficient*w[:, channel.copy, :]
-    return tuple(ReducedTransfer(*key, value) for key, value in kernels.items()
+    return tuple(CompiledReducedTransfer(*key, value) for key, value in kernels.items()
                  if np.any(value))
 
 
@@ -146,6 +183,34 @@ def _environment_pool(workers):
     return ThreadPoolExecutor(max_workers=workers,thread_name_prefix='letta-environment')
 
 
+def _advance_single_physical(incoming, kernel, bra, ket, lr):
+    """Absorb physical-copy-one blocks with three exact matrix products.
+
+    SU(2) spatial-orbital reduced physical sectors each have one copy. Their
+    transfer is sum_x K[y,x] B[a,b] E[x,b,c] A[c,d]. Pick whether to contract
+    K before or after B/E/A by the actual multiplicity and channel dimensions.
+    No dense local Hamiltonian, magnetic expansion or contraction planner.
+    """
+    bra, ket = np.asarray(bra)[:,0,:], np.asarray(ket)[:,0,:]
+    left = bra.conj().T if lr else bra.conj()
+    right = ket if lr else ket.T
+    channels = kernel[:,:,0,0].T if lr else kernel[:,:,0,0]
+    count_out, count_in = channels.shape
+    a, b = left.shape
+    c, d = right.shape
+    left_first = a*b*c+a*c*d <= b*c*d+a*b*d
+    per_channel = min(a*b*c+a*c*d, b*c*d+a*b*d)
+    first_cost = count_out*count_in*b*c + count_out*per_channel
+    last_cost = count_in*per_channel + count_out*count_in*a*d
+    def absorb(value):
+        return ((left@value)@right if left_first else left@(value@right))
+    if first_cost <= last_cost:
+        middle = (channels@incoming.reshape(count_in,b*c)).reshape(count_out,b,c)
+        return absorb(middle)
+    middle = absorb(incoming)
+    return (channels@middle.reshape(count_in,a*d)).reshape(count_out,a,d)
+
+
 def _advance_environment(environment,site,transfers,direction, *, structured=False):
     """Independent output-sector groups; preserve each group's term order."""
     import os
@@ -170,6 +235,17 @@ def _advance_environment(environment,site,transfers,direction, *, structured=Fal
                 sparse=products.accumulate(incoming,transfer,1./_sector_irrep(t.bra_key[2 if lr else 0]).dim,value)
                 if sparse is not None:
                     value=sparse;continue
+            if t.kernel.shape[2:] == (1,1):
+                contribution = _advance_single_physical(incoming, t.kernel,
+                    site.data[t.bra_key], site.data[t.ket_key], lr)
+                contribution /= _sector_irrep(t.bra_key[2 if lr else 0]).dim
+                if value is None:
+                    value = contribution
+                elif np.result_type(value, contribution) == value.dtype:
+                    value += contribution
+                else:
+                    value = value + contribution
+                continue
             equation='xal,xyop,aob,lpr->ybr' if lr else 'ybr,xyop,aob,lpr->xal'
             value=accumulate_einsum(equation,(incoming,t.kernel,
                 (bra_blocks[t.bra_key] if bra_blocks is not None else site.data[t.bra_key].conj()),site.data[t.ket_key]),
@@ -247,7 +323,7 @@ class ReducedEnvironmentChain(MovingReducedEnvironments):
 
     def prepare_local_action(self, site, *, shapes=None):
         """Bind an immutable reduced Hamiltonian schedule for compiled actions."""
-        from .._letta_two_site_opt.sector_operator import SectorOperator, combine_fixed_channels
+        from .._letta_two_site_opt.sector_operator import prepare_sector_operator
         self.ensure(site, site+1)
         terms=[]
         for transfer in self.transfers[site]:
@@ -258,7 +334,7 @@ class ReducedEnvironmentChain(MovingReducedEnvironments):
         if shapes is None:
             shapes={key:a.shape for key,a in self.sites[site].data.items()}
         scale=np.exp(self.left_log_scales[site]+self.right_log_scales[site+1])
-        return combine_fixed_channels(SectorOperator(shapes,terms,scale))
+        return prepare_sector_operator(shapes,terms,scale)
 
     def pair_action(self, site, blocks):
         """Apply a cached compiled pair schedule; rebuild after site replacement."""
@@ -270,7 +346,7 @@ class ReducedEnvironmentChain(MovingReducedEnvironments):
         return self._prepared_pairs[signature](blocks)
 
     def prepare_pair_action(self, site, blocks):
-        from .._letta_two_site_opt.sector_operator import SectorOperator, combine_fixed_channels
+        from .._letta_two_site_opt.sector_operator import prepare_pair_sector_operator
         self.ensure(site,site+2)
         right_by_middle=defaultdict(list)
         for transfer in self.transfers[site+1]:
@@ -286,12 +362,10 @@ class ReducedEnvironmentChain(MovingReducedEnvironments):
                 ket=first.ket_key+second.ket_key[1:]
                 if right is None or bra not in blocks or ket not in blocks:
                     continue
-                kernel=np.einsum('xyop,yzuv->xzoupv',first.kernel,second.kernel,optimize=True)
-                kernel=kernel.reshape(kernel.shape[:2]+(kernel.shape[2]*kernel.shape[3],kernel.shape[4]*kernel.shape[5]))
-                kernel=kernel/_sector_irrep(first.bra_key[2]).dim
-                terms.append((bra,ket,left,kernel,right))
+                terms.append((bra,ket,left,first.kernel,second.kernel,right,
+                              1./_sector_irrep(first.bra_key[2]).dim))
         scale=np.exp(self.left_log_scales[site]+self.right_log_scales[site+2])
-        return combine_fixed_channels(SectorOperator({key:a.shape for key,a in blocks.items()},terms,scale))
+        return prepare_pair_sector_operator({key:a.shape for key,a in blocks.items()},terms,scale)
 
     def _pair_action_reference(self, site, blocks):
         """Python contraction reference for validation of compiled pair actions."""

@@ -132,12 +132,22 @@ class FrontierSiteEmbedding:
         vector = self.source_layout.pack(blocks)
         return vector if self.supported_source_indices is None else vector[self.supported_source_indices]
 
-    def unpack_source(self, vector):
+    def unpack_source(self, vector, *, template=None):
+        """Unpack legal coordinates, optionally preserving exact inactive entries.
+
+        A source entry absent from the structural support is invisible with
+        these fixed neighbors. Keeping its incumbent value does not alter the
+        current state and avoids erasing seeds needed by later sector growth.
+        Linear-map/adjoint callers leave template unset and get zero fill.
+        """
         vector = np.asarray(vector).reshape(-1)
         if vector.size != self.source_size:
             raise ValueError('source vector has incompatible size')
         if self.supported_source_indices is not None:
-            full = np.zeros(self.source_layout.size, dtype=vector.dtype)
+            full = (np.zeros(self.source_layout.size, dtype=vector.dtype)
+                    if template is None else
+                    self.source_layout.pack(template).astype(
+                        np.result_type(vector, *template.values()), copy=True))
             full[self.supported_source_indices] = vector
             vector = full
         return self.source_layout.unpack(vector)

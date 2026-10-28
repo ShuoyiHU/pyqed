@@ -55,6 +55,20 @@ command.run()
     return module
 
 
+@lru_cache(maxsize=4096)
+def _metric_left_first(l, p, q, r, a, b):
+    """Cache only NumPy's shape-dependent greedy path, never tensor values."""
+    scalar=np.zeros(())
+    left=np.broadcast_to(scalar,(a,l))
+    right=np.broadcast_to(scalar,(b,r))
+    vector=np.broadcast_to(scalar,(l,p,q,r))
+    path=np.einsum_path('al,br,lpqr->apqb',left,right,vector,optimize=True)[0]
+    if path[1]==(0,1):
+        m=p*q
+        return a*l*m*r+a*m*r*b <= l*m*r*b+a*l*m*b
+    return path[1]==(0,2)
+
+
 class PairMetricMap:
     """Prepare Y[a,p,q,b] = scale L[a,l] X[l,p,q,r] R[b,r].
 
@@ -101,11 +115,7 @@ class PairMetricMap:
                 raise OverflowError('metric block exceeds BLAS integer range')
             # Preserve the established greedy contraction order. A cheaper FLOP
             # order can amplify cancellation in ill-conditioned raw factors.
-            placeholder=np.broadcast_to(np.zeros((),dtype=self.dtype),shape)
-            path=np.einsum_path('al,br,lpqr->apqb',lmat,rmat,placeholder,optimize=True)[0]
-            left_first=path[1]==(0,2)
-            if path[1]==(0,1):
-                left_first=a*l*m*r+a*m*r*b <= l*m*r*b+a*l*m*b
+            left_first=_metric_left_first(l,shape[1],shape[2],r,a,b)
             lo,ro=matrix_offset(0,lmat),matrix_offset(1,rmat)
             routes.append((lo,ro,source_layout.offsets[key][0],target_layout.offsets[key][0],l,r,a,b,m,int(left_first)))
             scales.append(float(scale))

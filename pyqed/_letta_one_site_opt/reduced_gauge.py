@@ -335,7 +335,14 @@ def condition_reduced_sweep(state, hamiltonian, options, *, center=None,
                 tolerance=options.metric_tolerance, qr_boundary=boundary)
             if context is not None:context.gauge_boundary=boundary
             changed = [cut-1, cut]
-        checked = (context.stable_energy() if context is not None else _energy(state, hamiltonian, stable=True))
+        certify = getattr(context, 'certify_gauge', None)
+        if center is None and certify is not None and certify(snapshot, cut):
+            # The physical state was checked directly in orthonormal exterior
+            # coordinates; a second Hamiltonian contraction is redundant.
+            context.remember_source_energy(state, before)
+            checked = before
+        else:
+            checked = (context.stable_energy() if context is not None else _energy(state, hamiltonian, stable=True))
         allowance = max(options.energy_increase_tolerance, 1e-10*max(1., abs(before)))
         if not np.isfinite(checked) or abs(checked-before) > allowance:
             raise FloatingPointError('reduced gauge changed the physical energy')

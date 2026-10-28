@@ -143,6 +143,47 @@ class SectorOperator:
         obj._prepare_routes(obj.routes, int(workspace))
         return obj
 
+    def supported_diagonal(self, target_layout, factors, weights):
+        """Exact diagonal after blockwise product-basis maps and irrep weights.
+
+        A same-block, same-physical-index route contributes
+        diag(U_L^dagger L U_L) outer diag(U_R^dagger R U_R) / weight^2.
+        Other routes cannot contribute to the diagonal. Only diagonal vectors
+        and the distinct boundary-times-support products are needed; neither
+        the full local Hamiltonian nor magnetic/determinant states are formed.
+        """
+        if target_layout.keys != self.layout.keys:
+            raise ValueError('supported diagonal requires matching block keys')
+        dtype = np.result_type(self.dtype, *[a.dtype for pair in factors.values() for a in pair])
+        result = np.zeros(target_layout.size, dtype=dtype)
+        keys = {start: key for key,(start,stop) in self.layout.offsets.items() if stop>start}
+        caches = ({}, {})
+        def boundary_diagonal(side, offset, size, support):
+            cache = caches[side]
+            key = (int(offset), int(size), id(support))
+            if key not in cache:
+                values = self.left if side==0 else self.right
+                matrix = values[offset:offset+size*size].reshape(size,size)
+                cache[key] = np.sum(support.conj()*(matrix @ support),axis=0)
+            return cache[key]
+        routes = self.routes
+        selected = np.flatnonzero((routes[:,2]==routes[:,3]) & (routes[:,8]==routes[:,9]))
+        for index in selected:
+            lo,ro,xo,yo,l,r,a,b,ip,op,ni,no = routes[index]
+            if not (l*r*a*b):
+                continue
+            key = keys[int(xo)]
+            left,right = factors[key]
+            shape = target_layout.shapes[key]
+            if (a,l,b,r,ni) != (left.shape[0],left.shape[0],right.shape[0],right.shape[0],no):
+                raise ValueError('supported diagonal boundary shape mismatch')
+            start,stop = target_layout.offsets[key]
+            target = result[start:stop].reshape(shape[0],no,shape[-1])
+            dl = boundary_diagonal(0,lo,l,left)
+            dr = boundary_diagonal(1,ro,r,right)
+            target[:,op,:] += self.coefficients[index]*np.outer(dl,dr)/(weights[key]**2)
+        return self.scale*result
+
     def _schedules(self, workers):
         # Each output physical slice belongs to one worker. Preserve route
         # order within that slice, so there is no concurrent accumulation.
@@ -301,3 +342,233 @@ def combine_fixed_channels(operator, max_bytes=2*1024**3):
         kernel=np.zeros((1,1,no,np_),dtype=operator.dtype);kernel[0,0,op,ip]=1
         terms.append((offsets[yo],offsets[xo],left,kernel,right))
     return SectorOperator(operator.layout.shapes,terms,operator.scale)
+
+
+def prepare_sector_operator(shapes, terms, scale=1., max_bytes=2*1024**3):
+    """Absorb fixed MPO channels before constructing scalar contraction routes.
+
+    For each transfer, sum W into L or R with BLAS, then pack the remaining
+    channel directly. This avoids enumerating all (x,y,o,p) entries only to
+    regroup them afterwards. The full operator and variational space are kept.
+    No singular-value cutoff or coefficient threshold is used.
+
+    max_bytes bounds the packed result estimate, not peak memory (input arrays,
+    contraction work and the final concatenation coexist). Fall back to the
+    original sparse-route preparation when neither absorption fits the budget.
+    """
+    terms = list(terms)
+    layout = _BlockVectorLayout(shapes)
+    dtype = np.result_type(float, *[np.result_type(l, w, r) for _, _, l, w, r in terms])
+    dtype = np.dtype(np.complex128 if dtype.kind == 'c' else np.float64)
+    for bra, ket, left, kernel, right in terms:
+        a, b = shapes[bra][0], shapes[bra][-1]
+        l, r = shapes[ket][0], shapes[ket][-1]
+        no, ni = math.prod(shapes[bra][1:-1]), math.prod(shapes[ket][1:-1])
+        if (left.ndim != 3 or right.ndim != 3
+                or left.shape[1:] != (a, l) or right.shape[1:] != (b, r)):
+            raise ValueError('operator boundary shape mismatch')
+        if kernel.shape != (left.shape[0], right.shape[0], no, ni):
+            raise ValueError('operator kernel shape mismatch')
+        if max(a, b, l, r, no, ni) > np.iinfo(np.int32).max:
+            raise OverflowError('operator block exceeds BLAS integer range')
+
+    plans = []
+    for side in (0, 1):
+        stored = work = routes = 0
+        fixed_sizes = {}
+        for _, _, left, kernel, right in terms:
+            x, y, no, ni = kernel.shape
+            a, l = left.shape[1:]
+            b, r = right.shape[1:]
+            count = (y if side == 0 else x)*no*ni
+            stored += count*(a*l if side == 0 else b*r)
+            routes += count
+            fixed = right if side == 0 else left
+            fixed_sizes[id(fixed)] = fixed.size
+            work += count*min(a*l*r+a*r*b, l*r*b+a*l*b)
+        estimate = ((stored+sum(fixed_sizes.values()))*dtype.itemsize
+                    + routes*(12*8+2*8+dtype.itemsize))
+        if estimate <= max_bytes:
+            plans.append((work, estimate, side))
+    if not plans:
+        return combine_fixed_channels(SectorOperator(shapes, terms, scale), max_bytes=max_bytes)
+
+    side = min(plans)[2]
+    parts, sizes, fixed_offsets, batches = [[], []], [0, 0], {}, []
+    workspace = 0
+    for bra, ket, left, kernel, right in terms:
+        if not kernel.size:
+            continue
+        a, l = left.shape[1:]
+        b, r = right.shape[1:]
+        x, y, no, ni = kernel.shape
+        # One GEMM absorbs the channel. Physical copies stay explicit in the
+        # row order, rather than becoming temporary scalar-route objects.
+        if side == 0:
+            absorbed = (kernel.transpose(1, 2, 3, 0).reshape(-1, x)
+                        @ left.reshape(x, a*l)).reshape(y, no, ni, a, l)
+        else:
+            absorbed = (kernel.transpose(0, 2, 3, 1).reshape(-1, y)
+                        @ right.reshape(y, b*r)).reshape(x, no, ni, b, r)
+        channel, op, ip = np.nonzero(np.any(absorbed, axis=(-2, -1)))
+        if not len(channel):
+            continue
+        matrices = np.ascontiguousarray(absorbed[channel, op, ip], dtype=dtype)
+        fixed = right if side == 0 else left
+        if id(fixed) not in fixed_offsets:
+            packed = np.ascontiguousarray(fixed, dtype=dtype).ravel()
+            fixed_offsets[id(fixed)] = sizes[1-side]
+            parts[1-side].append(packed)
+            sizes[1-side] += packed.size
+
+        batch = np.empty((len(channel), 12), dtype=np.int64)
+        matrix_size = a*l if side == 0 else b*r
+        fixed_size = b*r if side == 0 else a*l
+        batch[:, side] = sizes[side]+np.arange(len(channel))*matrix_size
+        batch[:, 1-side] = fixed_offsets[id(fixed)]+channel*fixed_size
+        parts[side].append(matrices.ravel())
+        sizes[side] += matrices.size
+        batch[:, 2] = layout.offsets[ket][0]
+        batch[:, 3] = layout.offsets[bra][0]
+        batch[:, 4:8] = (l, r, a, b)
+        batch[:, 8], batch[:, 9] = ip, op
+        batch[:, 10:12] = (ni, no)
+        batches.append(batch)
+        middle = a*r if a*l*r+a*r*b <= l*r*b+a*l*b else l*b
+        workspace = max(workspace, l*r+middle+a*b)
+
+    operator = SectorOperator.__new__(SectorOperator)
+    operator.layout, operator.dtype, operator.scale = layout, dtype, scale
+    operator.interned_matrix_bytes = 0
+    operator.left, operator.right = [np.concatenate(p) if p else np.empty(0, dtype=dtype)
+                                    for p in parts]
+    operator.routes = np.concatenate(batches) if batches else np.empty((0, 12), dtype=np.int64)
+    operator.coefficients = np.ones(len(operator.routes), dtype=dtype)
+    operator._prepare_routes(operator.routes.tolist(), workspace)
+    return operator
+
+
+def prepare_pair_sector_operator(shapes, terms, scale=1., max_bytes=2*1024**3):
+    """Absorb one outer boundary before joining adjacent MPO tensors.
+
+    Terms are (bra, ket, L, W1, W2, R, middle_irrep_weight). Contract
+    (L W1) W2 or W1 (W2 R), rather than allocating W1 W2 with both outer
+    MPO channels. Reuse first products only within this preparation call.
+    The final packed layout and variational space are unchanged.
+
+    max_bytes bounds estimated packed storage, not total process memory.
+    First-product caching uses at most min(max_bytes/4, 64 MiB). Equal-shape
+    terms use batches with an estimated 16 MiB temporary budget (a single term
+    may exceed it); concatenation coexists with stored output. No coefficient
+    threshold or rank truncation is used. Original term accumulation order is
+    restored after packing.
+    """
+    terms=list(terms)
+    layout=_BlockVectorLayout(shapes)
+    dtype=np.dtype(np.result_type(float,*[np.result_type(l,w1,w2,r,c)
+        for _,_,l,w1,w2,r,c in terms]))
+    dtype=np.dtype(np.complex128 if dtype.kind=='c' else np.float64)
+    plans=[]
+    for side in (0,1):
+        work=stored=routes=0;fixed_sizes={}
+        for bra,ket,left,w1,w2,right,coefficient in terms:
+            x,y,no1,ni1=w1.shape;middle,z,no2,ni2=w2.shape
+            a,l=left.shape[1:];b,r=right.shape[1:]
+            if (y!=middle or left.shape[0]!=x or right.shape[0]!=z
+                    or shapes[bra]!=(a,no1,no2,b) or shapes[ket]!=(l,ni1,ni2,r)):
+                raise ValueError('pair operator boundary or physical shape mismatch')
+            count=(z if side==0 else x)*no1*ni1*no2*ni2
+            work+=count*min(a*l*r+a*r*b,l*r*b+a*l*b)
+            stored+=count*(a*l if side==0 else b*r);routes+=count
+            fixed=right if side==0 else left;fixed_sizes[id(fixed)]=fixed.size
+        estimate=(stored+sum(fixed_sizes.values()))*dtype.itemsize+routes*(12*8+2*8+dtype.itemsize)
+        if estimate<=max_bytes:plans.append((work,estimate,side))
+    if not plans:
+        merged=[]
+        for bra,ket,left,w1,w2,right,coefficient in terms:
+            w=np.einsum('xyop,yzuv->xzoupv',w1,w2,optimize=True)
+            w=w.reshape(w.shape[:2]+(w.shape[2]*w.shape[3],w.shape[4]*w.shape[5]))
+            merged.append((bra,ket,left,coefficient*w,right))
+        return prepare_sector_operator(shapes,merged,scale,max_bytes=max_bytes)
+    side=min(plans)[2]
+    parts,sizes,fixed_offsets,batches=[[],[]],[0,0],{},[]
+    route_order=[]
+    cache={};cache_bytes=0;cache_budget=min(max_bytes//4,64*1024**2)
+    workspace=0
+    # Batch only equal shapes. Restore the original term/channel route order
+    # after packing so the local action retains its accumulation order.
+    groups={}
+    for index,(bra,ket,left,w1,w2,right,coefficient) in enumerate(terms):
+        a,l=left.shape[1:];b,r=right.shape[1:]
+        x,y,no1,ni1=w1.shape;_,z,no2,ni2=w2.shape
+        dims=(x,y,z,no1,ni1,no2,ni2,a,l,b,r)
+        groups.setdefault(dims,[]).append(index)
+        middle=a*r if a*l*r+a*r*b<=l*r*b+a*l*b else l*b
+        workspace=max(workspace,l*r+middle+a*b)
+    for dims,indices in groups.items():
+        x,y,z,no1,ni1,no2,ni2,a,l,b,r=dims
+        no,ni=no1*no2,ni1*ni2
+        matrix_size=a*l if side==0 else b*r;fixed_size=b*r if side==0 else a*l
+        first_size=y*(no1*ni1*a*l if side==0 else no2*ni2*b*r)
+        second_size=y*(z*no2*ni2 if side==0 else x*no1*ni1)
+        output_size=(z*a*l if side==0 else x*b*r)*no*ni
+        # Bound new batch temporaries independently of total operator storage.
+        # A single term can exceed this budget, just as in the unbatched path.
+        chunk=max(1,min(256,(16*1024**2)//max(1,dtype.itemsize*(2*first_size+2*second_size+4*output_size))))
+        for begin in range(0,len(indices),chunk):
+            selected=indices[begin:begin+chunk]
+            firsts=[];seconds=[];coefficients=[];fixed_arrays=[];source_starts=[];target_starts=[]
+            for index in selected:
+                bra,ket,left,w1,w2,right,coefficient=terms[index]
+                kernel,boundary=(w1,left) if side==0 else (w2,right)
+                key=(id(kernel),id(boundary))
+                first=cache.get(key)
+                if first is None:
+                    if side==0:
+                        first=(w1.transpose(1,2,3,0).reshape(-1,x)@left.reshape(x,a*l)).reshape(y,no1*ni1*a*l)
+                    else:
+                        first=(w2.transpose(0,2,3,1).reshape(-1,z)@right.reshape(z,b*r)).reshape(y,no2*ni2*b*r)
+                    if first.nbytes<=cache_budget:
+                        while cache and cache_bytes+first.nbytes>cache_budget:
+                            cache_bytes-=cache.pop(next(iter(cache))).nbytes
+                        cache[key]=first;cache_bytes+=first.nbytes
+                firsts.append(first)
+                seconds.append(w2.reshape(y,z*no2*ni2).T if side==0 else w1.transpose(0,2,3,1).reshape(x*no1*ni1,y))
+                coefficients.append(coefficient)
+                fixed_arrays.append(right if side==0 else left)
+                source_starts.append(layout.offsets[ket][0]);target_starts.append(layout.offsets[bra][0])
+            joined=np.matmul(np.stack(seconds),np.stack(firsts))
+            n=len(selected)
+            if side==0:
+                absorbed=joined.reshape(n,z,no2,ni2,no1,ni1,a,l).transpose(0,1,4,2,5,3,6,7).reshape(n,z,no,ni,a,l)
+            else:
+                absorbed=joined.reshape(n,x,no1,ni1,no2,ni2,b,r).transpose(0,1,2,4,3,5,6,7).reshape(n,x,no,ni,b,r)
+            absorbed=absorbed*np.asarray(coefficients)[:,None,None,None,None,None]
+            term,channel,op,ip=np.nonzero(np.any(absorbed,axis=(-2,-1)))
+            if not len(channel):continue
+            fixed_starts=np.zeros(n,dtype=np.int64)
+            for used in np.unique(term):
+                fixed=fixed_arrays[used]
+                if id(fixed) not in fixed_offsets:
+                    packed=np.ascontiguousarray(fixed,dtype=dtype).ravel()
+                    fixed_offsets[id(fixed)]=sizes[1-side]
+                    parts[1-side].append(packed);sizes[1-side]+=packed.size
+                fixed_starts[used]=fixed_offsets[id(fixed)]
+            matrices=np.ascontiguousarray(absorbed[term,channel,op,ip],dtype=dtype)
+            batch=np.empty((len(channel),12),dtype=np.int64)
+            batch[:,side]=sizes[side]+np.arange(len(channel))*matrix_size
+            batch[:,1-side]=np.asarray(fixed_starts)[term]+channel*fixed_size
+            parts[side].append(matrices.ravel());sizes[side]+=matrices.size
+            batch[:,2]=np.asarray(source_starts)[term];batch[:,3]=np.asarray(target_starts)[term]
+            batch[:,4:8]=(l,r,a,b);batch[:,8]=ip;batch[:,9]=op;batch[:,10:12]=(ni,no)
+            batches.append(batch);route_order.append(np.asarray(selected)[term])
+    operator=SectorOperator.__new__(SectorOperator)
+    operator.layout,operator.dtype,operator.scale=layout,dtype,scale
+    operator.interned_matrix_bytes=0
+    operator.left,operator.right=[np.concatenate(p) if p else np.empty(0,dtype=dtype) for p in parts]
+    operator.routes=np.concatenate(batches) if batches else np.empty((0,12),dtype=np.int64)
+    if batches:
+        operator.routes=operator.routes[np.argsort(np.concatenate(route_order),kind='stable')]
+    operator.coefficients=np.ones(len(operator.routes),dtype=dtype)
+    operator._prepare_routes(operator.routes.tolist(),workspace)
+    return operator

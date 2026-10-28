@@ -61,3 +61,46 @@ def test_channel_masks_match_explicit_multichannel_graphs():
             for x,y in zip(xs,ys):
                 assert (x.left_key,x.right_key)==(y.left_key,y.right_key)
                 np.testing.assert_array_equal(x.kernel,y.kernel)
+
+
+import pytest
+from pyqed._letta_one_site_opt.reduced_environment import CompiledReducedTransfer
+
+
+def assert_pruning_matches_reference(layers,left,right):
+    expected,counts=reference_graph_pruning(layers,left,right)
+    actual,actual_counts=prune_transfers(layers,left,right)
+    assert counts==actual_counts
+    for xs,ys in zip(expected,actual):
+        assert len(xs)==len(ys)
+        for x,y in zip(xs,ys):
+            assert (x.bra_key,x.ket_key,x.left_key,x.right_key)==(y.bra_key,y.ket_key,y.left_key,y.right_key)
+            np.testing.assert_array_equal(x.kernel,y.kernel)
+
+
+@pytest.mark.parametrize('widths',[(1,9,17,65,1),(1,64,3,8,1),(1,0,9,1)])
+@pytest.mark.parametrize('complex_values',[False,True])
+@pytest.mark.parametrize('compiled',[False,True])
+def test_batched_channel_masks_wide_and_disconnected(widths,complex_values,compiled):
+    rng=np.random.default_rng(134)
+    transfer=CompiledReducedTransfer if compiled else ReducedTransfer
+    layers=[]
+    for site,(nx,ny) in enumerate(zip(widths,widths[1:])):
+        local=[]
+        for a in range(2):
+            for b in range(2):
+                kernel=rng.normal(size=(nx,ny,2,3))
+                if complex_values:kernel=kernel+1j*rng.normal(size=kernel.shape)
+                kernel*=rng.random(kernel.shape)<.06
+                # Tiny finite coefficients must remain structural nonzeros.
+                kernel*=1e-250
+                local.append(transfer((a,),(b,),(site,a),(site+1,b),kernel))
+        layers.append(tuple(local))
+    assert_pruning_matches_reference(tuple(layers),{(0,0)},{(len(layers),1)})
+
+
+def test_batched_channel_masks_multiple_chunks_preserve_transfer_order():
+    layers=[tuple(ReducedTransfer((j,),(),(0,0),(1,0),
+                np.array([[[[1.]],[[float(j%3)]],[[2.]]]])) for j in range(517)),
+            (ReducedTransfer((),(),(1,0),(2,0),np.array([0.,1.,0.]).reshape(3,1,1,1)),)]
+    assert_pruning_matches_reference(tuple(layers),{(0,0)},{(2,0)})

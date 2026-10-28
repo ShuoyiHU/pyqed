@@ -369,28 +369,45 @@ class CanonicalBoundaryCache:
         if max_bytes < 0:raise ValueError('boundary cache budget must be nonnegative')
         self.entries=OrderedDict();self.max_bytes=max_bytes;self.nbytes=0
         self.hits=0;self.advances=0;self.mpo=None
+        self._signature_layouts={}
 
     def signatures(self,sites,mpo,transfers=None):
         import hashlib
         if self.mpo is not mpo:
             self.entries.clear();self.nbytes=0;self.mpo=mpo
+            self._signature_layouts.clear()
         signatures=[]
         for i,site in enumerate(sites):
-            h=hashlib.blake2b()
-            # QR and environment recurrence depend on these numerical cores
-            # and the filtered kernels below, not the graph's descriptive ID.
-            h.update(repr((site.qns,site.dirs)).encode())
-            for key,a in site.data.items():
-                h.update(repr((key,a.shape,a.dtype.str)).encode())
+            # Serialize structural metadata only when the layout changes.
+            # Tensor values and mutable kernels are checked on every call.
+            # Compiled kernels own immutable bytes, so their stored digest
+            # can be included in the structural prefix without rereading data.
+            layout=(tuple(tuple(q) for q in site.qns),tuple(site.dirs),
+                    tuple((key,a.shape,a.dtype.str) for key,a in site.data.items()))
+            local=() if transfers is None else transfers[i]
+            from .reduced_environment import CompiledReducedTransfer
+            digests=tuple(t.immutable_digest() if isinstance(t,CompiledReducedTransfer)
+                          else None for t in local)
+            layout += (tuple((t.kernel.shape,t.kernel.dtype.str) for t in local),digests)
+            previous=self._signature_layouts.get(i)
+            if previous is None or previous[0]!=layout or previous[1] is not local:
+                h=hashlib.blake2b()
+                h.update(repr(layout).encode())
+                for t in local:
+                    h.update(repr((t.bra_key,t.ket_key,t.left_key,t.right_key,
+                                   t.kernel.shape,t.kernel.dtype.str)).encode())
+                for digest in digests:
+                    if digest is not None:h.update(digest)
+                self._signature_layouts[i]=(layout,local,h)
+            h=self._signature_layouts[i][2].copy()
+            for a in site.data.values():
                 if isinstance(a,ScatterBlock):
                     h.update(np.ascontiguousarray(a.indices).view(np.uint8))
                     h.update(np.ascontiguousarray(a.values).view(np.uint8))
                 else:h.update(np.ascontiguousarray(a).view(np.uint8))
-            if transfers is not None:
-                for transfer in transfers[i]:
-                    h.update(repr((transfer.bra_key,transfer.ket_key,transfer.left_key,
-                                   transfer.right_key,transfer.kernel.shape,transfer.kernel.dtype.str)).encode())
-                    h.update(np.ascontiguousarray(transfer.kernel).view(np.uint8))
+            if None in digests:
+                for t,digest in zip(local,digests):
+                    if digest is None:h.update(np.ascontiguousarray(t.kernel).view(np.uint8))
             signatures.append(h.digest())
         return tuple(signatures)
 

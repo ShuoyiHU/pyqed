@@ -129,3 +129,58 @@ def test_sector_workers_empty_operator(monkeypatch):
     monkeypatch.setenv('PYQED_SECTOR_THREADS','4')
     action=SectorOperator({0:(2,1,2)},[])
     np.testing.assert_array_equal(action({0:np.ones((2,1,2))})[0],0)
+
+
+@pytest.mark.parametrize('complex_values',[False,True])
+@pytest.mark.parametrize('channels',[(9,5,2),(2,5,9)])
+def test_pair_boundary_first_matches_five_tensor_reference(complex_values,channels):
+    from pyqed._letta_two_site_opt.sector_operator import prepare_pair_sector_operator
+    rng=np.random.default_rng(941)
+    def draw(shape):
+        x=rng.normal(size=shape)
+        return x+1j*rng.normal(size=shape) if complex_values else x
+    x,y,z=channels;a,l,b,r=2,3,2,4
+    shapes={0:(a,2,3,b),1:(l,3,2,r)}
+    left,right=draw((x,a,l)),draw((z,b,r))
+    w1,w2=draw((x,y,2,3)),draw((y,z,3,2));vector=draw(shapes[1])
+    expected=.7/3*np.einsum('xal,xyop,yzuv,zbr,lpvr->aoub',left,w1,w2,right,vector,optimize=True)
+    terms=[(0,1,left,w1,w2,right,1/3)]
+    for budget in (2*1024**3,1):
+        op=prepare_pair_sector_operator(shapes,terms,.7,max_bytes=budget)
+        actual=op({0:np.zeros(shapes[0]),1:vector})
+        np.testing.assert_allclose(actual[0],expected,rtol=3e-12,atol=3e-12)
+        np.testing.assert_array_equal(actual[1],0.)
+
+
+@pytest.mark.parametrize('complex_values',[False,True])
+def test_batched_pair_preserves_interleaved_term_order(complex_values):
+    from pyqed._letta_two_site_opt.sector_operator import prepare_pair_sector_operator
+    rng=np.random.default_rng(234)
+    def draw(shape):
+        x=rng.normal(size=shape)
+        return x+1j*rng.normal(size=shape) if complex_values else x
+    shapes={0:(1,2,2,1),1:(1,2,2,1)}
+    vector=draw(shapes[1]);expected=np.zeros(shapes[0],dtype=vector.dtype)
+    terms=[]
+    # More than 256 terms per shape forces batch boundaries; interleaving forces
+    # restoration of original summation order after shape grouping.
+    for index in range(517):
+        x,y=(3,2) if index%2==0 else (5,3)
+        left,w1,w2=draw((x,1,1)),draw((x,y,2,2)),draw((y,1,2,2))
+        right=np.array([[[index+1.]]]);c=(-1.)**index/517
+        terms.append((0,1,left,w1,w2,right,c))
+        expected+=c*np.einsum('xal,xyop,yzuv,zbr,lpvr->aoub',left,w1,w2,right,vector,optimize=True)
+    action=prepare_pair_sector_operator(shapes,terms)
+    actual=action({0:np.zeros(shapes[0]),1:vector})
+    np.testing.assert_allclose(actual[0],expected,rtol=1e-12,atol=1e-11)
+    np.testing.assert_array_equal(action.right[action.routes[:,1]],np.repeat(np.arange(1.,518.),16))
+
+
+def test_zero_pair_does_not_pack_inactive_boundaries():
+    from pyqed._letta_two_site_opt.sector_operator import prepare_pair_sector_operator
+    shapes={0:(2,1,1,2)}
+    terms=[(0,0,np.ones((3,2,2)),np.zeros((3,4,1,1)),
+            np.ones((4,2,1,1)),np.ones((2,2,2)),1.)]
+    action=prepare_pair_sector_operator(shapes,terms)
+    assert action.left.size==action.right.size==len(action.routes)==0
+    np.testing.assert_array_equal(action({0:np.ones(shapes[0])})[0],0.)

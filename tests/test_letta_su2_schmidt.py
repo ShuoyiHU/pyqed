@@ -86,3 +86,40 @@ def test_schmidt_handles_structurally_disconnected_outer_sector(side):
     result,loss=split_state(s,p.su2_mpo(),100)
     np.testing.assert_allclose(result.state_vector(),before,atol=2e-11)
     assert loss==pytest.approx(0,abs=2e-11)
+
+
+@pytest.mark.parametrize('nelec', [(2, 2), (2, 1)])
+@pytest.mark.parametrize('cap', [3, 100])
+def test_cached_qr_schmidt_matches_norm_contraction(nelec, cap, monkeypatch):
+    from pyqed._letta_one_site_opt.reduced_norm import ReducedNormChain
+    p = ElectronicProblem(*integrals(4), nelec)
+    state = ReducedLatticeLETTA.random((1, 4), symmetry=p.symmetry('su2'),
+        neighborhoods=tuple((i,) for i in range(4)), multiplets_per_sector=2,
+        real=False, seed=301)
+    # Nonunitary exterior gauges exercise complex Gram conjugation and scale.
+    before = state.state_vector()
+    rng = np.random.default_rng(305)
+    for cut in (1, 3):
+        transforms = {}
+        for (ql, qp, qr), value in state.tensors[cut-1].items():
+            if qr not in transforms:
+                n = value.shape[-1]
+                transforms[qr] = 2*np.eye(n)+.2*(rng.normal(size=(n,n))+1j*rng.normal(size=(n,n)))
+            state.tensors[cut-1][ql,qp,qr] = value@transforms[qr]
+        for (ql, qp, qr), value in state.tensors[cut].items():
+            state.tensors[cut][ql,qp,qr] = np.einsum('al,lpb->apb', np.linalg.inv(transforms[ql]), value)
+    np.testing.assert_allclose(state.state_vector(), before, atol=2e-11)
+    h = p.su2_mpo()
+    reference, loss = split_state(state, h, cap)
+    problem = reduced_pair_problem(state, h, 1, matrix_free=True,
+        norm_only=True, prepare_canonical_hamiltonian=True)
+    sites = problem.frontier.to_mps(state)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('cached pair split rebuilt the norm chain')
+    monkeypatch.setattr(ReducedNormChain, 'build', forbidden)
+    split = _schmidt_split_untied(problem, problem.layout.unpack(problem.old_vector),
+        sites, state, cap, 'lr', LETTATwoSiteOptions(metric_tolerance=1e-12))
+    result = state.copy()
+    result.tensors[1], result.tensors[2] = split.left_blocks, split.right_blocks
+    np.testing.assert_allclose(result.state_vector(), reference.state_vector(), atol=3e-11)
+    assert split.discarded_weight == pytest.approx(loss, abs=3e-11)

@@ -282,6 +282,7 @@ def reduced_pair_problem(
     prune=True,
     boundary_cache=None,
     norm_only=False,
+    prepare_canonical_hamiltonian=False,
 ):
     """Build the reduced two-site generalized problem with exact path support.
 
@@ -334,7 +335,7 @@ def reduced_pair_problem(
                 equilibrated_projector_factory=lambda tol:n_chain.pair_projector(left_site,layout,tol,equilibrated=True))
         from .._letta_one_site_opt.frontier_contraction import state_signature, canonical_environment
         mpo=hamiltonian.native_mpo(state.physical_basis)
-        if norm_only:
+        if norm_only and not prepare_canonical_hamiltonian:
             from types import SimpleNamespace
             from .._letta_one_site_opt.reduced_coordinates import _canonical_sites
             seeds=None
@@ -414,7 +415,7 @@ def reduced_pair_problem(
     )
 
 
-def _select_multiplet_ranks(decompositions, bond_dim, *, minimum_multiplicities=None):
+def _select_multiplet_ranks(decompositions, bond_dim, *, minimum_multiplicities=None, keep_zero_multiplets=False):
     """Maximize retained weighted norm under a reduced-multiplet budget."""
 
     try:
@@ -460,7 +461,7 @@ def _select_multiplet_ranks(decompositions, bond_dim, *, minimum_multiplicities=
                 updated[proposed_cost] = proposal
         states = updated
     feasible = [
-        (value, -cost, selected)
+        (value, cost if keep_zero_multiplets else -cost, selected)
         for cost, (value, selected) in states.items()
         if selected
     ]
@@ -488,6 +489,7 @@ def _split_reduced_pair(
     direction,
     cutoff,
     minimum_multiplicities=None,
+    keep_zero_multiplets=False,
 ):
     direction = str(direction).lower()
     if direction not in {"lr", "rl"}:
@@ -539,7 +541,10 @@ def _split_reduced_pair(
         threshold = float(cutoff) * (
             singular_values[0] if singular_values.size else 0.0
         )
-        available = int(np.count_nonzero(singular_values > threshold))
+        # Growth needs orthogonal zero-amplitude channels for the next pair.
+        # An explicit positive SVD cutoff still requests their removal.
+        available = (len(singular_values) if keep_zero_multiplets and cutoff == 0.
+                     else int(np.count_nonzero(singular_values > threshold)))
         decompositions[q_middle] = {
             "row_pairs": row_pairs,
             "col_pairs": col_pairs,
@@ -553,7 +558,7 @@ def _split_reduced_pair(
             "available": min(capacity, available),
         }
     retained = _select_multiplet_ranks(decompositions, bond_dim,
-        minimum_multiplicities=minimum_multiplicities)
+        minimum_multiplicities=minimum_multiplicities, keep_zero_multiplets=keep_zero_multiplets)
     left_blocks = {
         key: np.zeros(np.asarray(block).shape, dtype=dtype)
         for key, block in left_template.data.items()
@@ -905,19 +910,39 @@ def _expand_reduced_pair_space(state, left_site, bond_dim):
 
 
 def _orthogonal_pair_action(problem, root, state, hamiltonian):
-    """Contract H directly in canonical reduced coordinates, avoiding inverse Grams."""
+    """Apply H in canonical reduced coordinates without repacking every block."""
+    cached = getattr(root, '_hamiltonian_action', None)
+    if cached is not None and cached[0] is hamiltonian:
+        return cached[1]
     chain = getattr(root,'environment',None)
     if chain is None:
         chain = ReducedEnvironmentChain.build(root.canonical_sites,
             hamiltonian.native_mpo(state.physical_basis),lazy=True)
     weights = {k: np.sqrt(_sector_irrep(k[-1]).dim) for k in root.physical_layout.keys}
-
-    def apply(vector):
-        blocks = root.physical_layout.unpack(root.embed_physical(vector))
-        output = chain.pair_action(problem.left_site,
-            {k: block / weights[k] for k, block in blocks.items()})
-        return root.project_physical(root.physical_layout.pack(
-            {k: output[k] / weights[k] for k in blocks}))
+    if hasattr(chain, 'prepare_pair_action'):
+        shapes = root.physical_layout.shapes
+        # Only shapes are inspected during preparation; no large zero tensor.
+        blocks = {k: np.broadcast_to(np.array(0.), shape) for k,shape in shapes.items()}
+        operator = chain.prepare_pair_action(problem.left_site, blocks)
+        if operator.layout.keys != root.physical_layout.keys:
+            raise ValueError('canonical pair operator layout differs from metric layout')
+        weight = np.empty(root.physical_layout.size)
+        for key,(start,stop) in root.physical_layout.offsets.items():
+            weight[start:stop] = weights[key]
+        def apply(vector):
+            physical = root.embed_physical(vector)/weight
+            return root.project_physical(operator.apply_packed(physical)/weight)
+        def diagonal():
+            return operator.supported_diagonal(root.output_layout, root.support_factors, weights)
+        apply.diagonal = diagonal
+    else:
+        def apply(vector):
+            blocks = root.physical_layout.unpack(root.embed_physical(vector))
+            output = chain.pair_action(problem.left_site,
+                {k: block / weights[k] for k, block in blocks.items()})
+            return root.project_physical(root.physical_layout.pack(
+                {k: output[k] / weights[k] for k in blocks}))
+    root._hamiltonian_action = (hamiltonian, apply)
     return apply
 
 
@@ -947,6 +972,24 @@ def _solve_reduced_pair_root(problem, state, hamiltonian, options):
     else:
         local = SimpleNamespace(local_dimension=root.size, apply_hamiltonian=apply,
             apply_metric=lambda v: v, metric_scale=1.)
+        if hasattr(apply, 'diagonal'):
+            diagonal = apply.diagonal()
+            scale = max(1., float(np.max(np.abs(diagonal))))
+            if np.max(np.abs(diagonal.imag)) > 1e-10*scale:
+                raise FloatingPointError('canonical pair Hamiltonian diagonal is not real')
+            diagonal = diagonal.real
+            # Native Davidson also includes the lowest diagonal coordinate.
+            # Keep the incoming state and the generic full-support probes;
+            # this is an extra search direction, never a state replacement.
+            seed = np.zeros(root.size)
+            seed[int(np.argmin(diagonal))] = 1.
+            local.initial_search_vectors = (seed,)
+            def precondition(residual, energy):
+                denominator = diagonal-energy
+                denominator = np.where(np.abs(denominator)<1e-12,
+                    np.where(denominator<0., -1e-12, 1e-12), denominator)
+                return residual/denominator
+            local.preconditioner = precondition
         energy, vector, _ = _davidson_in_metric_coordinates(local, options, initial)
     vector = vector / np.linalg.norm(vector)
     hvector = apply(vector)
@@ -969,6 +1012,10 @@ def _optimize_allocated_reduced_pair(
         matrix_free=options.matrix_free,
         dense_solver_threshold=options.dense_solver_threshold,
         boundary_cache=boundary_cache,
+        # The root solver uses canonical QR/SVD coordinates. Raw H/N matrices
+        # and a second raw environment are unused by this internal solve.
+        norm_only=hamiltonian.contraction_backend == 'reduced',
+        prepare_canonical_hamiltonian=hamiltonian.contraction_backend == 'reduced',
     )
     local_energy, vector, metric_rank, residual = _solve_reduced_pair_root(
         problem, state, hamiltonian, options
@@ -978,7 +1025,8 @@ def _optimize_allocated_reduced_pair(
 
 
 def _metric_pair_split(problem, root, vector, sites, *, bond_dim,
-                       sector_capacities, direction, cutoff, minimum_multiplicities=None):
+                       sector_capacities, direction, cutoff, minimum_multiplicities=None,
+                       keep_zero_multiplets=False):
     """Allocate multiplets in the physical metric before the tied factor fit.
 
     QR removes the external environments; dividing by sqrt(dim J_middle)
@@ -992,11 +1040,12 @@ def _metric_pair_split(problem, root, vector, sites, *, bond_dim,
               for k,v in root.physical_layout.unpack(root.physical_apply(vector)).items()}
     ranked=_split_reduced_pair(physical,root.canonical_sites[i],root.canonical_sites[i+1],
         bond_dim=bond_dim,sector_capacities=sector_capacities,direction=direction,
-        cutoff=cutoff,minimum_multiplicities=minimum_multiplicities)
+        cutoff=cutoff,minimum_multiplicities=minimum_multiplicities,
+        keep_zero_multiplets=keep_zero_multiplets)
     retained=dict(ranked.retained_multiplicities)
     raw=_split_reduced_pair(problem.layout.unpack(vector),sites[i],sites[i+1],
         bond_dim=bond_dim,sector_capacities=retained,direction=direction,cutoff=0.,
-        minimum_multiplicities=retained)
+        minimum_multiplicities=retained,keep_zero_multiplets=keep_zero_multiplets)
     return replace(raw,discarded_weight=ranked.discarded_weight)
 
 
@@ -1011,10 +1060,18 @@ def compress_reduced_pair_vector(state, hamiltonian, problem, vector, local_ener
     """
     from .solver import LETTAPairUpdate
     left_site = problem.left_site
-    if all(len(state.site_neighborhood(i)) == 1 for i in range(state.nsites)):
+    # Away from every copied-label crossing the two source embeddings are
+    # ordinary MPS cores. Exterior ties affect only the exact boundary Grams;
+    # the existing MPS Schmidt split is the global metric least-squares fit.
+    # Pairs touching/crossing a tie retain the full constrained ALS path below.
+    plain_pair = (state.site_neighborhood(left_site) == (left_site,)
+        and state.site_neighborhood(left_site+1) == (left_site+1,)
+        and not problem.frontier.left_variables(left_site)
+        and not problem.frontier.right_variables(left_site+1))
+    if plain_pair:
         return _optimize_untied_split(state, hamiltonian, problem, vector,
             local_energy, metric_rank, residual, direction, bond_dim, options,
-            acceptance_energy=acceptance_energy)
+            acceptance_energy=acceptance_energy, context=context)
     from .reduced_compression import pair_metric_root
     norm_root = pair_metric_root(problem, state, options.metric_tolerance)
     def physical_norm(v):
@@ -1023,7 +1080,8 @@ def compress_reduced_pair_vector(state, hamiltonian, problem, vector, local_ener
     split = _metric_pair_split(problem, norm_root, vector, sites,
         bond_dim=bond_dim, sector_capacities=Counter(state.bond_sectors[left_site]),
         direction=direction, cutoff=options.conditional_svd_cutoff,
-        minimum_multiplicities=minimum_multiplicities)
+        minimum_multiplicities=minimum_multiplicities,
+        keep_zero_multiplets=options.reduced_sector_growth)
     left_embedding = problem.frontier.site_embedding(state, left_site)
     right_embedding = problem.frontier.site_embedding(state, left_site + 1)
     retained = dict(split.retained_multiplicities)
@@ -1086,10 +1144,10 @@ def compress_reduced_pair_vector(state, hamiltonian, problem, vector, local_ener
     )
     projection_loss = physical_norm(vector-normalized_pair)
     left_source = _shrink_source_blocks(
-        left_embedding.unpack_source(normalized_left), retained, "left"
+        left_embedding.unpack_source(normalized_left, template=state.tensors[left_site]), retained, "left"
     )
     right_source = _shrink_source_blocks(
-        right_embedding.unpack_source(normalized_right), retained, "right"
+        right_embedding.unpack_source(normalized_right, template=state.tensors[left_site+1]), retained, "right"
     )
     new_bond = _retained_bond_sectors(
         state.bond_sectors[left_site], retained
@@ -1154,10 +1212,46 @@ def compress_reduced_pair_vector(state, hamiltonian, problem, vector, local_ener
     )
 
 
-def _refine_pair_if_requested(state, hamiltonian, site, direction, options, *, context=None):
+def _plain_pair_refinement_certificate(problem, root, vector, state, hamiltonian, options):
+    """Certify a plain pair's fixed point before repeating one-site minimizations.
+
+    Both one-site tangent spaces are subspaces of the free pair space. A fresh
+    full pair residual therefore bounds both local residuals. Require that the
+    inverse-support projection loses only roundoff; an omitted physical direction
+    must not make a stationary-point certificate appear stronger than it is.
+    """
     if options.split_method not in {'metric-als-energy', 'metric-energy', 'energy-refined'}:
         return None
-    from .._letta_one_site_opt.reduced_updates import refine_reduced_pair_energy
+    physical = root.physical_apply(vector)
+    supported = root.project_physical(physical)
+    error = np.linalg.norm(physical-root.embed_physical(supported))
+    if error > 32*np.finfo(float).eps*max(1.,np.linalg.norm(physical)):
+        return None
+    norm = np.linalg.norm(supported)
+    if not np.isfinite(norm) or norm <= np.finfo(float).tiny:
+        return None
+    supported = supported/norm
+    hvector = _orthogonal_pair_action(problem, root, state, hamiltonian)(supported)
+    energy = float(np.vdot(supported,hvector).real)
+    residual = float(np.linalg.norm(hvector-energy*supported))
+    relative = residual/max(1.,abs(energy),float(np.linalg.norm(hvector)))
+    if not np.isfinite(relative) or relative > options.eigensolver_tolerance:
+        return None
+    return dict(energy=energy, absolute_residual=residual, relative_residual=relative,
+                support_projection_error=float(error))
+
+
+def _refine_pair_if_requested(state, hamiltonian, site, direction, options, *, context=None,
+                              pair_certificate=None, checked_energy=None):
+    if options.split_method not in {'metric-als-energy', 'metric-energy', 'energy-refined'}:
+        return None
+    from .._letta_one_site_opt.reduced_updates import refine_reduced_pair_energy, ReducedEnergyRefinement
+    if pair_certificate is not None and checked_energy is not None:
+        guard = 64*np.finfo(float).eps*max(1.,abs(checked_energy))
+        if abs(pair_certificate['energy']-checked_energy) <= guard:
+            return ReducedEnergyRefinement(state.copy(), checked_energy, checked_energy,
+                0, 0, (checked_energy,), True, 'fresh full-pair residual already converged',
+                (dict(kind='full_pair', sites=(site,site+1), **pair_certificate),))
     return refine_reduced_pair_energy(state, hamiltonian, site, options,
         max_iterations=options.energy_refinement_max_iterations,
         tolerance=options.energy_refinement_tolerance, direction=direction,context=context)
@@ -1182,9 +1276,23 @@ def _schmidt_split_untied(problem, blocks, sites, state, bond_dim, direction, op
     variational tensor or determinant-space projection enters this operation.
     """
     i = problem.left_site
-    chain = ReducedNormChain.build(sites)
-    left = {q: _gram_roots(g, options.metric_tolerance) for q, g in chain.left[i].items()}
-    right = {q: _gram_roots(g, options.metric_tolerance) for q, g in chain.right[i+2].items()}
+    # The immutable pair preparation already factored both exterior states.
+    # Reconstruct their multiplicity Grams, rather than contracting the chain
+    # again. Keep the original Gram support cutoff and normalization convention.
+    from .._letta_one_site_opt.frontier_contraction import state_signature
+    cached = getattr(problem, 'canonical_data', None)
+    if cached is not None and cached[0] == state_signature(state):
+        boundaries = []
+        for factors in cached[2:4]:
+            grams = {q: factor.conj().T @ factor for q, factor in factors.items()}
+            scale = max((float(np.max(np.abs(g), initial=0.)) for g in grams.values()), default=0.)
+            boundaries.append({q: g/scale if scale else g for q, g in grams.items()})
+    else:
+        chain = ReducedNormChain.build(sites, lazy=True)
+        chain.ensure(i, i+2)
+        boundaries = (chain.left[i], chain.right[i+2])
+    left, right = [{q: _gram_roots(g, options.metric_tolerance) for q, g in boundary.items()}
+                   for boundary in boundaries]
     # Sparse norm contraction omits sectors disconnected from the outer state.
     # Their Gram matrix and pseudoinverse are exactly zero, not identity.
     for roots, counts in ((left, Counter(sites[i].qns[0])),
@@ -1198,7 +1306,8 @@ def _schmidt_split_untied(problem, blocks, sites, state, bond_dim, direction, op
         for key, a in blocks.items()}
     split = _split_reduced_pair(weighted, sites[i], sites[i+1], bond_dim=bond_dim,
         sector_capacities=Counter(state.bond_sectors[i]), direction=direction,
-        cutoff=options.conditional_svd_cutoff)
+        cutoff=options.conditional_svd_cutoff,
+        keep_zero_multiplets=options.reduced_sector_growth)
     a = {key: np.einsum('al,lpm->apm', left[key[0]][1], value, optimize=True)
          for key, value in split.left_blocks.items()}
     b = {key: np.sqrt(_sector_irrep(key[0]).dim/_sector_irrep(key[-1]).dim)
@@ -1209,29 +1318,37 @@ def _schmidt_split_untied(problem, blocks, sites, state, bond_dim, direction, op
 
 
 def _optimize_untied_split(state, hamiltonian, problem, vector, local_energy,
-                          metric_rank, residual, direction, bond_dim, options, *, acceptance_energy=None):
+                          metric_rank, residual, direction, bond_dim, options, *, acceptance_energy=None,
+                          context=None):
     from .solver import LETTAPairUpdate
     i = problem.left_site
     sites = tuple(problem.frontier.to_mps(state))
+    from .reduced_compression import pair_metric_root
+    norm_root = pair_metric_root(problem, state, options.metric_tolerance)
     split = _schmidt_split_untied(problem, problem.layout.unpack(vector), sites,
                                 state, bond_dim, direction, options)
     pair = problem.layout.pack(_merge_pair_blocks(split.left_blocks, split.right_blocks))
-    norm = float(np.real(_metric_inner(problem, pair, pair)))
+    norm = float(np.linalg.norm(norm_root.physical_apply(pair))**2)
     if not np.isfinite(norm) or norm <= np.finfo(float).tiny:
         raise ValueError('Schmidt truncation produced a null state')
+    normalized_pair = pair/np.sqrt(norm)
+    pair_certificate = _plain_pair_refinement_certificate(
+        problem, norm_root, normalized_pair, state, hamiltonian, options)
     a = {key: value/np.sqrt(norm) for key, value in split.left_blocks.items()}
     retained = dict(split.retained_multiplicities)
     a = _shrink_source_blocks(a, retained, 'left')
     b = _shrink_source_blocks(split.right_blocks, retained, 'right')
-    old_energy = _energy(state, hamiltonian, stable=True)
+    evaluate = context.stable_energy if context is not None else lambda s: _energy(s, hamiltonian, stable=True)
+    old_energy = evaluate(state)
     old_a, old_b, old_bonds = state.tensors[i], state.tensors[i+1], state.bond_sectors
     bonds = list(old_bonds)
     bonds[i] = _retained_bond_sectors(old_bonds[i], retained)
     state.bond_sectors = tuple(bonds)
     state.tensors[i], state.tensors[i+1] = a, b
     state.tensors = state._validate_tensors(state.tensors)
-    energy = _energy(state, hamiltonian, stable=True)
-    energy_fit = _refine_pair_if_requested(state, hamiltonian, i, direction, options)
+    energy = evaluate(state)
+    energy_fit = _refine_pair_if_requested(state, hamiltonian, i, direction, options,
+        context=context, pair_certificate=pair_certificate, checked_energy=energy)
     if energy_fit is not None:
         state.tensors, state.bond_sectors = energy_fit.state.tensors, energy_fit.state.bond_sectors
         energy = energy_fit.energy
@@ -1241,12 +1358,12 @@ def _optimize_untied_split(state, hamiltonian, problem, vector, local_energy,
         state.tensors[i], state.tensors[i+1], state.bond_sectors = old_a, old_b, old_bonds
         energy = old_energy
     else:
-        state.normalize(center=i, balance=options.gauge_mode != 'frontier')
+        state.normalize(center=i, balance=context is None and options.gauge_mode != 'frontier')
     return LETTAPairUpdate(left_site=i, right_site=i+1, shared_physical_sites=(),
         old_energy=old_energy, local_energy=local_energy, energy=energy,
         metric_rank=metric_rank, local_dimension=problem.local_dimension,
         residual_norm=residual, conditional_discarded_weight=split.discarded_weight,
-        metric_truncation_loss=_pair_metric_loss(vector, pair/np.sqrt(norm), problem),
+        metric_truncation_loss=float(np.linalg.norm(norm_root.physical_apply(vector-normalized_pair))**2),
         truncation_iterations=0,
         energy_refinement_initial_energy=None if energy_fit is None else energy_fit.initial_energy,
         energy_refinement_energy=None if energy_fit is None else energy_fit.energy,

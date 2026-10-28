@@ -378,3 +378,25 @@ def test_abelian_boundary_action_table_reports_family_ownership():
         item["name"] == "subtract_local:R"
         for item in stats["boundary_channel_tables"]
     )
+
+
+def test_sector_hash_cache_preserves_value_ordering_and_checkpoints():
+    import pickle
+    from dataclasses import replace, fields
+    labels = [SU2Irrep(j) for j in range(5)]
+    labels += [SpinChargeSector(n, SU2Irrep(j)) for n in range(5) for j in range(5)]
+    for label in labels:
+        expected = hash(tuple(getattr(label, field.name) for field in fields(label)))
+        before = repr(label)
+        assert hash(label) == expected
+        assert hash(label) == expected
+        assert repr(label) == before
+        assert label._cached_hash == expected
+        assert "_cached_hash" not in label.__getstate__()
+        restored = pickle.loads(pickle.dumps(label))
+        assert "_cached_hash" not in restored.__dict__
+        assert restored == label
+        assert hash(restored) == expected
+        assert {label: 7}[restored] == 7
+        fresh = replace(label)
+        assert fresh == label and hash(fresh) == expected

@@ -953,21 +953,27 @@ def _emit_shared_spinfree_we_terms(
     dual_annihilation = time_reversed_reduced_operator(annihilation)
     parity = spatial_parity(phys_leg, dtype=dtype)
     original_kinds = ("create", "annihilate", "create", "annihilate")
+    # Integral coefficients and site positions change between strings; these
+    # four local primitives do not. Share them for this build, as in the direct
+    # normal/complementary schedule, so charge/signature caches see one object
+    # per primitive. No process-global cache of mutable operators is retained.
+    local_operators = {
+        (kind, odd): (operator.right_multiply_sector_scalar(parity)
+                      if odd else operator)
+        for kind, operator in (("create", creation), ("annihilate", dual_annihilation))
+        for odd in (False, True)
+    }
     count = 0
     for (sorted_sites, site_order, middle_irrep), coeff in pending_we.items():
         if abs(coeff) <= cutoff:
             continue
-        middle = _middle_parity_operators_for_four_sites(
-            sorted_sites,
-            phys_leg=phys_leg,
-            dtype=dtype,
-        )
+        middle = {site: parity for position in (0, 2)
+                  for site in range(int(sorted_sites[position])+1,
+                                    int(sorted_sites[position+1]))}
         operators = []
         for position, (site, original_index) in enumerate(zip(sorted_sites, site_order)):
             kind = original_kinds[original_index]
-            operator = creation if kind == "create" else dual_annihilation
-            if position in (0, 2):
-                operator = operator.right_multiply_sector_scalar(parity)
+            operator = local_operators[kind, position in (0, 2)]
             operators.append((site, operator))
         autompo.add_reduced_string(
             *operators,

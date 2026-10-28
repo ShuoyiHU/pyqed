@@ -128,7 +128,15 @@ def _validate_reduced_mpo(hamiltonian, state):
                 f"reduced MPO physical leg at site {site} does not match the "
                 "state's fully reduced physical basis"
             )
-    factor_shapes = tuple(np.asarray(core.as_dense()).shape for core in factors)
+    # These typed cores validate their block layout at construction. Reading
+    # their dimensions must not expand every virtual-channel pair to a dense
+    # tensor (or populate RankCoupledMPO's dense physical-block cache).
+    def metadata_shape(core):
+        return (core.left_dim, core.right_dim,
+                max(part.stop for part in core.phys_out_leg.slices().values()),
+                max(part.stop for part in core.phys_in_leg.slices().values()))
+
+    factor_shapes = tuple(metadata_shape(core) for core in factors)
     for site, shape in enumerate(factor_shapes):
         if len(shape) != 4:
             raise ValueError(f"reduced MPO factor {site} is not rank four")
@@ -170,6 +178,8 @@ def _validate_reduced_mpo(hamiltonian, state):
                         "match the state's ordered magnetic-component basis"
                     )
             shape = getattr(core, 'component_shape', None)
+            if shape is None and isinstance(core, _REDUCED_MPO_TYPES):
+                shape = metadata_shape(core)
             if shape is None:
                 shape = np.asarray(core.as_dense() if hasattr(core, "as_dense") else core).shape
             if len(shape) != 4:
@@ -391,14 +401,15 @@ def _projected_canonical_local_problem(
 
 
 def _native_local_problem(state, hamiltonian, site, sites, embedding,
-                          matrix_free, dense_solver_threshold, boundary_cache=None, structured=False):
+                          matrix_free, dense_solver_threshold, boundary_cache=None, structured=False,
+                          materialize=True):
     from .reduced_coordinates import ReducedLocalCoordinates
     coordinates=ReducedLocalCoordinates(sites,embedding,site,mpo=hamiltonian.native_mpo(state.physical_basis),boundary_cache=boundary_cache,action_only=True,structured=structured)
     coordinates.set_hamiltonian(hamiltonian.native_mpo(state.physical_basis))
     h_action=coordinates.source_hamiltonian
     n_action=coordinates.metric
     h,n=None,None
-    if not matrix_free or embedding.source_size<=dense_solver_threshold:
+    if materialize and (not matrix_free or embedding.source_size<=dense_solver_threshold):
         identity=np.eye(embedding.source_size)
         h=np.column_stack([h_action(v) for v in identity])
         n=np.column_stack([n_action(v) for v in identity])
@@ -456,6 +467,7 @@ class ReducedSweepContext:
         self._energy_value = None
         from .frontier_contraction import EnergyBoundaryCache
         self.energy_boundaries = EnergyBoundaryCache()
+        self.energy_center = None
 
     def stable_energy(self, state=None):
         """Reuse an independent contraction only for identical tensor values.
@@ -467,9 +479,73 @@ class ReducedSweepContext:
         state=self.state if state is None else state
         key=state_signature(state)
         if key!=self._energy_key:
-            value=_energy(state,self.hamiltonian,stable=True,energy_boundaries=self.energy_boundaries)
+            value=_energy(state,self.hamiltonian,stable=True,energy_boundaries=self.energy_boundaries,
+                          center=self.energy_center,canonical_boundaries=self.boundary_cache,
+                          structured=False)
             self._energy_key,self._energy_value=key,value
         return self._energy_value
+
+    def remember_source_energy(self, state, energy):
+        """Store the checked H/N quotient of the actual optimized source vector."""
+        from .frontier_contraction import state_signature
+        self._energy_key, self._energy_value = state_signature(state), float(energy)
+
+    def certify_gauge(self, before, cut):
+        """Check a plain two-core gauge in orthonormal exterior coordinates.
+
+        This is a state-preservation check, not an energy estimate. Only use it
+        when no physical tie crosses the pair or touches either active core.
+        General conditional gauges retain the independent energy contraction.
+        """
+        state = self.state
+        i, j = cut-1, cut
+        if (state.bond_sectors != before.bond_sectors
+                or state.neighborhoods != before.neighborhoods
+                or any(state.neighborhoods[k] != (k,) for k in (i,j))
+                or any(self.frontier.left_variables(k) or self.frontier.right_variables(k)
+                       for k in (i,j))):
+            return False
+        # Validate the transaction's scope as well as its two-core product.
+        for k, (old,new) in enumerate(zip(before.tensors,state.tensors)):
+            if old.keys() != new.keys():
+                return False
+            if k not in (i,j) and any(not np.array_equal(old[q],new[q]) for q in old):
+                return False
+        from .frontier_contraction import canonical_environment, scatter_blocks
+        _, left, right, _ = canonical_environment(self.sites, i,
+            self.hamiltonian.native_mpo(state.physical_basis), last_center=j,
+            cache=self.boundary_cache, transform_active=False)
+        old_a, old_b = self.sites[i].data, self.sites[j].data
+        new_a = scatter_blocks(self.embeddings[i],state.tensors[i])
+        new_b = scatter_blocks(self.embeddings[j],state.tensors[j])
+        def outer(blocks, factors, side):
+            result = {}
+            for key,a in blocks.items():
+                a=np.asarray(a)
+                if side == 'left':
+                    result[key]=(factors[key[0]]@a.reshape(a.shape[0],-1)).reshape(
+                        factors[key[0]].shape[0],a.shape[1],a.shape[2])
+                else:
+                    result[key]=(a.reshape(-1,a.shape[-1])@factors[key[-1]].T).reshape(
+                        a.shape[0],a.shape[1],factors[key[-1]].shape[0])
+            return result
+        old_a,new_a = outer(old_a,left,'left'),outer(new_a,left,'left')
+        old_b,new_b = outer(old_b,right,'right'),outer(new_b,right,'right')
+        from .reduced_symmetry import _sector_irrep
+        error = norm = 0.
+        for ka,a in old_a.items():
+            for kb,b in old_b.items():
+                if ka[-1] != kb[0]:
+                    continue
+                old=np.einsum('apm,mqb->apqb',a,b,optimize=True)
+                new=np.einsum('apm,mqb->apqb',new_a[ka],new_b[kb],optimize=True)
+                weight=_sector_irrep(kb[-1]).dim
+                error += weight*np.vdot(new-old,new-old).real
+                norm += weight*np.vdot(old,old).real
+        # No rank cutoff: a failed roundoff-scale certificate uses the original
+        # energy check instead. Multiplet weights match the physical norm.
+        return (np.isfinite(error) and np.isfinite(norm) and norm>0
+                and error <= (128*np.finfo(float).eps)**2*norm)
 
     def _layout_signature(self):
         state = self.state
@@ -501,8 +577,10 @@ class ReducedSweepContext:
         self.n_chain.replace_sites(changes)
 
     def local_problem(self, site, options):
+        self.energy_center = int(site)
         return _native_local_problem(self.state, self.hamiltonian, site, self.sites,
-            self.embeddings[site], options.matrix_free, options.dense_solver_threshold, self.boundary_cache)
+            self.embeddings[site], options.matrix_free, options.dense_solver_threshold,
+            self.boundary_cache, materialize=False)
 
 
 def reduced_local_frame(state, site):
@@ -1071,7 +1149,8 @@ def _optimize_reduced_site_impl(state, hamiltonian, site, options, *, context=No
     # Normalize the candidate before the transaction's independent energy
     # check. Checking both unnormalized and normalized copies repeats an
     # expensive contraction of the same physical state.
-    state.tensors[int(site)] = problem.embedding.unpack_source(vector)
+    previous_source = state.tensors[int(site)]
+    state.tensors[int(site)] = problem.embedding.unpack_source(vector, template=previous_source)
     if context is None:
         state.normalize(center=int(site), balance=options.gauge_mode != 'frontier')
     else:
@@ -1079,9 +1158,12 @@ def _optimize_reduced_site_impl(state, hamiltonian, site, options, *, context=No
         if not np.isfinite(norm) or norm <= np.finfo(float).tiny:
             raise FloatingPointError('Null or nonfinite local candidate norm')
         state.tensors[int(site)] = problem.embedding.unpack_source(
-            vector*np.sqrt((state.target_two_j+1)/norm))
+            vector*np.sqrt((state.target_two_j+1)/norm), template=previous_source)
     if context is not None:
         context.synchronize([site])
+        remember_source=getattr(context,'remember_source_energy',None)
+        if remember_source is not None:
+            remember_source(state,diagnostics['energy'])
         remember=getattr(getattr(context,'energy_cache',None),'remember',None)
         if getattr(context,'source_energy_checks',False) and remember is not None:
             # The residual certificate already contracted the actual returned
@@ -1235,7 +1317,11 @@ def reduced_letta_dmrg(hamiltonian, *, state, options, sweep_callback=None):
                         if context is not None:
                             context = context_type(state, hamiltonian)
         updates = tuple(updates)
-        energy = context.stable_energy() if context is not None else end_energy(state)
+        if isinstance(context, ReducedSweepContext):
+            energy = _energy(state, hamiltonian, stable=True)
+            context.remember_source_energy(state, energy)
+        else:
+            energy = context.stable_energy() if context is not None else end_energy(state)
         change = abs(energy - previous_energy)
         density_change = change / state.nsites
         history.append(

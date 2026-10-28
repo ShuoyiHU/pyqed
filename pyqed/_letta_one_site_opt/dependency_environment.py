@@ -82,7 +82,8 @@ class DependencySweepContext:
             source_parameters=embedding.source_size,
             full_source_parameters=embedding.source_layout.size)
         problem=_native_local_problem(view,self.hamiltonian,site,sites,embedding,
-            options.matrix_free,options.dense_solver_threshold,self.boundary_cache,structured=self.structured)
+            options.matrix_free,options.dense_solver_threshold,self.boundary_cache,
+            structured=self.structured,materialize=False)
         import os
         if os.environ.get('PYQED_DAVIDSON_RECYCLE','0')=='1':
             support=embedding.supported_source_indices
