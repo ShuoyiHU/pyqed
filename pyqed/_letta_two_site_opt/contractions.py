@@ -8,6 +8,7 @@ import numpy as np
 
 from .._letta_one_site_opt.contractions import (
     BlockDiagonalMetric,
+    DiagonalMetric,
     IdentityEnvironmentCache,
     LETTAEnvironmentCache,
     _contract_operands,
@@ -15,6 +16,7 @@ from .._letta_one_site_opt.contractions import (
     _prepare_contraction,
 )
 from .pair import LETTAPairLayout
+from .._letta_one_site_opt.canonical import get_canonical
 
 
 def _validate_layout(cache, layout):
@@ -332,7 +334,42 @@ class IdentityPairEnvironmentCache(IdentityEnvironmentCache):
                 labels.append((label,))
         return _contract_operands(operands, labels, output)
 
+    def _canonical_pair_metric(self, left, right, layout):
+        site = layout.left_site
+        physical = tuple(self.physical[p] for p in layout.merged_physical_sites)
+        output = (self.bra_virtual[site],) + physical + (self.bra_virtual[site + 2],)
+        operands, supports, labels = [], [], []
+        for env, cut, direction, virtual in (
+            (left, site, "lr", output[0]), (right, site + 2, "rl", output[-1])
+        ):
+            if cut in {0, self.state.nsites}:
+                if np.asarray(env).shape != () or np.asarray(env) != 1.:
+                    return None
+                operands.append(np.ones(1)); supports.append(np.ones(1))
+                labels.append((virtual,))
+                continue
+            record = get_canonical(self.state, cut, direction, env)
+            if record is None or not set(record.physical) <= set(layout.merged_physical_sites):
+                return None
+            operands.append(record.diagonal)
+            supports.append((record.diagonal > max(record.report.tolerance,
+                np.finfo(float).eps * record.report.bond_dimension)).astype(float))
+            labels.append(tuple(self.physical[p] for p in record.physical) + (virtual,))
+        used = set().union(*map(set, labels))
+        for label, dimension in zip(output, layout.merged_shape):
+            if label not in used:
+                operands.append(np.ones(dimension)); supports.append(np.ones(dimension))
+                labels.append((label,))
+        flat = np.arange(np.prod(layout.merged_shape)).reshape(layout.merged_shape)
+        indices = tuple(flat[(slice(None),) + q + (slice(None),)].ravel()
+                        for q in np.ndindex(layout.merged_shape[1:-1]))
+        return DiagonalMetric(_contract_operands(operands, labels, output), indices,
+            support=_contract_operands(supports, labels, output) > 0.)
+
     def effective_pair_metric(self, left, right, layout):
+        canonical = self._canonical_pair_metric(left, right, layout)
+        if canonical is not None:
+            return canonical
         reduced = self._reduced_pair_metric(left, right, layout)
         physical_shape = layout.merged_shape[1:-1]
         flat_indices = np.arange(np.prod(layout.merged_shape)).reshape(

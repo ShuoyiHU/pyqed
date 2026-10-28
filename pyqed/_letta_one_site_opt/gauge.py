@@ -309,6 +309,12 @@ def shift_frontier_gauge(state, site, direction, *, cache=None, incoming=None,
         diagonals[configuration] = diagonal
     if not np.all(np.isfinite(a)) or not np.all(np.isfinite(b)):
         raise FloatingPointError("nonfinite frontier gauge transformation")
+    if state.symmetry is not None:
+        # Roundoff in SVD null vectors must not populate forbidden charges.
+        # Otherwise a later global symmetry enforcement changes frozen tensors
+        # and invalidates both the cached H boundaries and norm certificates.
+        a = np.where(state.symmetry_mask(cut - 1), a, 0.)
+        b = np.where(state.symmetry_mask(cut), b, 0.)
     state.tensors[cut - 1], state.tensors[cut] = a, b
     # Contract the transformed tensor, rather than a congruence of a previously
     # rounded Gram. The latter amplifies roundoff at small singular values.
